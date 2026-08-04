@@ -107,6 +107,25 @@ def test_close_removes_signal_handlers_and_releases_the_loop() -> None:
         signal.signal(signal.SIGUSR1, original)
 
 
+def test_unclosed_loop_finalization_restores_signal_state() -> None:
+    original = signal.getsignal(signal.SIGUSR1)
+    loop = zuv.new_event_loop()
+    loop_ref = weakref.ref(loop)
+    try:
+        loop.add_signal_handler(signal.SIGUSR1, print)
+
+        with pytest.warns(ResourceWarning, match="unclosed event loop"):
+            del loop
+            gc.collect()
+
+        assert loop_ref() is None
+        assert signal.set_wakeup_fd(-1) == -1
+        assert signal.getsignal(signal.SIGUSR1) is signal.SIG_DFL
+    finally:
+        signal.set_wakeup_fd(-1)
+        signal.signal(signal.SIGUSR1, original)
+
+
 def test_a_signal_between_loop_runs_is_delivered_on_the_next_run() -> None:
     original = signal.getsignal(signal.SIGUSR1)
     loop = zuv.new_event_loop()

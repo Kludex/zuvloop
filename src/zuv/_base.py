@@ -40,6 +40,12 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         self._instrumentation = Instrumentation()
         self._setup_self_pipe()
 
+    def __del__(self, _warn: Callable[..., object] = warnings.warn) -> None:
+        if not self.is_closed():
+            _warn(f"unclosed event loop {self!r}", ResourceWarning, source=self)
+            if not self.is_running():
+                self.close()
+
     # -- lifecycle ---------------------------------------------------------
 
     def run_forever(self) -> None:
