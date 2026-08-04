@@ -1,0 +1,90 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "zuv"
+version = "0.1.0"
+description = "A libuv event loop for asyncio, written in Zig."
+readme = "README.md"
+requires-python = ">=3.14"
+license = "MIT"
+authors = [{ name = "Marcelo Trylesinski", email = "marcelotryle@gmail.com" }]
+keywords = ["asyncio", "libuv", "event-loop", "zig", "uvloop"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Zig",
+    "Typing :: Typed",
+]
+dependencies = ["logfire-api>=4"]
+
+[project.urls]
+Source = "https://github.com/Kludex/zuv"
+
+[dependency-groups]
+dev = [
+    "anyio>=4.6",
+    "coverage[toml]>=7.6",
+    "mypy>=1.13",
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
+bench = ["uvloop>=0.21"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/zuv"]
+artifacts = ["src/zuv/*.so"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "zig", "vendor", "build.zig", "build.zig.zon", "hatch_build.py", "README.md"]
+
+[tool.ruff]
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "FA", "UP", "RUF100"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+
+[tool.mypy]
+strict = true
+python_version = "3.14"
+files = ["src", "tests", "benchmarks"]
+
+[[tool.mypy.overrides]]
+module = ["uvloop"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers"
+testpaths = ["tests"]
+xfail_strict = true
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+source_pkgs = ["zuv", "tests"]
+branch = true
+
+[tool.coverage.paths]
+source = ["src/zuv", "*/src/zuv"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_covered = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@overload",
+]

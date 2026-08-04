@@ -1,0 +1,260 @@
+from __future__ import annotations
+
+import asyncio
+import concurrent.futures
+import signal
+import socket
+import sys
+import threading
+import warnings
+import weakref
+from asyncio import events as _events
+from collections.abc import Callable, Coroutine, Generator
+from contextvars import Context
+from typing import Any, TypeVar
+
+from . import _zuv
+from ._instrumentation import Instrumentation
+
+_T = TypeVar("_T")
+_ExceptionHandler = Callable[[asyncio.AbstractEventLoop, dict[str, Any]], object]
+
+
+class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):
+    """Lifecycle, task creation, executors and error reporting.
+
+    Scheduling primitives (`call_soon`, `call_later`, `time`, the reader and
+    writer registrations) come from the Zig extension; everything here is
+    orchestration that runs once per loop or once per connection.
+    """
+
+    def __init__(self) -> None:
+        self._exception_handler: _ExceptionHandler | None = None
+        self._task_factory: Callable[..., asyncio.Task[Any]] | None = None
+        self._default_executor: concurrent.futures.Executor | None = None
+        self._executor_shutdown_called = False
+        self._asyncgens: weakref.WeakSet[Any] = weakref.WeakSet()
+        self._asyncgens_shutdown_called = False
+        self._ssock: socket.socket | None = None
+        self._csock: socket.socket | None = None
+        self._signal_handlers: dict[int, tuple[Callable[..., object], tuple[Any, ...], Context]] = {}
+        self._instrumentation = Instrumentation()
+        self._setup_self_pipe()
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def run_forever(self) -> None:
+        self._check_closed()
+        self._check_runnable()
+        old_hooks = sys.get_asyncgen_hooks()
+        self._attach_wakeup_fd()
+        _events._set_running_loop(self)
+        sys.set_asyncgen_hooks(firstiter=self._asyncgen_firstiter, finalizer=self._asyncgen_finalizer)
+        try:
+            self._run()
+        finally:
+            sys.set_asyncgen_hooks(*old_hooks)
+            _events._set_running_loop(None)
+            self._detach_wakeup_fd()
+
+    def run_until_complete(self, future: Any) -> Any:
+        self._check_closed()
+        self._check_runnable()
+        new_task = not isinstance(future, asyncio.Future)
+        task = asyncio.ensure_future(future, loop=self)
+        if new_task:
+            task._log_destroy_pending = False  # type: ignore[attr-defined]
+        task.add_done_callback(_stop_when_done)
+        try:
+            self.run_forever()
+        except BaseException:
+            if new_task and task.done() and not task.cancelled():
+                task.exception()
+            raise
+        finally:
+            task.remove_done_callback(_stop_when_done)
+        if not task.done():
+            raise RuntimeError("Event loop stopped before Future completed.")
+        return task.result()
+
+    def close(self) -> None:
+        if self.is_running():
+            raise RuntimeError("Cannot close a running event loop")
+        if self.is_closed():
+            return
+        self._teardown_self_pipe()
+        executor = self._default_executor
+        self._default_executor = None
+        self._close()
+        if executor is not None:
+            executor.shutdown(wait=False)
+
+    async def shutdown_asyncgens(self) -> None:
+        self._asyncgens_shutdown_called = True
+        closing = list(self._asyncgens)
+        if not closing:
+            return
+        self._asyncgens.clear()
+        results = await asyncio.gather(*(agen.aclose() for agen in closing), return_exceptions=True)
+        for result, agen in zip(results, closing, strict=True):
+            if isinstance(result, BaseException):
+                self.call_exception_handler(
+                    {"message": f"an error occurred during closing of asynchronous generator {agen!r}",
+                     "exception": result, "asyncgen": agen}
+                )
+
+    async def shutdown_default_executor(self, timeout: float | None = None) -> None:
+        self._executor_shutdown_called = True
+        executor = self._default_executor
+        if executor is None:
+            return
+        future = self.create_future()
+        thread = threading.Thread(target=_shutdown_executor, args=(self, future, executor))
+        thread.start()
+        try:
+            async with asyncio.timeout(timeout):
+                await future
+        except TimeoutError:
+            warnings.warn("The executor did not finish joining its threads within the timeout", RuntimeWarning, 2)
+            executor.shutdown(wait=False)
+        else:
+            thread.join()
+
+    # -- futures and tasks -------------------------------------------------
+
+    def create_future(self) -> asyncio.Future[Any]:
+        return asyncio.Future(loop=self)
+
+    def create_task(
+        self,
+        coro: Coroutine[Any, Any, _T] | Generator[Any, None, _T],
+        *,
+        name: str | None = None,
+        context: Context | None = None,
+        **kwargs: Any,
+    ) -> asyncio.Task[_T]:
+        self._check_closed()
+        if self._task_factory is None:
+            return asyncio.Task(coro, loop=self, name=name, context=context, **kwargs)
+        return self._task_factory(self, coro, name=name, context=context, **kwargs)
+
+    def set_task_factory(self, factory: Callable[..., asyncio.Task[Any]] | None) -> None:
+        self._task_factory = factory
+
+    def get_task_factory(self) -> Callable[..., asyncio.Task[Any]] | None:
+        return self._task_factory
+
+    # -- executors ---------------------------------------------------------
+
+    def run_in_executor(
+        self, executor: concurrent.futures.Executor | None, func: Callable[..., _T], *args: Any
+    ) -> asyncio.Future[_T]:
+        self._check_closed()
+        if executor is None:
+            if self._executor_shutdown_called:
+                raise RuntimeError("Executor shutdown has been called")
+            executor = self._default_executor
+            if executor is None:
+                executor = concurrent.futures.ThreadPoolExecutor(thread_name_prefix="zuv")
+                self._default_executor = executor
+        return asyncio.futures.wrap_future(executor.submit(func, *args), loop=self)
+
+    def set_default_executor(self, executor: concurrent.futures.Executor) -> None:
+        self._default_executor = executor
+
+    # -- error reporting ---------------------------------------------------
+
+    def get_exception_handler(self) -> _ExceptionHandler | None:
+        return self._exception_handler
+
+    def set_exception_handler(self, handler: _ExceptionHandler | None) -> None:
+        self._exception_handler = handler
+
+    def default_exception_handler(self, context: dict[str, Any]) -> None:
+        self._instrumentation.report_exception(context)
+
+    def call_exception_handler(self, context: dict[str, Any]) -> None:
+        if self._exception_handler is None:
+            self.default_exception_handler(context)
+            return
+        try:
+            self._exception_handler(self, context)
+        except (SystemExit, KeyboardInterrupt):
+            raise
+        except BaseException as exc:
+            self.default_exception_handler(
+                {"message": "Unhandled error in exception handler", "exception": exc, "context": context}
+            )
+
+    def _on_slow_callback(self, handle: object, duration: float) -> None:
+        self._instrumentation.report_slow_callback(handle, duration)
+
+    # -- internals ---------------------------------------------------------
+
+    def _check_closed(self) -> None:
+        if self.is_closed():
+            raise RuntimeError("Event loop is closed")
+
+    def _check_runnable(self) -> None:
+        if self.is_running():
+            raise RuntimeError("This event loop is already running")
+        if _events._get_running_loop() is not None:
+            raise RuntimeError("Cannot run the event loop while another loop is running")
+
+    def _asyncgen_firstiter(self, agen: Any) -> None:
+        if self._asyncgens_shutdown_called:
+            warnings.warn(f"asynchronous generator {agen!r} was scheduled after loop.shutdown_asyncgens() call",
+                          ResourceWarning, source=self)
+        self._asyncgens.add(agen)
+
+    def _asyncgen_finalizer(self, agen: Any) -> None:
+        self._asyncgens.discard(agen)
+        if not self.is_closed():
+            self.call_soon_threadsafe(self.create_task, agen.aclose())
+
+    def _setup_self_pipe(self) -> None:
+        self._ssock, self._csock = socket.socketpair()
+        self._ssock.setblocking(False)
+        self._csock.setblocking(False)
+        self.add_reader(self._ssock.fileno(), self._drain_self_pipe)
+
+    def _teardown_self_pipe(self) -> None:
+        if self._ssock is None or self._csock is None:
+            return
+        self.remove_reader(self._ssock.fileno())
+        self._ssock.close()
+        self._csock.close()
+        self._ssock = self._csock = None
+
+    def _attach_wakeup_fd(self) -> None:
+        # Only the main thread may own the wakeup fd, and only it runs Python
+        # signal handlers - so a loop on any other thread simply skips this.
+        if threading.current_thread() is threading.main_thread():
+            assert self._csock is not None
+            signal.set_wakeup_fd(self._csock.fileno())
+
+    def _detach_wakeup_fd(self) -> None:
+        if threading.current_thread() is threading.main_thread():
+            signal.set_wakeup_fd(-1)
+
+    def _drain_self_pipe(self) -> None:
+        assert self._ssock is not None
+        while True:
+            try:
+                if not self._ssock.recv(4096):
+                    break
+            except (BlockingIOError, InterruptedError):
+                break
+
+
+def _stop_when_done(future: asyncio.Future[Any]) -> None:
+    asyncio.futures._get_loop(future).stop()
+
+
+def _shutdown_executor(
+    loop: LoopBase, future: asyncio.Future[None], executor: concurrent.futures.Executor
+) -> None:
+    try:
+        executor.shutdown(wait=True)
+    finally:
+        loop.call_soon_threadsafe(asyncio.futures._set_result_unless_cancelled, future, None)

@@ -56,7 +56,7 @@ const uv_linux = [_][]const u8{
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseFast });
+    const optimize = b.standardOptimizeOption(.{});
 
     const python_include = b.option([]const u8, "python-include", "CPython include directory") orelse
         @panic("-Dpython-include is required");

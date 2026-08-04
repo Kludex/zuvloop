@@ -13,6 +13,7 @@ const collections = @import("collections.zig");
 const handlemod = @import("handle.zig");
 const pollermod = @import("poller.zig");
 const dns = @import("dns.zig");
+const transportmod = @import("transport.zig");
 const Handle = handlemod.Handle;
 
 const alloc = std.heap.c_allocator;
@@ -56,6 +57,7 @@ pub const State = struct {
     timers: collections.Timers = .empty,
     inbox: Inbox = .{},
     pollers: pollermod.Map = .empty,
+    read_buf: ?[*]u8 = null,
 
     tstate: ?*c.PyThreadState = null,
     gil_depth: c_int = 1,
@@ -70,6 +72,8 @@ pub const State = struct {
 
     thread_id: c_ulong = 0,
     slow_callback_duration: f64 = 0.1,
+    callbacks_run: u64 = 0,
+    iterations: u64 = 0,
 
     pub inline fn gilEnter(self: *State) void {
         if (self.gil_depth == 0) {
@@ -163,6 +167,17 @@ fn onCloseFreeState(handle: ?*uv.Handle) callconv(.c) void {
 // ---------------------------------------------------------------------------
 // scheduling internals
 
+/// Shared landing buffer for stream reads; grown once, reused forever.
+pub fn readBuffer(st: *State) ?[*]u8 {
+    if (st.read_buf) |b| return b;
+    const buf = alloc.alloc(u8, transportmod.read_buffer_size) catch {
+        c.PyErr_Clear();
+        return null;
+    };
+    st.read_buf = buf.ptr;
+    return buf.ptr;
+}
+
 pub inline fn startIdle(st: *State) void {
     if (!st.idle_active and st.ready.len != 0) {
         _ = uv.uv_idle_start(st.idle, onIdle);
@@ -172,7 +187,9 @@ pub inline fn startIdle(st: *State) void {
 
 fn runReady(self: *LoopObject) void {
     const st = self.state();
+    st.iterations += 1;
     var remaining = st.ready.len;
+    st.callbacks_run += remaining;
     while (remaining != 0) : (remaining -= 1) {
         const obj = st.ready.pop() orelse break;
         const h: *Handle = @ptrCast(@alignCast(obj));
@@ -477,6 +494,36 @@ fn setSlowCallbackDuration(self_obj: ?*py.Object, value: ?*py.Object, _: ?*anyop
     return 0;
 }
 
+/// Loop counters plus libuv's own, for the instrumentation layer.
+fn metrics(self_obj: *py.Object) py.Error!*py.Object {
+    const st = asLoop(self_obj).state();
+    var info: uv.Metrics = std.mem.zeroes(uv.Metrics);
+    var idle_ns: u64 = 0;
+    if (!st.closed) {
+        _ = uv.uv_metrics_info(st.uvloop, &info);
+        idle_ns = uv.uv_metrics_idle_time(st.uvloop);
+    }
+    return c.Py_BuildValue(
+        "{s:K,s:K,s:K,s:K,s:K,s:n,s:n,s:n}",
+        "loop_count",
+        info.loop_count,
+        "events",
+        info.events,
+        "events_waiting",
+        info.events_waiting,
+        "idle_time_ns",
+        idle_ns,
+        "callbacks_run",
+        st.callbacks_run,
+        "ready",
+        @as(c.Py_ssize_t, @intCast(st.ready.len)),
+        "timers",
+        @as(c.Py_ssize_t, @intCast(st.timers.len)),
+        "watchers",
+        @as(c.Py_ssize_t, @intCast(st.pollers.count())),
+    ) orelse py.Error.Python;
+}
+
 fn timerHandleCancelled(self_obj: *py.Object, _: *py.Object) py.Error!*py.Object {
     _ = self_obj;
     return py.noneRef();
@@ -572,6 +619,7 @@ fn newLoop(tp: ?*c.PyTypeObject, _: ?*py.Object, _: ?*py.Object) callconv(.c) ?*
         c.PyErr_SetString(@ptrCast(c.PyExc_RuntimeError), "failed to initialise the libuv loop");
         return null;
     }
+    _ = uv.uv_loop_configure(st.uvloop, .metrics_idle_time);
     uv.setData(st.idle, obj);
     uv.setData(st.timer, obj);
     uv.setData(st.waker, obj);
@@ -593,6 +641,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
             pollermod.closeAll(st);
             closeAllHandles(st);
         }
+        if (st.read_buf) |b| alloc.free(@as([]u8, b[0..transportmod.read_buffer_size]));
         alloc.free(@as([*]u64, @ptrCast(@alignCast(st.block.ptr)))[0 .. st.block.len / 8]);
         alloc.destroy(st);
         self.st = null;
@@ -645,12 +694,14 @@ var methods = [_]c.PyMethodDef{
     py.methodNoArgs("get_debug", getDebug, "Return the debug mode flag."),
     py.methodO("set_debug", setDebug, "Set the debug mode flag."),
     py.methodO("_timer_handle_cancelled", timerHandleCancelled, "Compatibility no-op."),
+    py.methodNoArgs("_metrics", metrics, "Return a snapshot of loop and libuv counters."),
     py.method("add_reader", pollermod.addReader, "Call a callback whenever a descriptor is readable."),
     py.method("add_writer", pollermod.addWriter, "Call a callback whenever a descriptor is writable."),
     py.methodO("remove_reader", pollermod.removeReader, "Stop watching a descriptor for readability."),
     py.methodO("remove_writer", pollermod.removeWriter, "Stop watching a descriptor for writability."),
     py.method("_getaddrinfo", dns.getaddrinfo, "Resolve a host on the libuv threadpool."),
     py.method("_getnameinfo", dns.getnameinfo, "Reverse-resolve an address on the libuv threadpool."),
+    py.method("_make_transport", transportmod.makeTransport, "Wrap a connected descriptor in a stream transport."),
     py.methodNoArgs("_close", closeLoop, "Release the libuv loop."),
     py.sentinel,
 };
@@ -694,6 +745,7 @@ pub fn register(module: *py.Object) py.Error!void {
     str_on_slow_callback = py.intern("_on_slow_callback") orelse return py.Error.Python;
 
     try dns.register();
+    try transportmod.register(module);
 
     loop_type = @ptrCast(c.PyType_FromModuleAndSpec(module, &spec, null) orelse return py.Error.Python);
     if (c.PyModule_AddObjectRef(module, "Loop", @ptrCast(loop_type)) < 0) return py.Error.Python;
