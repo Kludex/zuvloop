@@ -123,6 +123,7 @@ controllable clock should schedule against one explicitly.
 | Ready queue, timer heap, cross-thread inbox | `zig/loop.zig` | Called once per callback |
 | Callback handles | `zig/handle.zig` | Arguments stored inline, invoked through vectorcall |
 | Stream reads and writes | `zig/transport.zig` | Called once per packet |
+| Datagram sends and receives | `zig/datagram.zig` | Called once per datagram |
 | Descriptor watchers | `zig/poller.zig` | One `uv_poll_t` per descriptor |
 | Name resolution | `zig/dns.zig` | Runs on libuv's threadpool, not the executor |
 | Connection and server setup | `src/zuv/_connect.py` | Called once per connection |

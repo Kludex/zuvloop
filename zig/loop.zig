@@ -14,6 +14,7 @@ const handlemod = @import("handle.zig");
 const pollermod = @import("poller.zig");
 const dns = @import("dns.zig");
 const transportmod = @import("transport.zig");
+const datagrammod = @import("datagram.zig");
 const Handle = handlemod.Handle;
 
 const alloc = std.heap.c_allocator;
@@ -735,6 +736,7 @@ fn walkClose(handle: ?*uv.Handle, _: ?*anyopaque) callconv(.c) void {
     if (uv.uv_is_closing(h) != 0) return;
     switch (uv.uv_handle_get_type(h)) {
         .tcp, .named_pipe => transportmod.closeFromLoop(h),
+        .udp => datagrammod.closeFromLoop(h),
         else => uv.uv_close(h, onCloseFreeState),
     }
 }
@@ -1009,6 +1011,7 @@ var methods = [_]c.PyMethodDef{
     py.method("_getaddrinfo", dns.getaddrinfo, "Resolve a host on the libuv threadpool."),
     py.method("_getnameinfo", dns.getnameinfo, "Reverse-resolve an address on the libuv threadpool."),
     py.method("_make_transport", transportmod.makeTransport, "Wrap a connected descriptor in a stream transport."),
+    py.method("_make_datagram_transport", datagrammod.makeDatagram, "Adopt a bound datagram socket."),
     py.methodO("_defer_close", deferClose, "Defer loop closure to the main interpreter thread."),
     py.methodNoArgs("_close", closeLoop, "Release the libuv loop."),
     py.sentinel,

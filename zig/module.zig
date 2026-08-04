@@ -3,6 +3,7 @@ const py = @import("py.zig");
 const c = py.c;
 const uv = @import("uv.zig");
 const loop = @import("loop.zig");
+const datagram = @import("datagram.zig");
 const handle = @import("handle.zig");
 
 fn libuvVersion(_: ?*py.Object, _: ?*py.Object) callconv(.c) ?*py.Object {
@@ -18,6 +19,7 @@ fn exec(module: ?*py.Object) callconv(.c) c_int {
     const m = module orelse return -1;
     handle.register(m) catch return -1;
     loop.register(m) catch return -1;
+    datagram.register(m) catch return -1;
     return 0;
 }
 

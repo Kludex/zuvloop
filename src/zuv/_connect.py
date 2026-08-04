@@ -428,8 +428,128 @@ class ConnectionOperations(SocketOperations):
 
     # -- unsupported -------------------------------------------------------
 
-    async def create_datagram_endpoint(self, *args: Any, **kwargs: Any) -> tuple[asyncio.DatagramTransport, Any]:
-        raise NotImplementedError("zuv does not implement datagram endpoints yet")
+    async def create_datagram_endpoint(  # type: ignore[override]  # typeshed omits reuse_port
+        self,
+        protocol_factory: Callable[[], asyncio.BaseProtocol],
+        local_addr: tuple[str, int] | str | None = None,
+        remote_addr: tuple[str, int] | str | None = None,
+        *,
+        family: int = 0,
+        proto: int = 0,
+        flags: int = 0,
+        reuse_port: bool | None = None,
+        allow_broadcast: bool | None = None,
+        sock: socket.socket | None = None,
+    ) -> tuple[asyncio.DatagramTransport, Any]:
+        if sock is not None:
+            if local_addr is not None or remote_addr is not None or family or proto or flags or reuse_port:
+                raise ValueError("socket modifier keyword arguments can not be used when sock is specified")
+            _check_socket(sock, socket.SOCK_DGRAM)
+            sock.setblocking(False)
+            connected = _safe_addr(sock.getpeername) is not None
+        else:
+            sock, connected = await self._bind_datagram(
+                local_addr, remote_addr, family, proto, flags, reuse_port, allow_broadcast
+            )
+
+        protocol = protocol_factory()
+        waiter = self.create_future()
+        try:
+            transport = self._attach_datagram(sock, protocol, connected)
+        except BaseException:
+            # Until libuv adopts the descriptor, the socket is still ours.
+            sock.close()
+            raise
+        transport._start_receiving()
+        self.call_soon(protocol.connection_made, transport)
+        self.call_soon(_set_result_unless_done, waiter)
+        try:
+            await waiter
+        except BaseException:
+            transport.close()
+            raise
+        return transport, protocol
+
+    async def _bind_datagram(
+        self,
+        local_addr: tuple[str, int] | str | None,
+        remote_addr: tuple[str, int] | str | None,
+        family: int,
+        proto: int,
+        flags: int,
+        reuse_port: bool | None,
+        allow_broadcast: bool | None,
+    ) -> tuple[socket.socket, bool]:
+        if local_addr is None and remote_addr is None:
+            if not family:
+                raise ValueError("unexpected address family")
+            resolved_local: Any = None
+            resolved_remote: Any = None
+        else:
+            resolved_local = await self._resolve_datagram(local_addr, family, proto, flags | socket.AI_PASSIVE)
+            resolved_remote = await self._resolve_datagram(remote_addr, family, proto, flags)
+            probe = resolved_local or resolved_remote
+            assert probe is not None
+            family, proto = probe[0], probe[2]
+
+        sock = socket.socket(family, socket.SOCK_DGRAM, proto)
+        try:
+            if reuse_port:
+                _set_reuse_port(sock)
+            if allow_broadcast:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.setblocking(False)
+            if resolved_local is not None:
+                sock.bind(resolved_local[4])
+            if resolved_remote is not None:
+                await self.sock_connect(sock, resolved_remote[4])
+        except BaseException:
+            sock.close()
+            raise
+        return sock, resolved_remote is not None
+
+    async def _resolve_datagram(
+        self, address: tuple[str, int] | str | None, family: int, proto: int, flags: int
+    ) -> Any:
+        if address is None:
+            return None
+        if family == socket.AF_UNIX:
+            return (family, socket.SOCK_DGRAM, proto, "", address)
+        if not isinstance(address, tuple) or len(address) < 2:
+            raise TypeError("string or tuple of (host, port) expected")
+        infos = await self.getaddrinfo(
+            address[0], address[1], family=family, type=socket.SOCK_DGRAM, proto=proto, flags=flags
+        )
+        if not infos:
+            raise OSError("getaddrinfo() returned empty list")
+        return infos[0]
+
+    def _attach_datagram(
+        self, sock: socket.socket, protocol: asyncio.BaseProtocol, connected: bool
+    ) -> _zuv.DatagramTransport:
+        extra: dict[str, Any] = {
+            "sockname": _safe_addr(sock.getsockname),
+            "peername": _safe_addr(sock.getpeername),
+            "family": sock.family,
+            "type": sock.type,
+            "proto": sock.proto,
+        }
+        family, kind, proto = sock.family, sock.type, sock.proto
+        fd = sock.fileno()
+
+        view = socket.socket(family, kind, proto, fileno=fd)
+        try:
+            extra["socket"] = trsock.TransportSocket(view)
+            transport = self._make_datagram_transport(fd, family, connected, protocol, extra)
+        except BaseException:
+            view.detach()
+            raise
+
+        # libuv owns the descriptor from here, so both Python socket objects
+        # have to be disarmed before anything else can fail.
+        sock.detach()
+        transport._adopt_socket_view(view)
+        return transport
 
     async def subprocess_exec(self, *args: Any, **kwargs: Any) -> tuple[asyncio.SubprocessTransport, Any]:
         raise NotImplementedError("zuv does not implement subprocesses yet")
@@ -477,3 +597,15 @@ def _safe_addr(getter: Callable[[], Any]) -> Any:
         return getter()
     except OSError:
         return None
+
+
+def _set_reuse_port(sock: socket.socket) -> None:
+    if not hasattr(socket, "SO_REUSEPORT"):
+        raise ValueError("reuse_port not supported by socket module")
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+
+
+def _set_result_unless_done(future: asyncio.Future[None]) -> None:
+    """Resolves the setup waiter, unless cancellation got there first."""
+    if not future.done():
+        future.set_result(None)
