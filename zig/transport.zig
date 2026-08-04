@@ -40,6 +40,8 @@ var str_buffer_updated: ?*py.Object = null;
 var str_pause_writing: ?*py.Object = null;
 var str_resume_writing: ?*py.Object = null;
 var str_detach: ?*py.Object = null;
+var str_high: ?*py.Object = null;
+var str_low: ?*py.Object = null;
 var str_start_reading: ?*py.Object = null;
 var str_set_result_unless_cancelled: ?*py.Object = null;
 var set_result_unless_cancelled: ?*py.Object = null;
@@ -256,7 +258,8 @@ fn onWritten(req: ?*uv.Write, status: c_int) callconv(.c) void {
     st.gilEnter();
     defer st.gilExit();
 
-    self.write_buffer_size -= wr.size;
+    // abort() zeroes the queue while requests are still in flight.
+    self.write_buffer_size -= @min(wr.size, self.write_buffer_size);
     alloc.free(@as([*]u8, @ptrCast(wr))[0..wr.total]);
     py.decref(self);
 
@@ -529,20 +532,44 @@ fn getWriteBufferLimits(self_obj: *py.Object) py.Error!*py.Object {
     return c.Py_BuildValue("nn", @as(c.Py_ssize_t, @intCast(self.low_water)), @as(c.Py_ssize_t, @intCast(self.high_water))) orelse py.Error.Python;
 }
 
-fn setWriteBufferLimits(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py.Object {
-    try py.expectArgs(args, 2, "_set_write_buffer_limits");
-    const self = asTransport(self_obj);
-    var high: usize = default_high_water;
-    var low: usize = default_high_water / 4;
-    if (!py.isNone(args[0].?)) high = @intCast(try py.asIsize(args[0].?));
-    if (!py.isNone(args[1].?)) {
-        low = @intCast(try py.asIsize(args[1].?));
-    } else if (!py.isNone(args[0].?)) {
-        low = high / 4;
+/// `set_write_buffer_limits(high=None, low=None)`, matching asyncio: an
+/// omitted low mark defaults to a quarter of the high mark.
+fn setWriteBufferLimits(
+    self_obj: *py.Object,
+    args: []const ?*py.Object,
+    nargs: usize,
+    kwnames: ?*py.Object,
+) py.Error!*py.Object {
+    if (nargs > 2) return py.errType("set_write_buffer_limits() takes at most 2 arguments");
+    var high: ?*py.Object = if (nargs > 0) args[0] else null;
+    var low: ?*py.Object = if (nargs > 1) args[1] else null;
+    if (kwnames) |names| {
+        const n: usize = @intCast(c.PyTuple_Size(names));
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const key = c.PyTuple_GetItem(names, @intCast(i)) orelse return py.Error.Python;
+            if (c.PyObject_RichCompareBool(key, str_high, c.Py_EQ) == 1) {
+                high = args[nargs + i];
+            } else if (c.PyObject_RichCompareBool(key, str_low, c.Py_EQ) == 1) {
+                low = args[nargs + i];
+            } else {
+                return py.errType("set_write_buffer_limits() got an unexpected keyword argument");
+            }
+        }
     }
-    if (low > high) return py.errValue("high water mark must be >= low water mark");
-    self.high_water = high;
-    self.low_water = low;
+
+    const self = asTransport(self_obj);
+    var high_water: usize = default_high_water;
+    if (high) |value| {
+        if (!py.isNone(value)) high_water = @intCast(try py.asIsize(value));
+    }
+    var low_water: usize = high_water / 4;
+    if (low) |value| {
+        if (!py.isNone(value)) low_water = @intCast(try py.asIsize(value));
+    }
+    if (low_water > high_water) return py.errValue("high water mark must be >= low water mark");
+    self.high_water = high_water;
+    self.low_water = low_water;
     maybePauseProtocol(self);
     return py.noneRef();
 }
@@ -708,7 +735,7 @@ var methods = [_]c.PyMethodDef{
     py.methodNoArgs("can_write_eof", canWriteEof, "Return True; stream transports support write_eof()."),
     py.methodNoArgs("get_write_buffer_size", getWriteBufferSize, "Return the number of bytes queued."),
     py.methodNoArgs("get_write_buffer_limits", getWriteBufferLimits, "Return the (low, high) flow-control marks."),
-    py.method("_set_write_buffer_limits", setWriteBufferLimits, "Set the flow-control marks."),
+    py.methodKw("set_write_buffer_limits", setWriteBufferLimits, "Set the flow-control marks."),
     py.methodO("_force_close", forceCloseMethod, "Close immediately, reporting an exception."),
     py.sentinel,
 };
@@ -740,6 +767,8 @@ pub fn register(module: *py.Object) py.Error!void {
     str_pause_writing = py.intern("pause_writing") orelse return py.Error.Python;
     str_resume_writing = py.intern("resume_writing") orelse return py.Error.Python;
     str_detach = py.intern("_detach") orelse return py.Error.Python;
+    str_high = py.intern("high") orelse return py.Error.Python;
+    str_low = py.intern("low") orelse return py.Error.Python;
     str_start_reading = py.intern("_start_reading") orelse return py.Error.Python;
     str_set_result_unless_cancelled = py.intern("_set_result_unless_cancelled") orelse return py.Error.Python;
     set_result_unless_cancelled = py.importFrom("asyncio.futures", "_set_result_unless_cancelled") orelse return py.Error.Python;

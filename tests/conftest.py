@@ -61,7 +61,9 @@ def client_context(certificate: tuple[Path, Path]) -> ssl.SSLContext:
     return context
 
 
-def free_port() -> int:
+@pytest.fixture
+def closed_port() -> int:
+    """A port nothing is listening on, for exercising connection failures."""
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
