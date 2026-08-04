@@ -11,6 +11,12 @@ const addr = @import("addr.zig");
 const loopmod = @import("loop.zig");
 const LoopObject = loopmod.LoopObject;
 
+const posix = std.posix;
+
+/// libc's own parser rather than Zig's: what it accepts has to match what
+/// `getaddrinfo` would have accepted, since the two answer the same calls.
+extern fn inet_pton(af: c_int, src: [*:0]const u8, dst: *anyopaque) c_int;
+
 const alloc = std.heap.c_allocator;
 
 var str_create_future: ?*py.Object = null;
@@ -157,6 +163,22 @@ fn failFuture(future: *py.Object, status: c_int) void {
     settle(future, str_set_exception, exc);
 }
 
+/// `socket.AddressFamily(2)` costs over a hundred nanoseconds - the value goes
+/// through `EnumMeta.__call__` - and every result tuple needs one of those plus
+/// a `SocketKind`. The members are singletons, so only the first lookup of each
+/// value ever has to pay for it.
+var family_cache: [64]?*py.Object = @splat(null);
+var kind_cache: [64]?*py.Object = @splat(null);
+
+fn cachedEnum(cache: []?*py.Object, ctor: ?*py.Object, value: c_int) ?*py.Object {
+    if (value < 0 or value >= cache.len) return c.PyObject_CallFunction(ctor, "i", value);
+    const slot = &cache[@intCast(value)];
+    if (slot.*) |member| return py.newref(member);
+    const member = c.PyObject_CallFunction(ctor, "i", value) orelse return null;
+    slot.* = py.newref(member);
+    return member;
+}
+
 fn buildResults(res: ?*std.c.addrinfo) py.Error!*py.Object {
     const list = c.PyList_New(0) orelse return py.Error.Python;
     errdefer py.decref(list);
@@ -167,8 +189,8 @@ fn buildResults(res: ?*std.c.addrinfo) py.Error!*py.Object {
 
         // PyTuple_SetItem steals each reference.
         const fields = [5]?*py.Object{
-            c.PyObject_CallFunction(address_family, "i", ai.family),
-            c.PyObject_CallFunction(socket_kind, "i", ai.socktype),
+            cachedEnum(&family_cache, address_family, ai.family),
+            cachedEnum(&kind_cache, socket_kind, ai.socktype),
             c.PyLong_FromLong(ai.protocol),
             if (ai.canonname) |cn| py.strZ(cn) else py.str(""),
             addr.toPython(sa) catch null,
@@ -245,6 +267,76 @@ fn onNameInfo(req: ?*uv.GetNameInfo, status: c_int, hostname: ?[*:0]const u8, se
 /// Numeric hosts are the common case for `create_connection` and friends, and
 /// `AI_NUMERICHOST | AI_NUMERICSERV` guarantees libc answers from the string
 /// alone - no resolver, no threadpool hop.
+/// Answers a plain address literal without entering libc at all.
+///
+/// `getaddrinfo` costs around half a microsecond even when `AI_NUMERICHOST`
+/// leaves it nothing to look up: it still builds an `addrinfo` chain, takes the
+/// resolver's locks and has to be freed again. `inet_pton` is an order of
+/// magnitude cheaper, and address literals are what `create_connection` is
+/// handed most of the time.
+///
+/// Every case this cannot answer identically is refused, and the caller falls
+/// back to libc: a scoped address, whose zone only libc can resolve; a legacy
+/// form like `127.1` that `inet_pton` rejects but `getaddrinfo` accepts; an
+/// unspecified socket type, which libc answers with one entry per type; and any
+/// flag beyond the ones that cannot change the answer for a literal. The result
+/// is built through `buildResults`, so it is rendered by the same code as the
+/// libc path rather than by a second implementation of the same formatting.
+fn resolveLiteral(hints: *const std.c.addrinfo, host: ?[*:0]const u8, service: ?[*:0]const u8) ?*py.Object {
+    const flags: u32 = @bitCast(hints.flags);
+    const ignorable: u32 = @bitCast(std.c.AI{ .NUMERICHOST = true, .NUMERICSERV = true, .PASSIVE = true });
+    if (flags & ~ignorable != 0) return null;
+
+    const protocol: c_int = switch (hints.socktype) {
+        std.c.SOCK.STREAM => std.c.IPPROTO.TCP,
+        std.c.SOCK.DGRAM => std.c.IPPROTO.UDP,
+        else => return null,
+    };
+    if (hints.protocol != 0 and hints.protocol != protocol) return null;
+
+    const name = std.mem.sliceTo(host orelse return null, 0);
+    if (name.len == 0) return null;
+    // A zone index is libc's to interpret; uvloop's equivalent shortcut drops it
+    // and answers with scope 0, which is the wrong interface.
+    if (std.mem.indexOfScalar(u8, name, '%') != null) return null;
+
+    var port: u16 = 0;
+    if (service) |svc| {
+        const text = std.mem.sliceTo(svc, 0);
+        port = std.fmt.parseInt(u16, text, 10) catch return null;
+    }
+
+    var storage: addr.Storage = undefined;
+    const family = hints.family;
+    if (family == std.c.AF.INET or family == std.c.AF.UNSPEC) {
+        const sin: *posix.sockaddr.in = @ptrCast(@alignCast(&storage));
+        if (inet_pton(std.c.AF.INET, name.ptr, &sin.addr) == 1) {
+            sin.* = .{ .port = std.mem.nativeToBig(u16, port), .addr = sin.addr };
+            return finishLiteral(std.c.AF.INET, hints.socktype, protocol, @ptrCast(sin));
+        }
+    }
+    if (family == std.c.AF.INET6 or family == std.c.AF.UNSPEC) {
+        const sin6: *posix.sockaddr.in6 = @ptrCast(@alignCast(&storage));
+        if (inet_pton(std.c.AF.INET6, name.ptr, &sin6.addr) == 1) {
+            sin6.* = .{ .port = std.mem.nativeToBig(u16, port), .flowinfo = 0, .addr = sin6.addr, .scope_id = 0 };
+            return finishLiteral(std.c.AF.INET6, hints.socktype, protocol, @ptrCast(sin6));
+        }
+    }
+    return null;
+}
+
+fn finishLiteral(family: c_int, socktype: c_int, protocol: c_int, sa: *posix.sockaddr) ?*py.Object {
+    var node = std.mem.zeroes(std.c.addrinfo);
+    node.family = family;
+    node.socktype = socktype;
+    node.protocol = protocol;
+    node.addr = sa;
+    return buildResults(&node) catch {
+        c.PyErr_Clear();
+        return null;
+    };
+}
+
 fn resolveNumeric(hints: *const std.c.addrinfo, host: ?[*:0]const u8, service: ?[*:0]const u8) ?*py.Object {
     if (hints.flags.CANONNAME) return null;
     var numeric = hints.*;
@@ -266,25 +358,34 @@ pub fn getaddrinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
     const loop = loopmod.asLoop(self_obj);
     try loopmod.checkClosed(loop.state());
 
-    const req = try allocRequest(loop, .getaddrinfo);
-    errdefer freeRequest(req, .getaddrinfo);
+    // Answered without a resolver request: nothing is being requested, so
+    // nothing is allocated or linked into the loop's outstanding list.
+    var host_buf: [max_host]u8 = undefined;
+    var service_buf: [32]u8 = undefined;
+    var hints = std.mem.zeroes(std.c.addrinfo);
+    const host = try copyZ(&host_buf, args[0].?, "host");
+    const service = try copyZ(&service_buf, args[1].?, "port");
+    hints.family = try py.asCInt(args[2].?);
+    hints.socktype = try py.asCInt(args[3].?);
+    hints.protocol = try py.asCInt(args[4].?);
+    hints.flags = @bitCast(@as(u32, @bitCast(try py.asCInt(args[5].?))));
 
-    const host = try copyZ(&req.host, args[0].?, "host");
-    const service = try copyZ(&req.service, args[1].?, "port");
-    req.hints.family = try py.asCInt(args[2].?);
-    req.hints.socktype = try py.asCInt(args[3].?);
-    req.hints.protocol = try py.asCInt(args[4].?);
-    req.hints.flags = @bitCast(@as(u32, @bitCast(try py.asCInt(args[5].?))));
-
-    if (resolveNumeric(&req.hints, host, service)) |list| {
+    if (resolveLiteral(&hints, host, service) orelse resolveNumeric(&hints, host, service)) |list| {
         defer py.decref(list);
-        const future = py.newref(req.future.?).?;
-        settle(req.future.?, str_set_result, list);
-        freeRequest(req, .getaddrinfo);
+        const future = c.PyObject_CallMethodNoArgs(@ptrCast(loop), str_create_future) orelse return py.Error.Python;
+        settle(future, str_set_result, list);
         return future;
     }
 
-    try py.errUvIfNeg(uv.uv_getaddrinfo(loop.state().uvloop, req.addrReq(), onAddrInfo, host, service, &req.hints));
+    const req = try allocRequest(loop, .getaddrinfo);
+    errdefer freeRequest(req, .getaddrinfo);
+    req.hints = hints;
+    @memcpy(req.host[0..host_buf.len], &host_buf);
+    @memcpy(req.service[0..service_buf.len], &service_buf);
+    const req_host: ?[*:0]const u8 = if (host == null) null else @ptrCast(&req.host);
+    const req_service: ?[*:0]const u8 = if (service == null) null else @ptrCast(&req.service);
+
+    try py.errUvIfNeg(uv.uv_getaddrinfo(loop.state().uvloop, req.addrReq(), onAddrInfo, req_host, req_service, &req.hints));
     return py.newref(req.future.?).?;
 }
 
