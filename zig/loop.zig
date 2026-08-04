@@ -11,6 +11,8 @@ const c = py.c;
 const uv = @import("uv.zig");
 const collections = @import("collections.zig");
 const handlemod = @import("handle.zig");
+const pollermod = @import("poller.zig");
+const dns = @import("dns.zig");
 const Handle = handlemod.Handle;
 
 const alloc = std.heap.c_allocator;
@@ -53,6 +55,7 @@ pub const State = struct {
     ready: collections.Ready = .empty,
     timers: collections.Timers = .empty,
     inbox: Inbox = .{},
+    pollers: pollermod.Map = .empty,
 
     tstate: ?*c.PyThreadState = null,
     gil_depth: c_int = 1,
@@ -160,7 +163,7 @@ fn onCloseFreeState(handle: ?*uv.Handle) callconv(.c) void {
 // ---------------------------------------------------------------------------
 // scheduling internals
 
-inline fn startIdle(st: *State) void {
+pub inline fn startIdle(st: *State) void {
     if (!st.idle_active and st.ready.len != 0) {
         _ = uv.uv_idle_start(st.idle, onIdle);
         st.idle_active = true;
@@ -319,23 +322,24 @@ const Parsed = struct {
 
 /// asyncio's schedulers are called as `call_soon(cb, *args, context=ctx)`;
 /// `context` is the only keyword any of them pass.
-fn parseCall(args: []const ?*py.Object, kwnames: ?*py.Object, comptime skip: usize) py.Error!Parsed {
+fn parseCall(args: []const ?*py.Object, nargs: usize, kwnames: ?*py.Object, comptime skip: usize) py.Error!Parsed {
     var ctx: ?*py.Object = null;
     if (kwnames) |names| {
-        const n = c.PyTuple_Size(names);
-        if (n != 1) return py.errType("only the 'context' keyword argument is supported");
-        const key = c.PyTuple_GetItem(names, 0) orelse return py.Error.Python;
-        if (c.PyObject_RichCompareBool(key, str_context, c.Py_EQ) != 1) {
-            return py.errType("only the 'context' keyword argument is supported");
+        const n: usize = @intCast(c.PyTuple_Size(names));
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const key = c.PyTuple_GetItem(names, @intCast(i)) orelse return py.Error.Python;
+            if (c.PyObject_RichCompareBool(key, str_context, c.Py_EQ) != 1) {
+                return py.errType("only the 'context' keyword argument is supported");
+            }
+            const value = args[nargs + i];
+            if (!py.isNone(value)) ctx = value;
         }
-        const value = args[args.len - 1];
-        if (!py.isNone(value)) ctx = value;
-        return .{ .positional = args[skip .. args.len - 1], .context = ctx };
     }
-    return .{ .positional = args[skip..], .context = null };
+    return .{ .positional = args[skip..nargs], .context = ctx };
 }
 
-inline fn checkClosed(st: *State) py.Error!void {
+pub inline fn checkClosed(st: *State) py.Error!void {
     if (st.closed) return py.errRuntime("Event loop is closed");
 }
 
@@ -356,18 +360,18 @@ fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py
 // ---------------------------------------------------------------------------
 // methods
 
-fn callSoon(self_obj: *py.Object, args: []const ?*py.Object, kwnames: ?*py.Object) py.Error!*py.Object {
-    if (args.len == 0) return py.errType("call_soon() requires a callback");
-    const p = try parseCall(args, kwnames, 1);
+fn callSoon(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames: ?*py.Object) py.Error!*py.Object {
+    if (nargs == 0) return py.errType("call_soon() requires a callback");
+    const p = try parseCall(args, nargs, kwnames, 1);
     return scheduleSoon(asLoop(self_obj), args[0].?, p);
 }
 
-fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, kwnames: ?*py.Object) py.Error!*py.Object {
-    if (args.len == 0) return py.errType("call_soon_threadsafe() requires a callback");
+fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames: ?*py.Object) py.Error!*py.Object {
+    if (nargs == 0) return py.errType("call_soon_threadsafe() requires a callback");
     const self = asLoop(self_obj);
     const st = self.state();
     try checkClosed(st);
-    const p = try parseCall(args, kwnames, 1);
+    const p = try parseCall(args, nargs, kwnames, 1);
     const h = try handlemod.create(handlemod.handle_type.?, self_obj, args[0].?, p.positional, p.context);
     py.incref(h);
     st.inbox.push(h);
@@ -391,18 +395,18 @@ fn scheduleAt(self: *LoopObject, when: f64, callback: *py.Object, p: Parsed) py.
     return @ptrCast(h);
 }
 
-fn callLater(self_obj: *py.Object, args: []const ?*py.Object, kwnames: ?*py.Object) py.Error!*py.Object {
-    if (args.len < 2) return py.errType("call_later() requires a delay and a callback");
+fn callLater(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames: ?*py.Object) py.Error!*py.Object {
+    if (nargs < 2) return py.errType("call_later() requires a delay and a callback");
     const delay = try py.asF64(args[0].?);
-    const p = try parseCall(args, kwnames, 2);
+    const p = try parseCall(args, nargs, kwnames, 2);
     const when = now() + @max(delay, 0);
     return scheduleAt(asLoop(self_obj), when, args[1].?, p);
 }
 
-fn callAt(self_obj: *py.Object, args: []const ?*py.Object, kwnames: ?*py.Object) py.Error!*py.Object {
-    if (args.len < 2) return py.errType("call_at() requires a time and a callback");
+fn callAt(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames: ?*py.Object) py.Error!*py.Object {
+    if (nargs < 2) return py.errType("call_at() requires a time and a callback");
     const when = try py.asF64(args[0].?);
-    const p = try parseCall(args, kwnames, 2);
+    const p = try parseCall(args, nargs, kwnames, 2);
     return scheduleAt(asLoop(self_obj), when, args[1].?, p);
 }
 
@@ -489,6 +493,7 @@ fn closeLoop(self_obj: *py.Object) py.Error!*py.Object {
     st.timers.deinit();
     drainInbox(st);
     py.clear(&st.fatal);
+    pollermod.closeAll(st);
 
     if (st.idle_active) {
         _ = uv.uv_idle_stop(st.idle);
@@ -585,6 +590,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
             st.timers.deinit();
             drainInbox(st);
             py.clear(&st.fatal);
+            pollermod.closeAll(st);
             closeAllHandles(st);
         }
         alloc.free(@as([*]u64, @ptrCast(@alignCast(st.block.ptr)))[0 .. st.block.len / 8]);
@@ -610,6 +616,8 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
             r = py.visit(st.timers.items[i].handle, visitproc, arg);
             if (r != 0) return r;
         }
+        r = pollermod.traverse(st, visitproc, arg);
+        if (r != 0) return r;
     }
     return py.visit(@ptrCast(py.typeOf(obj.?)), visitproc, arg);
 }
@@ -637,6 +645,12 @@ var methods = [_]c.PyMethodDef{
     py.methodNoArgs("get_debug", getDebug, "Return the debug mode flag."),
     py.methodO("set_debug", setDebug, "Set the debug mode flag."),
     py.methodO("_timer_handle_cancelled", timerHandleCancelled, "Compatibility no-op."),
+    py.method("add_reader", pollermod.addReader, "Call a callback whenever a descriptor is readable."),
+    py.method("add_writer", pollermod.addWriter, "Call a callback whenever a descriptor is writable."),
+    py.methodO("remove_reader", pollermod.removeReader, "Stop watching a descriptor for readability."),
+    py.methodO("remove_writer", pollermod.removeWriter, "Stop watching a descriptor for writability."),
+    py.method("_getaddrinfo", dns.getaddrinfo, "Resolve a host on the libuv threadpool."),
+    py.method("_getnameinfo", dns.getnameinfo, "Reverse-resolve an address on the libuv threadpool."),
     py.methodNoArgs("_close", closeLoop, "Release the libuv loop."),
     py.sentinel,
 };
@@ -678,6 +692,8 @@ pub fn register(module: *py.Object) py.Error!void {
     str_handle = py.intern("handle") orelse return py.Error.Python;
     str_context = py.intern("context") orelse return py.Error.Python;
     str_on_slow_callback = py.intern("_on_slow_callback") orelse return py.Error.Python;
+
+    try dns.register();
 
     loop_type = @ptrCast(c.PyType_FromModuleAndSpec(module, &spec, null) orelse return py.Error.Python);
     if (c.PyModule_AddObjectRef(module, "Loop", @ptrCast(loop_type)) < 0) return py.Error.Python;

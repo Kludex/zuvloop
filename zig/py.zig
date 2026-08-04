@@ -171,10 +171,14 @@ pub fn wrap(comptime f: anytype) fn (?*Object, [*c]?*Object, c.Py_ssize_t) callc
     return Inner.call;
 }
 
+/// Vectorcall passes keyword values after the positional ones, so the callee
+/// receives the full array plus the positional count.
 pub fn wrapKw(comptime f: anytype) fn (?*Object, [*c]?*Object, c.Py_ssize_t, ?*Object) callconv(.c) ?*Object {
     const Inner = struct {
         fn call(self: ?*Object, args: [*c]?*Object, nargs: c.Py_ssize_t, kwnames: ?*Object) callconv(.c) ?*Object {
-            return f(self.?, args[0..@intCast(nargs)], kwnames) catch |e| switch (e) {
+            const nkw: usize = if (kwnames) |names| @intCast(c.PyTuple_Size(names)) else 0;
+            const total: usize = @as(usize, @intCast(nargs)) + nkw;
+            return f(self.?, args[0..total], @intCast(nargs), kwnames) catch |e| switch (e) {
                 Error.Python => null,
             };
         }

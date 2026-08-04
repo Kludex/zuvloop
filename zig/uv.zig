@@ -230,6 +230,7 @@ pub extern fn uv_timer_start(handle: *Timer, cb: TimerCb, timeout: u64, repeat: 
 pub extern fn uv_timer_stop(handle: *Timer) c_int;
 pub extern fn uv_timer_get_due_in(handle: *const Timer) u64;
 
+pub extern fn uv_poll_init(loop: *Loop, handle: *Poll, fd: c_int) c_int;
 pub extern fn uv_poll_init_socket(loop: *Loop, handle: *Poll, socket: OsSock) c_int;
 pub extern fn uv_poll_start(handle: *Poll, events: c_int, cb: PollCb) c_int;
 pub extern fn uv_poll_stop(handle: *Poll) c_int;
@@ -279,6 +280,8 @@ pub extern fn uv_udp_set_broadcast(handle: *Udp, on: c_int) c_int;
 pub extern fn uv_getaddrinfo(loop: *Loop, req: *GetAddrInfo, cb: ?GetAddrInfoCb, node: ?[*:0]const u8, service: ?[*:0]const u8, hints: ?*const std.c.addrinfo) c_int;
 pub extern fn uv_freeaddrinfo(ai: ?*std.c.addrinfo) void;
 pub extern fn uv_getnameinfo(loop: *Loop, req: *GetNameInfo, cb: ?GetNameInfoCb, addr: *const std.posix.sockaddr, flags: c_int) c_int;
+pub extern fn uv_ip4_addr(ip: [*:0]const u8, port: c_int, addr: *std.posix.sockaddr.in) c_int;
+pub extern fn uv_ip6_addr(ip: [*:0]const u8, port: c_int, addr: *std.posix.sockaddr.in6) c_int;
 pub extern fn uv_ip_name(src: *const std.posix.sockaddr, dst: [*]u8, size: usize) c_int;
 pub extern fn uv_inet_ntop(af: c_int, src: *const anyopaque, dst: [*]u8, size: usize) c_int;
 

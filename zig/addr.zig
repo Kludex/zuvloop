@@ -19,9 +19,9 @@ pub const Storage = extern struct {
     }
 };
 
-pub const AF_INET: c_int = @intFromEnum(std.c.AF.INET);
-pub const AF_INET6: c_int = @intFromEnum(std.c.AF.INET6);
-pub const AF_UNIX: c_int = @intFromEnum(std.c.AF.UNIX);
+pub const AF_INET: c_int = posix.AF.INET;
+pub const AF_INET6: c_int = posix.AF.INET6;
+pub const AF_UNIX: c_int = posix.AF.UNIX;
 
 fn tupleItem(t: *py.Object, i: c.Py_ssize_t) py.Error!*py.Object {
     return c.PyTuple_GetItem(t, i) orelse py.Error.Python;
@@ -79,21 +79,19 @@ pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!vo
 
 /// Builds the tuple `socket.getsockname()` would return for `sa`.
 pub fn toPython(sa: *const posix.sockaddr) py.Error!*py.Object {
-    switch (sa.family) {
-        @as(u16, @intCast(AF_INET)), @as(u16, @intCast(AF_INET6)) => {},
-        @as(u16, @intCast(AF_UNIX)) => {
-            const un: *const posix.sockaddr.un = @ptrCast(@alignCast(sa));
-            const len = std.mem.indexOfScalar(u8, &un.path, 0) orelse un.path.len;
-            return py.str(un.path[0..len]) orelse py.Error.Python;
-        },
-        else => return py.noneRef(),
+    const family: c_int = sa.family;
+    if (family == AF_UNIX) {
+        const un: *const posix.sockaddr.un = @ptrCast(@alignCast(sa));
+        const len = std.mem.indexOfScalar(u8, &un.path, 0) orelse un.path.len;
+        return py.str(un.path[0..len]) orelse py.Error.Python;
     }
+    if (family != AF_INET and family != AF_INET6) return py.noneRef();
 
     var buf: [64]u8 = undefined;
     try py.errUvIfNeg(uv.uv_ip_name(sa, &buf, buf.len));
     const host = std.mem.sliceTo(&buf, 0);
 
-    if (sa.family == @as(u16, @intCast(AF_INET))) {
+    if (family == AF_INET) {
         const sin: *const posix.sockaddr.in = @ptrCast(@alignCast(sa));
         return c.Py_BuildValue("s#i", host.ptr, @as(c.Py_ssize_t, @intCast(host.len)), @as(c_int, std.mem.bigToNative(u16, sin.port))) orelse py.Error.Python;
     }
