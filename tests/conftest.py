@@ -4,12 +4,80 @@ import asyncio
 import socket
 import ssl
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
+from opentelemetry import metrics, trace
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 import zuv
+
+
+@pytest.fixture(scope="session")
+def _telemetry() -> tuple[InMemorySpanExporter, InMemoryMetricReader]:
+    """Install real OpenTelemetry providers once, so tests read what is exported."""
+    exporter = InMemorySpanExporter()
+    tracer_provider = TracerProvider()
+    tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    trace.set_tracer_provider(tracer_provider)
+
+    reader = InMemoryMetricReader()
+    metrics.set_meter_provider(MeterProvider(metric_readers=[reader]))
+    return exporter, reader
+
+
+@pytest.fixture
+def telemetry(_telemetry: tuple[InMemorySpanExporter, InMemoryMetricReader]) -> Telemetry:
+    exporter, reader = _telemetry
+    exporter.clear()
+    return Telemetry(exporter, reader)
+
+
+class Telemetry:
+    """Reads back what the instrumentation layer actually exported."""
+
+    def __init__(self, exporter: InMemorySpanExporter, reader: InMemoryMetricReader) -> None:
+        self._exporter = exporter
+        self._reader = reader
+        self._collected: dict[str, float] | None = None
+
+    def spans(self, name: str | None = None) -> list[ReadableSpan]:
+        found = self._exporter.get_finished_spans()
+        return [span for span in found if name is None or span.name == name]
+
+    def metric(self, name: str) -> float | None:
+        # Collection drains the reader, so everything is read in one pass and
+        # the result reused for the rest of the test.
+        if self._collected is None:
+            self._collected = {}
+            data = self._reader.get_metrics_data()
+            for resource in data.resource_metrics if data else ():
+                for scope in resource.scope_metrics:
+                    for metric in scope.metrics:
+                        points: Sequence[Any] = getattr(metric.data, "data_points", ())
+                        for point in points:
+                            # Histograms report a count rather than a single value.
+                            value = getattr(point, "value", None)
+                            self._collected[metric.name] = point.count if value is None else value
+        return self._collected.get(name)
+
+    def counted(self, name: str) -> float:
+        """A metric that must be present."""
+        value = self.metric(name)
+        assert value is not None, f"{name} was never recorded"
+        return value
+
+
+def attribute(span: ReadableSpan, key: str) -> Any:
+    """A span attribute, without OpenTelemetry's value union getting in the way."""
+    assert span.attributes is not None
+    return span.attributes[key]
 
 
 def running_loop() -> zuv.EventLoop:

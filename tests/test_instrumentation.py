@@ -4,38 +4,17 @@ import asyncio
 import time
 from typing import Any
 
-import logfire_api as logfire
 import pytest
+from opentelemetry.trace import StatusCode
 
 import zuv
-from conftest import running_loop
+from conftest import Telemetry, attribute, running_loop
 from zuv._instrumentation import capture_call_graph, publish_metrics
 
 pytestmark = pytest.mark.anyio
 
 
-class Recorder:
-    """Captures what the instrumentation layer sends to logfire."""
-
-    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.warnings: list[tuple[str, dict[str, Any]]] = []
-        self.errors: list[tuple[str, dict[str, Any]]] = []
-        monkeypatch.setattr(logfire, "warn", self._warn)
-        monkeypatch.setattr(logfire, "error", self._error)
-
-    def _warn(self, message: str, **attributes: Any) -> None:
-        self.warnings.append((message, attributes))
-
-    def _error(self, message: str, **attributes: Any) -> None:
-        self.errors.append((message, attributes))
-
-
-@pytest.fixture
-def recorder(monkeypatch: pytest.MonkeyPatch) -> Recorder:
-    return Recorder(monkeypatch)
-
-
-async def test_slow_callbacks_are_reported(recorder: Recorder) -> None:
+async def test_slow_callbacks_are_reported(telemetry: Telemetry) -> None:
     loop = running_loop()
     loop.set_debug(True)
     loop.slow_callback_duration = 0.01
@@ -45,14 +24,34 @@ async def test_slow_callbacks_are_reported(recorder: Recorder) -> None:
     finally:
         loop.set_debug(False)
         loop.slow_callback_duration = 0.1
-    assert recorder.warnings
-    message, attributes = recorder.warnings[0]
-    assert "took" in message
-    assert attributes["duration"] >= 0.01
-    assert "Handle" in attributes["handle"]
+
+    span = telemetry.spans("zuv.slow_callback")[0]
+    assert span.status.status_code is StatusCode.ERROR
+    assert attribute(span, "duration") >= 0.01
+    assert "Handle" in str(attribute(span, "code.callback"))
+    assert telemetry.counted("zuv.slow_callbacks") >= 1
 
 
-async def test_slow_callbacks_inside_a_task_carry_the_call_graph(recorder: Recorder) -> None:
+async def test_a_slow_callback_span_covers_the_time_it_took(telemetry: Telemetry) -> None:
+    """The loop times with a monotonic clock, so the span is rebuilt backwards."""
+    loop = running_loop()
+    loop.set_debug(True)
+    loop.slow_callback_duration = 0.01
+    try:
+        loop.call_soon(time.sleep, 0.05)
+        await asyncio.sleep(0.1)
+    finally:
+        loop.set_debug(False)
+        loop.slow_callback_duration = 0.1
+
+    span = telemetry.spans("zuv.slow_callback")[0]
+    assert span.end_time is not None and span.start_time is not None
+    measured = (span.end_time - span.start_time) / 1e9
+    assert measured == pytest.approx(attribute(span, "duration"), abs=1e-6)
+    assert measured >= 0.05
+
+
+async def test_slow_callbacks_inside_a_task_carry_the_call_graph(telemetry: Telemetry) -> None:
     loop = running_loop()
     loop.set_debug(True)
     loop.slow_callback_duration = 0.01
@@ -62,14 +61,14 @@ async def test_slow_callbacks_inside_a_task_carry_the_call_graph(recorder: Recor
         await asyncio.sleep(0.05)
 
     try:
-        task = loop.create_task(slow(), name="slow-step")
-        await task
+        await loop.create_task(slow(), name="slow-step")
     finally:
         loop.set_debug(False)
         loop.slow_callback_duration = 0.1
 
-    graphs = [attributes["call_graph"] for _message, attributes in recorder.warnings]
-    assert any(graph is not None and "slow-step" in graph for graph in graphs)
+    spans = telemetry.spans("zuv.slow_callback")
+    graphs = [span.attributes.get("asyncio.call_graph") for span in spans if span.attributes]
+    assert any(graph is not None and "slow-step" in str(graph) for graph in graphs)
 
 
 async def test_the_call_graph_is_absent_outside_a_task() -> None:
@@ -79,7 +78,7 @@ async def test_the_call_graph_is_absent_outside_a_task() -> None:
     assert await captured is None
 
 
-async def test_unhandled_exceptions_are_reported(recorder: Recorder) -> None:
+async def test_unhandled_exceptions_are_reported(telemetry: Telemetry) -> None:
     loop = running_loop()
 
     def boom() -> None:
@@ -92,11 +91,15 @@ async def test_unhandled_exceptions_are_reported(recorder: Recorder) -> None:
         await asyncio.sleep(0.05)
     finally:
         loop.set_exception_handler(previous)
-    assert recorder.errors
-    message, attributes = recorder.errors[0]
-    assert message == "Exception in callback"
-    assert isinstance(attributes["_exc_info"], ValueError)
-    assert "Handle" in attributes["handle"]
+
+    span = telemetry.spans("zuv.unhandled_exception")[0]
+    assert span.status.status_code is StatusCode.ERROR
+    assert span.status.description == "Exception in callback"
+    assert "Handle" in str(attribute(span, "handle"))
+    assert span.events[0].name == "exception"
+    assert span.events[0].attributes is not None
+    assert span.events[0].attributes["exception.type"] == "ValueError"
+    assert telemetry.counted("zuv.unhandled_exceptions") >= 1
 
 
 async def test_a_custom_exception_handler_takes_over() -> None:
@@ -113,7 +116,7 @@ async def test_a_custom_exception_handler_takes_over() -> None:
     assert isinstance(seen[0]["exception"], ZeroDivisionError)
 
 
-async def test_a_failing_exception_handler_falls_back(recorder: Recorder) -> None:
+async def test_a_failing_exception_handler_falls_back(telemetry: Telemetry) -> None:
     loop = running_loop()
 
     def broken(_loop: Any, _context: dict[str, Any]) -> None:
@@ -126,34 +129,30 @@ async def test_a_failing_exception_handler_falls_back(recorder: Recorder) -> Non
         await asyncio.sleep(0.05)
     finally:
         loop.set_exception_handler(previous)
-    assert any(message == "Unhandled error in exception handler" for message, _ in recorder.errors)
+
+    descriptions = [span.status.description for span in telemetry.spans("zuv.unhandled_exception")]
+    assert "Unhandled error in exception handler" in descriptions
 
 
-async def test_a_context_without_an_exception_is_still_reported(recorder: Recorder) -> None:
+async def test_a_context_without_an_exception_is_still_reported(telemetry: Telemetry) -> None:
     loop = running_loop()
     loop.default_exception_handler({"message": "just a note", "detail": 42})
-    assert ("just a note", {"_exc_info": False, "detail": "42"}) in recorder.errors
+    span = telemetry.spans("zuv.unhandled_exception")[0]
+    assert span.status.description == "just a note"
+    assert attribute(span, "detail") == "42"
+    assert span.events == ()
 
 
-async def test_a_context_without_a_message_gets_a_default(recorder: Recorder) -> None:
+async def test_a_context_without_a_message_gets_a_default(telemetry: Telemetry) -> None:
     loop = running_loop()
     loop.default_exception_handler({})
-    assert recorder.errors[0][0] == "Unhandled exception in event loop"
+    assert telemetry.spans("zuv.unhandled_exception")[0].status.description == "Unhandled exception in event loop"
 
 
-async def test_metrics_are_published_to_gauges(monkeypatch: pytest.MonkeyPatch) -> None:
-    recorded: dict[str, int] = {}
-
-    class Gauge:
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-        def set(self, value: int) -> None:
-            recorded[self.name] = value
-
-    monkeypatch.setattr("zuv._instrumentation._gauge", lambda name, _description: Gauge(name))
+async def test_metrics_are_published_as_gauges(telemetry: Telemetry) -> None:
     publish_metrics({"ready": 3, "timers": 4})
-    assert recorded == {"ready": 3, "timers": 4}
+    assert telemetry.metric("zuv.ready") == 3
+    assert telemetry.metric("zuv.timers") == 4
 
 
 async def test_instrument_samples_on_a_native_timer(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -171,10 +170,17 @@ async def test_instrument_samples_on_a_native_timer(monkeypatch: pytest.MonkeyPa
     assert len(snapshots) == before
 
 
-async def test_instrument_accepts_an_explicit_loop(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("zuv._runner.publish_metrics", lambda _snapshot: None)
-    loop = running_loop()
-    reporter = zuv.instrument(loop, interval=5.0)
+async def test_instrument_reaches_the_exporter(telemetry: Telemetry) -> None:
+    reporter = zuv.instrument(interval=0.02)
+    try:
+        await asyncio.sleep(0.05)
+    finally:
+        reporter.cancel()
+    assert telemetry.counted("zuv.callbacks_run") > 0
+
+
+async def test_instrument_accepts_an_explicit_loop() -> None:
+    reporter = zuv.instrument(running_loop(), interval=5.0)
     reporter.cancel()
 
 
@@ -215,11 +221,6 @@ async def test_metrics_on_a_closed_loop_are_zero() -> None:
     loop = zuv.new_event_loop()
     loop.close()
     assert loop._metrics()["loop_count"] == 0
-
-
-async def test_publishing_metrics_reaches_real_gauges() -> None:
-    loop = running_loop()
-    publish_metrics(loop._metrics())
 
 
 async def test_the_stdlib_call_graph_apis_work_on_this_loop() -> None:

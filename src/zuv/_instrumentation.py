@@ -2,55 +2,86 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import time
 from typing import Any
 
-import logfire_api as logfire
+from opentelemetry import metrics, trace
+from opentelemetry.trace import Status, StatusCode
 
 _NAMESPACE = "zuv"
 
 
 @functools.cache
-def _counter(name: str, description: str) -> Any:
-    return logfire.DEFAULT_LOGFIRE_INSTANCE.metric_counter(f"{_NAMESPACE}.{name}", description=description)
+def _meter() -> metrics.Meter:
+    return metrics.get_meter(_NAMESPACE)
 
 
 @functools.cache
-def _histogram(name: str, description: str, unit: str) -> Any:
-    return logfire.DEFAULT_LOGFIRE_INSTANCE.metric_histogram(f"{_NAMESPACE}.{name}", unit=unit, description=description)
+def _tracer() -> trace.Tracer:
+    return trace.get_tracer(_NAMESPACE)
 
 
 @functools.cache
-def _gauge(name: str, description: str) -> Any:
-    return logfire.DEFAULT_LOGFIRE_INSTANCE.metric_gauge(f"{_NAMESPACE}.{name}", description=description)
+def _counter(name: str, description: str) -> metrics.Counter:
+    return _meter().create_counter(f"{_NAMESPACE}.{name}", description=description)
+
+
+@functools.cache
+def _histogram(name: str, description: str, unit: str) -> metrics.Histogram:
+    return _meter().create_histogram(f"{_NAMESPACE}.{name}", unit=unit, description=description)
+
+
+@functools.cache
+def _gauge(name: str, description: str) -> metrics._Gauge:
+    return _meter().create_gauge(f"{_NAMESPACE}.{name}", description=description)
 
 
 class Instrumentation:
-    """Loop telemetry, emitted through logfire.
+    """Loop telemetry, emitted through the OpenTelemetry API.
 
-    Instruments are created on first use rather than with the loop, so a program
-    that never hits a slow callback and never raises never touches logfire - and
-    `logfire-api` keeps the whole thing a no-op until an application configures it.
+    Nothing is exported until the application installs a provider. Until then
+    OpenTelemetry hands back proxy instruments whose methods do nothing, so a
+    program that never configures tracing pays only for the calls below - all of
+    which sit on paths that are already exceptional. `logfire.configure()` counts
+    as installing a provider, as does any other OpenTelemetry setup.
     """
 
     def report_slow_callback(self, handle: object, duration: float) -> None:
         _counter("slow_callbacks", "Callbacks that exceeded slow_callback_duration").add(1)
         _histogram("callback_duration", "Duration of slow callbacks", "s").record(duration)
-        logfire.warn(
-            "Executing {handle} took {duration} seconds",
-            handle=repr(handle),
-            duration=duration,
-            call_graph=capture_call_graph(handle),
+
+        # The loop timed the callback with a monotonic clock, so the span is
+        # reconstructed backwards from now rather than started after the fact.
+        ended = time.time_ns()
+        span = _tracer().start_span(
+            f"{_NAMESPACE}.slow_callback",
+            start_time=ended - int(duration * 1e9),
+            attributes=_without_none(
+                {
+                    "code.callback": repr(handle),
+                    "duration": duration,
+                    "asyncio.call_graph": capture_call_graph(handle),
+                }
+            ),
         )
+        span.set_status(Status(StatusCode.ERROR, "callback exceeded slow_callback_duration"))
+        span.end(end_time=ended)
 
     def report_exception(self, context: dict[str, Any]) -> None:
         _counter("unhandled_exceptions", "Exceptions routed to the loop exception handler").add(1)
         exception = context.get("exception")
+        message = context.get("message") or "Unhandled exception in event loop"
         attributes = {key: repr(value) for key, value in context.items() if key not in ("message", "exception")}
-        logfire.error(
-            context.get("message") or "Unhandled exception in event loop",
-            _exc_info=exception if isinstance(exception, BaseException) else False,
-            **attributes,
-        )
+
+        span = _tracer().start_span(f"{_NAMESPACE}.unhandled_exception", attributes=attributes)
+        if isinstance(exception, BaseException):
+            span.record_exception(exception)
+        span.set_status(Status(StatusCode.ERROR, message))
+        span.end()
+
+
+def _without_none(attributes: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in attributes.items() if value is not None}
 
 
 def capture_call_graph(handle: object = None) -> str | None:
@@ -83,6 +114,11 @@ _GAUGES = {
 
 
 def publish_metrics(snapshot: dict[str, int]) -> None:
-    """Receive a snapshot from the loop's native sampler and record it."""
+    """Record a snapshot taken by the loop's native sampler.
+
+    Deliberately synchronous gauges rather than observable ones: the values are
+    loop state, and an observable instrument's callback would run on the
+    exporter's collection thread while the loop thread is mutating them.
+    """
     for name, value in snapshot.items():
         _gauge(name, _GAUGES[name]).set(value)

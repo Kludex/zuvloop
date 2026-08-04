@@ -5,7 +5,7 @@ A [libuv](https://libuv.org) event loop for `asyncio`, written in [Zig](https://
 `zuv` replaces the asyncio event loop with one whose hot paths - callback scheduling, timers,
 descriptor watching, name resolution and the stream data path - are implemented natively and
 driven by libuv. It targets uvloop's performance while shipping type hints, a strict-mypy-clean
-Python surface, and first-class [Logfire](https://logfire.pydantic.dev) instrumentation.
+Python surface, and OpenTelemetry instrumentation.
 
 ```python
 import asyncio
@@ -68,6 +68,7 @@ while `zuv` hands them to libc with `AI_NUMERICHOST`, which is slower but cannot
 | Name resolution | `zig/dns.zig` | Runs on libuv's threadpool, not the executor |
 | Connection and server setup | `src/zuv/_connect.py` | Called once per connection |
 | Lifecycle, executors, error reporting | `src/zuv/_base.py` | Called once per loop |
+| OpenTelemetry emission | `src/zuv/_instrumentation.py` | The only file that imports OTel |
 
 A few decisions worth knowing about:
 
@@ -89,23 +90,43 @@ A few decisions worth knowing about:
 
 ## Instrumentation
 
-Slow callbacks and unhandled exceptions are always reported through `logfire`. Because `zuv` depends
-on `logfire-api`, this costs nothing until an application calls `logfire.configure()`.
+`zuv` emits plain [OpenTelemetry](https://opentelemetry.io). Its only runtime dependency is
+`opentelemetry-api` - not the SDK, and nothing vendor-specific. Until an application installs a
+provider, OpenTelemetry hands back proxy instruments whose methods do nothing, so an uninstrumented
+program pays nothing.
+
+The measurement happens in Zig; Python only records it.
+
+| Signal | Kind | Measured by |
+| --- | --- | --- |
+| `zuv.slow_callback` | span, with real start and end timestamps | `uv_hrtime()` around the callback |
+| `zuv.unhandled_exception` | span, with the exception recorded | the loop's error path |
+| `zuv.slow_callbacks`, `zuv.unhandled_exceptions` | counters | as above |
+| `zuv.callback_duration` | histogram | `uv_hrtime()` |
+| `zuv.loop_count`, `events`, `events_waiting`, `idle_time_ns`, `callbacks_run`, `ready`, `timers`, `watchers` | gauges | native counters plus `uv_metrics_info()`, sampled on a dedicated `uv_timer_t` |
+
+Anything that speaks OpenTelemetry collects it. `logfire.configure()` is one such thing:
 
 ```python
 import logfire
 import zuv
 
-logfire.configure()
+logfire.configure()  # installs the OTel providers; zuv needs no logfire import
 
 
 async def main() -> None:
-    zuv.instrument()  # periodic loop gauges
+    zuv.instrument()  # start the periodic loop gauges
     ...
 ```
 
-Slow-callback reports carry the awaiting call graph, captured with `asyncio.format_call_graph()`
-(new in 3.14), so you see *why* the callback was running rather than just its repr.
+Slow-callback spans carry the awaiting call graph, captured with `asyncio.format_call_graph()`
+(new in 3.14), so you see *why* the callback was running rather than just its repr. The span's
+duration is reconstructed from the loop's monotonic measurement, so it covers the callback itself
+rather than the moment it was reported.
+
+Gauges are deliberately synchronous rather than observable: the values are live loop state, and an
+observable instrument's callback would run on the exporter's collection thread while the loop
+thread is mutating them. Pushing from the loop's own timer is what makes reading them safe.
 
 Because `zuv` schedules real `asyncio.Task` objects rather than its own, the 3.14 introspection
 APIs work unchanged - `asyncio.all_tasks()`, `asyncio.current_task()`, `asyncio.capture_call_graph()`

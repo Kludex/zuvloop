@@ -21,7 +21,7 @@ classifiers = [
     "Programming Language :: Zig",
     "Typing :: Typed",
 ]
-dependencies = ["logfire-api>=4"]
+dependencies = ["opentelemetry-api>=1.23"]
 
 [project.urls]
 Source = "https://github.com/Kludex/zuv"
@@ -31,6 +31,7 @@ dev = [
     "anyio>=4.6",
     "coverage[toml]>=7.6",
     "mypy>=1.13",
+    "opentelemetry-sdk>=1.23",
     "pytest>=8.3",
     "ruff>=0.8",
 ]
@@ -64,7 +65,7 @@ files = ["src", "tests", "benchmarks", "hatch_build.py", "scripts"]
 exclude = ["^vendor/"]
 
 [[tool.mypy.overrides]]
-module = ["uvloop", "hatchling.*"]
+module = ["uvloop", "hatchling.*", "opentelemetry.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
