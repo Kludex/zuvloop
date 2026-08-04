@@ -36,6 +36,7 @@ dev = [
     "ruff>=0.8",
 ]
 bench = ["aiohttp", "httptools", "uvicorn", "uvloop>=0.21"]
+docs = ["zensical"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zuv"]

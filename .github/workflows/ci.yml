@@ -47,3 +47,19 @@ jobs:
 
       - name: Benchmark
         run: uv run python benchmarks/run.py --repeat 1 --only call_soon timers echo_1kb
+
+  docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # No Zig, and no project install: the site never imports zuv, so a broken
+      # link fails here rather than on the deploy that Cloudflare runs.
+      - name: Build docs
+        run: ./scripts/docs
+

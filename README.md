@@ -2,6 +2,8 @@
 
 A [libuv](https://libuv.org) event loop for `asyncio`, written in [Zig](https://ziglang.org).
 
+**Documentation**: <https://zuv.marcelotryle.com>
+
 `zuv` replaces the asyncio event loop with one whose hot paths - callback scheduling, timers,
 descriptor watching, name resolution and the stream data path - are implemented natively and
 driven by libuv. It targets uvloop's performance while shipping type hints, a strict-mypy-clean

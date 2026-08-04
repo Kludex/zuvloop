@@ -1,0 +1,15 @@
+#!/bin/sh -e
+
+# Render the documentation site into ./site without compiling the Zig extension,
+# so it can run on a docs-only runner.
+
+if [ -z "$GITHUB_ACTIONS" ]; then
+    set -x
+fi
+
+uv sync --frozen --only-group docs --no-install-project
+# --strict aborts on warnings. Without it an unresolved cross-reference is only a
+# log line and still exits 0, so a broken link renders as literal `[text][ref]`
+# on the live site. Cloudflare Workers Builds runs this script, so the deploy
+# fails instead of publishing them.
+uv run --no-sync zensical build --strict

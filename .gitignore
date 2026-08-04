@@ -11,3 +11,6 @@ __pycache__/
 dist/
 build/
 tests/certs/
+
+# Rendered documentation
+site/
