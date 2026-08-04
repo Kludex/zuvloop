@@ -58,6 +58,7 @@ pub const State = struct {
     timers: collections.Timers = .empty,
     inbox: Inbox = .{},
     pollers: pollermod.Map = .empty,
+    dns_requests: ?*anyopaque = null,
 
     tstate: ?*c.PyThreadState = null,
     gil_depth: c_int = 1,
@@ -625,10 +626,12 @@ fn walkClose(handle: ?*uv.Handle, _: ?*anyopaque) callconv(.c) void {
 /// Closes every handle and drains their close callbacks so `uv_loop_close`
 /// can succeed. Runs with the GIL held, hence the depth bump in the callbacks.
 fn closeAllHandles(st: *State) void {
+    dns.cancelAll(st);
     uv.uv_walk(st.uvloop, walkClose, null);
-    var guard: usize = 0;
-    while (uv.uv_run(st.uvloop, .nowait) != 0 and guard < 1000) : (guard += 1) {}
-    _ = uv.uv_loop_close(st.uvloop);
+    // All handles are closing and all requests have been cancelled. Running to
+    // completion guarantees every callback has released its native ownership.
+    _ = uv.uv_run(st.uvloop, .default);
+    if (uv.uv_loop_close(st.uvloop) != 0) @panic("libuv loop still owns resources after shutdown");
 }
 
 // ---------------------------------------------------------------------------

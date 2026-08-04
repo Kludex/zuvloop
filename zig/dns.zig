@@ -26,6 +26,9 @@ const max_host = 1024;
 const Request = struct {
     loop: *LoopObject,
     future: *py.Object,
+    kind: uv.ReqType,
+    prev: ?*Request = null,
+    next: ?*Request = null,
     hints: std.c.addrinfo = std.mem.zeroes(std.c.addrinfo),
     host: [max_host]u8 = undefined,
     service: [32]u8 = undefined,
@@ -45,20 +48,45 @@ fn allocRequest(loop: *LoopObject, kind: uv.ReqType) py.Error!*Request {
     const size = req_offset + uv.uv_req_size(kind);
     const raw = alloc.alignedAlloc(u8, .@"8", size) catch return py.errNoMemory();
     const self: *Request = @ptrCast(raw.ptr);
-    self.* = .{ .loop = loop, .future = undefined };
+    self.* = .{ .loop = loop, .future = undefined, .kind = kind };
 
     const future = c.PyObject_CallMethodNoArgs(@ptrCast(loop), str_create_future) orelse {
         alloc.free(raw);
         return py.Error.Python;
     };
     self.future = future;
+    const st = loop.state();
+    self.next = @ptrCast(@alignCast(st.dns_requests));
+    if (self.next) |next| next.prev = self;
+    st.dns_requests = self;
     uv.setData(self.addrReq(), self);
     return self;
 }
 
 fn freeRequest(self: *Request, kind: uv.ReqType) void {
+    const st = self.loop.state();
+    if (self.prev) |prev| {
+        prev.next = self.next;
+    } else {
+        st.dns_requests = self.next;
+    }
+    if (self.next) |next| next.prev = self.prev;
     py.decref(self.future);
     alloc.free(@as([*]u8, @ptrCast(self))[0 .. req_offset + uv.uv_req_size(kind)]);
+}
+
+/// Cancels every resolver request owned by `st`. Completion callbacks still
+/// run and are responsible for unlinking and freeing their request.
+pub fn cancelAll(st: *loopmod.State) void {
+    var node: ?*Request = @ptrCast(@alignCast(st.dns_requests));
+    while (node) |req| : (node = req.next) {
+        const raw = switch (req.kind) {
+            .getaddrinfo => uv.asReq(req.addrReq()),
+            .getnameinfo => uv.asReq(req.nameReq()),
+            else => unreachable,
+        };
+        _ = uv.uv_cancel(raw);
+    }
 }
 
 fn copyZ(dst: []u8, value: *py.Object, what: [:0]const u8) py.Error!?[*:0]const u8 {
@@ -147,16 +175,18 @@ fn onAddrInfo(req: ?*uv.GetAddrInfo, status: c_int, res: ?*std.c.addrinfo) callc
     st.gilEnter();
     defer st.gilExit();
 
-    if (status < 0) {
-        failFuture(self.future, status);
-    } else if (buildResults(res)) |list| {
-        defer py.decref(list);
-        settle(self.future, str_set_result, list);
-    } else |_| {
-        const exc = c.PyErr_GetRaisedException();
-        if (exc) |e| {
-            defer py.decref(e);
-            settle(self.future, str_set_exception, e);
+    if (!st.closed) {
+        if (status < 0) {
+            failFuture(self.future, status);
+        } else if (buildResults(res)) |list| {
+            defer py.decref(list);
+            settle(self.future, str_set_result, list);
+        } else |_| {
+            const exc = c.PyErr_GetRaisedException();
+            if (exc) |e| {
+                defer py.decref(e);
+                settle(self.future, str_set_exception, e);
+            }
         }
     }
     uv.uv_freeaddrinfo(res);
@@ -169,13 +199,15 @@ fn onNameInfo(req: ?*uv.GetNameInfo, status: c_int, hostname: ?[*:0]const u8, se
     st.gilEnter();
     defer st.gilExit();
 
-    if (status < 0) {
-        failFuture(self.future, status);
-    } else if (c.Py_BuildValue("ss", hostname orelse "", service orelse "")) |pair| {
-        defer py.decref(pair);
-        settle(self.future, str_set_result, pair);
-    } else {
-        py.writeUnraisable(self.future);
+    if (!st.closed) {
+        if (status < 0) {
+            failFuture(self.future, status);
+        } else if (c.Py_BuildValue("ss", hostname orelse "", service orelse "")) |pair| {
+            defer py.decref(pair);
+            settle(self.future, str_set_result, pair);
+        } else {
+            py.writeUnraisable(self.future);
+        }
     }
     freeRequest(self, .getnameinfo);
 }

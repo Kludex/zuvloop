@@ -6,6 +6,7 @@ import gc
 import socket
 import threading
 import time
+import weakref
 from typing import Any
 
 import pytest
@@ -54,6 +55,20 @@ def test_loop_close_releases_open_transports() -> None:
     gc.collect()
 
     assert sum(type(obj) is zuv.Transport for obj in gc.get_objects()) == before
+
+
+def test_loop_close_releases_pending_dns_requests() -> None:
+    loop = zuv.new_event_loop()
+    futures = [loop._getaddrinfo(f"zuv-pending-{index}.invalid", 80, 0, 0, 0, 0) for index in range(64)]
+    loop_ref = weakref.ref(loop)
+    future_refs = [weakref.ref(future) for future in futures]
+
+    loop.close()
+    del futures, loop
+    gc.collect()
+
+    assert loop_ref() is None
+    assert all(ref() is None for ref in future_refs)
 
 
 def test_asyncio_run_accepts_the_loop_factory() -> None:
