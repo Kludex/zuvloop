@@ -162,6 +162,25 @@ def test_loop_close_rejects_writes_from_buffer_finalizers() -> None:
     assert transport_ref() is None
 
 
+def test_pending_flush_does_not_retain_an_abandoned_loop() -> None:
+    loop = zuv.new_event_loop()
+    left, right = socket.socketpair()
+    transport = loop._make_transport(left.fileno(), 1, asyncio.Protocol(), None, None, None)
+    left.detach()
+    loop.run_until_complete(asyncio.sleep(0))
+    transport.write(b"pending")
+    loop_ref = weakref.ref(loop)
+    transport_ref = weakref.ref(transport)
+    right.close()
+
+    with pytest.warns(ResourceWarning, match="unclosed event loop"):
+        del transport, loop
+        gc.collect()
+
+    assert loop_ref() is None
+    assert transport_ref() is None
+
+
 def test_loop_close_releases_pending_dns_requests() -> None:
     loop = zuv.new_event_loop()
     futures = [loop._getaddrinfo(f"zuv-pending-{index}.invalid", 80, 0, 0, 0, 0) for index in range(128)]

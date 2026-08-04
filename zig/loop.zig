@@ -902,11 +902,18 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     const tp = py.typeOf(obj.?);
     c.PyObject_GC_UnTrack(obj);
     if (self.st) |st| {
-        if (!st.closed) {
-            st.closed = true;
+        const needs_close = !st.closed;
+        st.closed = true;
+        if (needs_close) {
             st.ready.deinit();
             st.timers.deinit();
             drainInbox(st);
+        }
+        // The flush list owns one Python reference per transport regardless of
+        // how the loop reached deallocation, including partially completed
+        // explicit close paths.
+        dropFlushList(st);
+        if (needs_close) {
             py.clear(&st.fatal);
             py.clear(&st.metrics_cb);
             pollermod.closeAll(st);
@@ -935,6 +942,12 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
         while (i < st.timers.len) : (i += 1) {
             r = py.visit(st.timers.items[i].handle, visitproc, arg);
             if (r != 0) return r;
+        }
+        var transport = st.flush_head;
+        while (transport) |pending| {
+            r = py.visit(@ptrCast(pending), visitproc, arg);
+            if (r != 0) return r;
+            transport = pending.flush_next;
         }
         r = pollermod.traverse(st, visitproc, arg);
         if (r != 0) return r;

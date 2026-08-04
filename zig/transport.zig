@@ -24,6 +24,7 @@ const BUFFERED: u32 = 1 << 4;
 const PROTOCOL_PAUSED: u32 = 1 << 5;
 const OPEN: u32 = 1 << 6;
 pub const FLUSH_QUEUED: u32 = 1 << 7;
+const HANDLE_REF: u32 = 1 << 8;
 
 pub const KIND_TCP: c_int = 0;
 pub const KIND_PIPE: c_int = 1;
@@ -609,6 +610,7 @@ fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
         const res = c.PyObject_CallMethodOneArg(server, str_detach, @ptrCast(self));
         if (res) |r| py.decref(r) else py.writeUnraisable(@ptrCast(self));
     }
+    self.flags &= ~HANDLE_REF;
     py.decref(self);
 }
 
@@ -968,6 +970,7 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
     }
     // Kept alive until the close callback fires.
     py.incref(obj);
+    self.flags |= HANDLE_REF;
 
     st.ready.pushAssumeCapacity(@ptrCast(connection_handle));
     st.ready.pushAssumeCapacity(@ptrCast(start_handle));
@@ -1005,6 +1008,13 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
 
 fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv(.c) c_int {
     const self = asTransport(obj.?);
+    // The reference paired with onClosed is stored conceptually in libuv's
+    // handle rather than in a Python object field, so expose that self-edge to
+    // cyclic GC explicitly.
+    if (self.flags & HANDLE_REF != 0) {
+        const owned = py.visit(obj, visitproc, arg);
+        if (owned != 0) return owned;
+    }
     const refs = [_]?*py.Object{
         self.base_extra,
         self.loop,
