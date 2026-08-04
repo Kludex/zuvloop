@@ -95,6 +95,28 @@ async def test_failed_socket_view_construction_does_not_adopt_the_descriptor(
         right.close()
 
 
+@pytest.mark.parametrize("self_cycle", [False, True])
+async def test_transport_releases_the_inherited_extra_slot(self_cycle: bool) -> None:
+    class Token:
+        pass
+
+    loop = running_loop()
+    left, right = socket.socketpair()
+    transport = loop._make_transport(left.fileno(), 1, asyncio.Protocol(), None, None, None)
+    left.detach()
+    token: object = transport if self_cycle else Token()
+    reference = weakref.ref(token)
+    setattr(transport, "_extra", token)
+
+    transport.close()
+    right.close()
+    await asyncio.sleep(0)
+    del token, transport
+    gc.collect()
+
+    assert reference() is None
+
+
 def test_loop_close_releases_open_transports() -> None:
     gc.collect()
     before = sum(type(obj) is zuv.Transport for obj in gc.get_objects())

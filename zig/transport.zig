@@ -889,6 +889,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     c.PyObject_GC_UnTrack(obj);
     c.PyObject_ClearWeakRefs(obj);
     c.PyObject_ClearManagedDict(obj);
+    py.clear(&self.base_extra);
     releaseSocketView(self);
     py.clear(&self.context);
     if (self.view.obj != null) c.PyBuffer_Release(&self.view);
@@ -912,6 +913,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
 fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv(.c) c_int {
     const self = asTransport(obj.?);
     const refs = [_]?*py.Object{
+        self.base_extra,
         self.loop,
         self.protocol,
         self.server,
@@ -940,6 +942,7 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
 fn clear_(obj: ?*py.Object) callconv(.c) c_int {
     const self = asTransport(obj.?);
     c.PyObject_ClearManagedDict(obj);
+    py.clear(&self.base_extra);
     py.clear(&self.protocol);
     py.clear(&self.server);
     py.clear(&self.extra);
@@ -979,11 +982,11 @@ var methods = [_]c.PyMethodDef{
 };
 
 var slots = [_]c.PyType_Slot{
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @constCast(@ptrCast(&dealloc)) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @constCast(@ptrCast(&traverse)) },
-    .{ .slot = c.Py_tp_clear, .pfunc = @constCast(@ptrCast(&clear_)) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
+    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&clear_)) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
-    .{ .slot = c.Py_tp_doc, .pfunc = @constCast(@ptrCast("A libuv-backed stream transport.")) },
+    .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("A libuv-backed stream transport.")) },
     .{ .slot = 0, .pfunc = null },
 };
 
