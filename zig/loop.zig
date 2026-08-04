@@ -666,10 +666,19 @@ fn newLoop(tp: ?*c.PyTypeObject, _: ?*py.Object, _: ?*py.Object) callconv(.c) ?*
         .waker = @ptrCast(block.ptr + loop_size + idle_size + 2 * timer_size),
         .block = block,
     };
+
+    if (uv.uv_loop_init(st.uvloop) < 0) {
+        alloc.free(words);
+        alloc.destroy(st);
+        py.decref(obj);
+        c.PyErr_SetString(@ptrCast(c.PyExc_RuntimeError), "failed to initialise the libuv loop");
+        return null;
+    }
+    // Only publish State after the loop itself is valid: dealloc may safely
+    // walk and close a partially initialized set of handles from here on.
     self.st = st;
 
-    if (uv.uv_loop_init(st.uvloop) < 0 or
-        uv.uv_idle_init(st.uvloop, st.idle) < 0 or
+    if (uv.uv_idle_init(st.uvloop, st.idle) < 0 or
         uv.uv_timer_init(st.uvloop, st.timer) < 0 or
         uv.uv_timer_init(st.uvloop, st.sampler) < 0 or
         uv.uv_async_init(st.uvloop, st.waker, onWake) < 0)
