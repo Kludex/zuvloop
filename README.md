@@ -33,7 +33,7 @@ asyncio.run(main(), loop_factory=zuv.new_event_loop)
 
 ## Performance
 
-`python benchmarks/run.py` and `python benchmarks/uvicorn_bench.py`, on an M3 Max running
+`benchmarks/run.py`, `benchmarks/uvicorn_bench.py` and `benchmarks/aiohttp_bench.py`, on an M3 Max running
 macOS 26 and CPython 3.14. Rounds are interleaved across loops and the best of each is
 reported, with the run-to-run spread beside it.
 
@@ -47,6 +47,8 @@ reported, with the run-to-run spread beside it.
 | echo round trips, 1 KiB | 47.2k/s | 57.2k/s | **60.0k/s** | **1.05x** |
 | uvicorn, plaintext | 54.1k req/s | 68.4k req/s | 66.8k req/s | 0.98x |
 | uvicorn, 10 KiB body | 51.7k req/s | 67.6k req/s | 64.1k req/s | 0.95x |
+| aiohttp server | 47.7k req/s | 59.8k req/s | 56.3k req/s | 0.94x |
+| aiohttp client | 13.0k req/s | 15.6k req/s | 15.1k req/s | 0.97x |
 | `getaddrinfo`, numeric host | 27.8k/s | 1.50M/s | 897k/s | 0.59x |
 
 Scheduling and timers are where the design differs most: arguments live inside the handle
@@ -59,8 +61,8 @@ and allocating a large object to shrink it again costs more than the copy. Above
 fills the final object directly and nothing is copied. The threshold the transport is judged
 against follows the traffic, doubling whenever a read fills the buffer.
 
-**uvloop is still slightly ahead on real HTTP serving** - 2% on plaintext, 5% on a 10 KiB
-body, against a run-to-run spread of about 1%. zuv is ~24% faster than stock asyncio there.
+**uvloop is still slightly ahead on real HTTP serving** - 2 to 6% across uvicorn and aiohttp,
+against a run-to-run spread of about 1%. zuv is 17 to 24% faster than stock asyncio there.
 The remaining gap is on the write side, not the read side. `getaddrinfo` is the other gap:
 uvloop parses address literals itself, while zuv hands them to libc with `AI_NUMERICHOST`,
 which is slower but cannot disagree with `socket.getaddrinfo`. It is still 32x asyncio.

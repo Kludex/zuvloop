@@ -175,7 +175,11 @@ class ConnectionOperations(SocketOperations):
             sockets = [sock]
         server = Server(self, sockets, protocol_factory, ssl, backlog, ssl_handshake_timeout, ssl_shutdown_timeout)
         if start_serving:
-            await server.start_serving()
+            try:
+                await server.start_serving()
+            except BaseException:
+                server.close()
+                raise
         return server
 
     async def create_unix_server(  # type: ignore[override]  # cleanup_socket is missing from typeshed
@@ -220,7 +224,11 @@ class ConnectionOperations(SocketOperations):
                 server._cleanup_path = path
                 server._cleanup_identity = (bound.st_dev, bound.st_ino)
         if start_serving:
-            await server.start_serving()
+            try:
+                await server.start_serving()
+            except BaseException:
+                server.close()
+                raise
         return server
 
     async def _bind_tcp(

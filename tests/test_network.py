@@ -13,6 +13,7 @@ import pytest
 
 import zuv
 from conftest import running_loop
+from zuv._server import Server
 
 pytestmark = pytest.mark.anyio
 
@@ -461,6 +462,28 @@ async def test_server_close_is_idempotent() -> None:
     await server.wait_closed()
     await server.wait_closed()
     assert server.sockets == ()
+
+
+async def test_cancelled_server_creation_closes_listeners(monkeypatch: pytest.MonkeyPatch) -> None:
+    loop = running_loop()
+    started = loop.create_future()
+
+    async def pause_during_start(server: Server) -> None:
+        server._start_serving()
+        started.set_result(None)
+        await loop.create_future()
+
+    monkeypatch.setattr(Server, "start_serving", pause_during_start)
+    watchers = loop._metrics()["watchers"]
+    creation = loop.create_task(loop.create_server(Echo, "127.0.0.1", 0))
+    await started
+    assert loop._metrics()["watchers"] > watchers
+
+    creation.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await creation
+
+    assert loop._metrics()["watchers"] == watchers
 
 
 async def test_server_wait_closed_waits_for_clients() -> None:
