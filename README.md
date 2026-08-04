@@ -33,22 +33,30 @@ asyncio.run(main(), loop_factory=zuv.new_event_loop)
 
 ## Performance
 
-`python benchmarks/run.py`, on an M3 Max running macOS 26 and CPython 3.14, best of three:
+`python benchmarks/run.py` and `python benchmarks/uvicorn_bench.py`, on an M3 Max running
+macOS 26 and CPython 3.14. Rounds are interleaved across loops and the best of each is
+reported, with the run-to-run spread beside it.
 
 | Benchmark | asyncio | uvloop | zuv | zuv / uvloop |
 | --- | ---: | ---: | ---: | ---: |
-| `call_soon` | 2.2M/s | 5.4M/s | **7.9M/s** | **1.48x** |
-| `call_soon` with arguments | 2.3M/s | 3.7M/s | **6.0M/s** | **1.61x** |
-| timer schedule + cancel | 1.5M/s | 2.0M/s | **11.9M/s** | **5.94x** |
-| loop iterations (`sleep(0)`) | 72.7k/s | 79.1k/s | 78.8k/s | 1.00x |
-| echo round trips, 1 KiB | 45.3k/s | 52.4k/s | **53.6k/s** | **1.02x** |
-| bulk stream | 8.5 GiB/s | 8.7 GiB/s | **9.8 GiB/s** | **1.12x** |
-| `getaddrinfo`, numeric host | 27.8k/s | 1.50M/s | 903k/s | 0.60x |
+| `call_soon` | 2.65M/s | 5.35M/s | **7.81M/s** | **1.46x** |
+| `call_soon` with arguments | 2.22M/s | 3.72M/s | **6.20M/s** | **1.66x** |
+| timer schedule + cancel | 1.54M/s | 2.23M/s | **11.8M/s** | **5.29x** |
+| bulk stream | 7.9 GiB/s | 9.0 GiB/s | **9.6 GiB/s** | **1.07x** |
+| loop iterations (`sleep(0)`) | 72.2k/s | 79.6k/s | 79.8k/s | 1.00x |
+| echo round trips, 1 KiB | 47.2k/s | 61.3k/s | 59.9k/s | 0.98x |
+| uvicorn, plaintext | 53.7k req/s | 69.6k req/s | 66.8k req/s | 0.96x |
+| uvicorn, 10 KiB body | 51.4k req/s | 68.0k req/s | 62.9k req/s | 0.93x |
+| `getaddrinfo`, numeric host | 27.8k/s | 1.50M/s | 897k/s | 0.59x |
 
-Scheduling and timers are where the design differs most: arguments live inside the handle rather
-than in a tuple, and timers share one `uv_timer_t` behind a heap instead of taking a libuv handle
-each. `getaddrinfo` is the one place uvloop is still ahead - it parses address literals itself,
-while `zuv` hands them to libc with `AI_NUMERICHOST`, which is slower but cannot disagree with
+Scheduling and timers are where the design differs most: arguments live inside the handle
+rather than in a tuple, and timers share one `uv_timer_t` behind a heap instead of taking a
+libuv handle each.
+
+**uvloop is still ahead on request/response throughput** - 4 to 7% on real HTTP serving. zuv
+is roughly 25% faster than stock asyncio there, but the goal is to match uvloop and it does
+not yet. `getaddrinfo` is the other gap: uvloop parses address literals itself, while zuv
+hands them to libc with `AI_NUMERICHOST`, which is slower but cannot disagree with
 `socket.getaddrinfo`. It is still 32x asyncio.
 
 ## Requirements
