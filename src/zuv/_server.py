@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
+from asyncio import trsock
 from collections.abc import Callable, Sequence
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
@@ -43,8 +44,8 @@ class Server(asyncio.AbstractServer):
         self._cleanup_identity: tuple[int, int] | None = None
 
     @property
-    def sockets(self) -> tuple[socket.socket, ...]:
-        return tuple(self._sockets or ())
+    def sockets(self) -> tuple[trsock.TransportSocket, ...]:
+        return tuple(trsock.TransportSocket(sock) for sock in self._sockets or ())
 
     def get_loop(self) -> ConnectionOperations:
         return self._loop
@@ -106,7 +107,9 @@ class Server(asyncio.AbstractServer):
         self._sockets = None
         self._serving = False
         for sock in sockets:
-            self._loop.remove_reader(sock.fileno())
+            fd = sock.fileno()
+            if fd != -1:
+                self._loop.remove_reader(fd)
             sock.close()
         cleanup_path = self._cleanup_path
         cleanup_identity = self._cleanup_identity

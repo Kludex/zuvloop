@@ -77,6 +77,21 @@ async def start_echo(**kwargs: Any) -> tuple[zuv.Server, int, list[Echo]]:
     return server, server.sockets[0].getsockname()[1], protocols
 
 
+async def test_server_sockets_are_protected_views() -> None:
+    loop = running_loop()
+    server = await loop.create_server(Echo, "127.0.0.1", 0, start_serving=False)
+    exposed = server.sockets[0]
+
+    assert not isinstance(exposed, socket.socket)
+    assert not hasattr(exposed, "close")
+    assert not hasattr(exposed, "detach")
+    assert exposed.fileno() >= 0
+
+    server.close()
+    await server.wait_closed()
+    assert exposed.fileno() == -1
+
+
 async def test_streams_round_trip() -> None:
     server, port, _ = await start_echo()
     async with server:
