@@ -14,6 +14,7 @@ import pytest
 import zuv
 from conftest import running_loop
 from zuv._base import _shutdown_executor
+from zuv._connect import ConnectionOperations
 
 pytestmark = pytest.mark.anyio
 
@@ -70,6 +71,28 @@ def test_failed_transport_construction_does_not_adopt_the_descriptor() -> None:
         left.close()
         right.close()
         loop.close()
+
+
+async def test_failed_socket_view_construction_does_not_adopt_the_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = running_loop()
+    left, right = socket.socketpair()
+
+    def fail_to_wrap_socket(_sock: socket.socket) -> None:
+        raise RuntimeError("cannot wrap socket")
+
+    monkeypatch.setattr("zuv._connect.trsock.TransportSocket", fail_to_wrap_socket)
+    try:
+        with pytest.raises(RuntimeError, match="cannot wrap socket"):
+            ConnectionOperations._attach_transport(loop, left, asyncio.Protocol(), None, None)
+
+        assert left.fileno() != -1
+        left.sendall(b"still owned")
+        assert right.recv(11) == b"still owned"
+    finally:
+        left.close()
+        right.close()
 
 
 def test_loop_close_releases_open_transports() -> None:

@@ -323,25 +323,32 @@ class ConnectionOperations(SocketOperations):
         }
         kind = _zuv.KIND_PIPE if sock.family == socket.AF_UNIX else _zuv.KIND_TCP
         family, kind_, proto = sock.family, sock.type, sock.proto
-        # Detach only once libuv owns the descriptor, so a failure leaves the
-        # socket object responsible for closing it.
         fd = sock.fileno()
-        transport = self._make_transport(fd, kind, protocol, waiter, extra, server)
-        sock.detach()
 
         # anyio - and so httpx, Starlette and FastAPI - reaches for the raw
-        # socket through get_extra_info("socket"). The view below mirrors the
-        # descriptor libuv now owns; the transport detaches it on close so
-        # Python never closes a descriptor that is not its own.
+        # socket through get_extra_info("socket"). Prepare that view before
+        # libuv adopts the descriptor, while failure can still leave `sock`
+        # as its sole owner.
         view = socket.socket(family, kind_, proto, fileno=fd)
-        extra["socket"] = trsock.TransportSocket(view)
-        transport._adopt_socket_view(view)
-        if server is not None:
-            try:
+        try:
+            extra["socket"] = trsock.TransportSocket(view)
+            transport = self._make_transport(fd, kind, protocol, waiter, extra, server)
+        except BaseException:
+            view.detach()
+            raise
+
+        # libuv owns the descriptor after _make_transport succeeds. Disarm
+        # both Python socket objects on every later failure and close the
+        # native transport so ownership cannot be split or lost.
+        try:
+            sock.detach()
+            transport._adopt_socket_view(view)
+            if server is not None:
                 server._attach(transport)
-            except BaseException:
-                transport.abort()
-                raise
+        except BaseException:
+            view.detach()
+            transport.abort()
+            raise
         return transport
 
     async def _wrap_socket(
