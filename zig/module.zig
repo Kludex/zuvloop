@@ -32,13 +32,13 @@ var slots = [_]c.PyModuleDef_Slot{
 
 var moddef = c.PyModuleDef{
     .m_base = std.mem.zeroes(c.PyModuleDef_Base),
-    .m_name = "zuv._zuv",
-    .m_doc = "libuv bindings backing the zuv event loop.",
+    .m_name = "zuvloop._zuvloop",
+    .m_doc = "libuv bindings backing the zuvloop event loop.",
     .m_size = 0,
     .m_methods = &methods,
     .m_slots = &slots,
 };
 
-export fn PyInit__zuv() ?*py.Object {
+export fn PyInit__zuvloop() ?*py.Object {
     return c.PyModuleDef_Init(&moddef);
 }

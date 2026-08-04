@@ -823,7 +823,7 @@ wheels = [
 ]
 
 [[package]]
-name = "zuv"
+name = "zuvloop"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

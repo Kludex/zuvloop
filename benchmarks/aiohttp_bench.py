@@ -19,7 +19,7 @@ from collections.abc import Callable
 
 from aiohttp import ClientSession, web
 
-import zuv
+import zuvloop
 
 Factory = Callable[[], asyncio.AbstractEventLoop]
 
@@ -113,7 +113,7 @@ async def client_load(port: int, requests: int, concurrency: int) -> float:
 
 
 def loop_factories() -> dict[str, Factory]:
-    factories: dict[str, Factory] = {"asyncio": asyncio.new_event_loop, "zuv": zuv.new_event_loop}
+    factories: dict[str, Factory] = {"asyncio": asyncio.new_event_loop, "zuvloop": zuvloop.new_event_loop}
     try:
         import uvloop
     except ImportError:
@@ -129,7 +129,7 @@ def report(title: str, samples: dict[str, list[float]], unit: str) -> None:
         spread = statistics.pstdev(samples[name]) / value if len(samples[name]) > 1 else 0.0
         print(f"  {name:<8}{value:>12,.0f} {unit}  (+/- {spread:.1%})")
     if "uvloop" in best:
-        print(f"  {'':<8}{'zuv / uvloop':>12}  {best['zuv'] / best['uvloop']:.2f}x")
+        print(f"  {'':<8}{'zuvloop / uvloop':>12}  {best['zuvloop'] / best['uvloop']:.2f}x")
     print()
 
 
@@ -146,7 +146,8 @@ def main() -> int:
     client_samples: dict[str, list[float]] = {name: [] for name in factories}
 
     print(
-        f"python {sys.version.split()[0]}  libuv {zuv.libuv_version()}  oha -c {args.connections} -z {args.duration}\n"
+        f"python {sys.version.split()[0]}  libuv {zuvloop.libuv_version()}"
+        f"  oha -c {args.connections} -z {args.duration}\n"
     )
 
     for index in range(args.rounds):

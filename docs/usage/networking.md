@@ -1,7 +1,7 @@
 # Networking
 
-zuv implements the whole of asyncio's networking surface. There is no zuv API
-here — these are asyncio's methods, and this page records what zuv does
+zuvloop implements the whole of asyncio's networking surface. There is no zuvloop API
+here — these are asyncio's methods, and this page records what zuvloop does
 underneath and where it is worth knowing.
 
 ## Connections
@@ -25,7 +25,7 @@ async with server:
     await server.serve_forever()
 ```
 
-[`zuv.Server`](../reference/api.md#zuvserver) implements `asyncio.AbstractServer`, including
+[`zuvloop.Server`](../reference/api.md#zuvloopserver) implements `asyncio.AbstractServer`, including
 `close_clients()` and `abort_clients()`.
 
 `create_unix_server` accepts `cleanup_socket`, and honours it the way asyncio

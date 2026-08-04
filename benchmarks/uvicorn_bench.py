@@ -22,7 +22,7 @@ from typing import Any
 
 import uvicorn
 
-import zuv
+import zuvloop
 
 Factory = Callable[[], asyncio.AbstractEventLoop]
 
@@ -96,7 +96,7 @@ def measure(port: int, duration: str, connections: int) -> float:
 
 
 def loop_factories() -> dict[str, Factory]:
-    factories: dict[str, Factory] = {"asyncio": asyncio.new_event_loop, "zuv": zuv.new_event_loop}
+    factories: dict[str, Factory] = {"asyncio": asyncio.new_event_loop, "zuvloop": zuvloop.new_event_loop}
     try:
         import uvloop
     except ImportError:
@@ -120,7 +120,7 @@ def main() -> int:
     # should be, uniformly across loops, and nothing else says so.
     parser_name = "httptools" if importlib.util.find_spec("httptools") else "h11 (install httptools)"
     print(
-        f"python {sys.version.split()[0]}  libuv {zuv.libuv_version()}  uvicorn {uvicorn.__version__}"
+        f"python {sys.version.split()[0]}  libuv {zuvloop.libuv_version()}  uvicorn {uvicorn.__version__}"
         f"  {parser_name}  oha -c {args.connections} -z {args.duration}\n"
     )
     for round_index in range(args.rounds):
@@ -143,7 +143,7 @@ def main() -> int:
             spread = statistics.pstdev(samples[body_name][name]) / value if len(samples[body_name][name]) > 1 else 0.0
             print(f"  {name:<8}{value:>12,.0f} req/s  (+/- {spread:.1%})")
         if "uvloop" in best:
-            print(f"  {'':<8}{'zuv / uvloop':>12}  {best['zuv'] / best['uvloop']:.2f}x")
+            print(f"  {'':<8}{'zuvloop / uvloop':>12}  {best['zuvloop'] / best['uvloop']:.2f}x")
         print()
     return 0
 

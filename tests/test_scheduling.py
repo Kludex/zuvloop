@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-import zuv
+import zuvloop
 from conftest import running_loop
 
 pytestmark = pytest.mark.anyio
@@ -172,7 +172,7 @@ async def test_call_soon_threadsafe_validates_its_arguments() -> None:
 async def test_run_in_executor_uses_a_thread() -> None:
     loop = running_loop()
     result = await loop.run_in_executor(None, lambda: threading.current_thread().name)
-    assert result.startswith("zuv")
+    assert result.startswith("zuvloop")
 
 
 async def test_run_in_executor_accepts_an_explicit_executor() -> None:
@@ -262,7 +262,7 @@ async def test_repr_describes_the_loop() -> None:
 
 
 async def test_libuv_version_is_reported() -> None:
-    assert zuv.libuv_version().count(".") == 2
+    assert zuvloop.libuv_version().count(".") == 2
 
 
 async def test_handles_are_weak_referenceable() -> None:

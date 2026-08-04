@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "zuv"
+name = "zuvloop"
 version = "0.1.0"
 description = "A libuv event loop for asyncio, written in Zig."
 readme = "README.md"
@@ -39,8 +39,8 @@ bench = ["aiohttp", "httptools", "uvicorn", "uvloop>=0.21"]
 docs = ["zensical"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/zuv"]
-artifacts = ["src/zuv/*.so"]
+packages = ["src/zuvloop"]
+artifacts = ["src/zuvloop/*.so"]
 
 [tool.hatch.build.targets.wheel.hooks.custom]
 path = "hatch_build.py"
@@ -80,12 +80,12 @@ xfail_strict = true
 filterwarnings = ["error"]
 
 [tool.coverage.run]
-source_pkgs = ["zuv"]
+source_pkgs = ["zuvloop"]
 source = ["tests"]
 branch = true
 
 [tool.coverage.paths]
-source = ["src/zuv", "*/src/zuv"]
+source = ["src/zuvloop", "*/src/zuvloop"]
 
 [tool.coverage.report]
 fail_under = 100

@@ -657,7 +657,7 @@ var slots = [_]c.PyType_Slot{
 };
 
 var spec = c.PyType_Spec{
-    .name = "zuv._zuv.DatagramTransport",
+    .name = "zuvloop._zuvloop.DatagramTransport",
     .basicsize = 0,
     .itemsize = 0,
     .flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | c.Py_TPFLAGS_MANAGED_WEAKREF |
@@ -682,7 +682,7 @@ pub fn register(module: *py.Object) py.Error!void {
     const base = py.importFrom("asyncio.transports", "DatagramTransport") orelse return py.Error.Python;
     defer py.decref(base);
     if (@as(*c.PyTypeObject, @ptrCast(base)).tp_basicsize != @offsetOf(Datagram, "loop")) {
-        return py.errRuntime("asyncio.DatagramTransport instance layout is not the one zuv was built against");
+        return py.errRuntime("asyncio.DatagramTransport instance layout is not the one zuvloop was built against");
     }
     const bases = c.PyTuple_Pack(1, base) orelse return py.Error.Python;
     defer py.decref(bases);

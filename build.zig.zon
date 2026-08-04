@@ -1,7 +1,7 @@
 .{
-    .name = .zuv,
+    .name = .zuvloop,
     .version = "0.1.0",
-    .fingerprint = 0x4d096d2e9fc40064,
+    .fingerprint = 0x78121bf4a4379c83,
     .minimum_zig_version = "0.16.0",
     .paths = .{
         "build.zig",

@@ -1,5 +1,5 @@
 [project]
-site_name = "zuv"
+site_name = "zuvloop"
 site_description = "A libuv event loop for asyncio, written in Zig."
 site_author = "Marcelo Trylesinski"
 site_url = "https://zuvloop.marcelotryle.com/"
@@ -10,12 +10,12 @@ Copyright &copy; 2026 zuvloop
 """
 
 nav = [
-  { "zuv" = "index.md" },
+  { "zuvloop" = "index.md" },
   { "Get started" = [
     "usage/install.md",
     "usage/running.md",
   ] },
-  { "Using zuv" = [
+  { "Using zuvloop" = [
     "usage/networking.md",
     "usage/datagrams.md",
     "usage/subprocesses.md",

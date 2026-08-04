@@ -7,9 +7,9 @@ from typing import Any
 import pytest
 from opentelemetry.trace import StatusCode
 
-import zuv
+import zuvloop
 from conftest import Telemetry, attribute, running_loop
-from zuv._instrumentation import capture_call_graph, publish_metrics
+from zuvloop._instrumentation import capture_call_graph, publish_metrics
 
 pytestmark = pytest.mark.anyio
 
@@ -25,11 +25,11 @@ async def test_slow_callbacks_are_reported(telemetry: Telemetry) -> None:
         loop.set_debug(False)
         loop.slow_callback_duration = 0.1
 
-    span = telemetry.spans("zuv.slow_callback")[0]
+    span = telemetry.spans("zuvloop.slow_callback")[0]
     assert span.status.status_code is StatusCode.ERROR
     assert attribute(span, "duration") >= 0.01
     assert "Handle" in str(attribute(span, "code.callback"))
-    assert telemetry.counted("zuv.slow_callbacks") >= 1
+    assert telemetry.counted("zuvloop.slow_callbacks") >= 1
 
 
 async def test_a_slow_callback_span_covers_the_time_it_took(telemetry: Telemetry) -> None:
@@ -44,7 +44,7 @@ async def test_a_slow_callback_span_covers_the_time_it_took(telemetry: Telemetry
         loop.set_debug(False)
         loop.slow_callback_duration = 0.1
 
-    span = telemetry.spans("zuv.slow_callback")[0]
+    span = telemetry.spans("zuvloop.slow_callback")[0]
     assert span.end_time is not None and span.start_time is not None
     measured = (span.end_time - span.start_time) / 1e9
     assert measured == pytest.approx(attribute(span, "duration"), abs=1e-6)
@@ -66,7 +66,7 @@ async def test_slow_callbacks_inside_a_task_carry_the_call_graph(telemetry: Tele
         loop.set_debug(False)
         loop.slow_callback_duration = 0.1
 
-    spans = telemetry.spans("zuv.slow_callback")
+    spans = telemetry.spans("zuvloop.slow_callback")
     graphs = [span.attributes.get("asyncio.call_graph") for span in spans if span.attributes]
     assert any(graph is not None and "slow-step" in str(graph) for graph in graphs)
 
@@ -92,14 +92,14 @@ async def test_unhandled_exceptions_are_reported(telemetry: Telemetry) -> None:
     finally:
         loop.set_exception_handler(previous)
 
-    span = telemetry.spans("zuv.unhandled_exception")[0]
+    span = telemetry.spans("zuvloop.unhandled_exception")[0]
     assert span.status.status_code is StatusCode.ERROR
     assert span.status.description == "Exception in callback"
     assert "Handle" in str(attribute(span, "handle"))
     assert span.events[0].name == "exception"
     assert span.events[0].attributes is not None
     assert span.events[0].attributes["exception.type"] == "ValueError"
-    assert telemetry.counted("zuv.unhandled_exceptions") >= 1
+    assert telemetry.counted("zuvloop.unhandled_exceptions") >= 1
 
 
 async def test_a_custom_exception_handler_takes_over() -> None:
@@ -130,14 +130,14 @@ async def test_a_failing_exception_handler_falls_back(telemetry: Telemetry) -> N
     finally:
         loop.set_exception_handler(previous)
 
-    descriptions = [span.status.description for span in telemetry.spans("zuv.unhandled_exception")]
+    descriptions = [span.status.description for span in telemetry.spans("zuvloop.unhandled_exception")]
     assert "Unhandled error in exception handler" in descriptions
 
 
 async def test_a_context_without_an_exception_is_still_reported(telemetry: Telemetry) -> None:
     loop = running_loop()
     loop.default_exception_handler({"message": "just a note", "detail": 42})
-    span = telemetry.spans("zuv.unhandled_exception")[0]
+    span = telemetry.spans("zuvloop.unhandled_exception")[0]
     assert span.status.description == "just a note"
     assert attribute(span, "detail") == "42"
     assert span.events == ()
@@ -146,19 +146,19 @@ async def test_a_context_without_an_exception_is_still_reported(telemetry: Telem
 async def test_a_context_without_a_message_gets_a_default(telemetry: Telemetry) -> None:
     loop = running_loop()
     loop.default_exception_handler({})
-    assert telemetry.spans("zuv.unhandled_exception")[0].status.description == "Unhandled exception in event loop"
+    assert telemetry.spans("zuvloop.unhandled_exception")[0].status.description == "Unhandled exception in event loop"
 
 
 async def test_metrics_are_published_as_gauges(telemetry: Telemetry) -> None:
     publish_metrics({"ready": 3, "timers": 4})
-    assert telemetry.metric("zuv.ready") == 3
-    assert telemetry.metric("zuv.timers") == 4
+    assert telemetry.metric("zuvloop.ready") == 3
+    assert telemetry.metric("zuvloop.timers") == 4
 
 
 async def test_instrument_samples_on_a_native_timer(monkeypatch: pytest.MonkeyPatch) -> None:
     snapshots: list[dict[str, int]] = []
-    monkeypatch.setattr("zuv._runner.publish_metrics", snapshots.append)
-    reporter = zuv.instrument(interval=0.02)
+    monkeypatch.setattr("zuvloop._runner.publish_metrics", snapshots.append)
+    reporter = zuvloop.instrument(interval=0.02)
     try:
         await asyncio.sleep(0.09)
     finally:
@@ -171,24 +171,24 @@ async def test_instrument_samples_on_a_native_timer(monkeypatch: pytest.MonkeyPa
 
 
 async def test_instrument_reaches_the_exporter(telemetry: Telemetry) -> None:
-    reporter = zuv.instrument(interval=0.02)
+    reporter = zuvloop.instrument(interval=0.02)
     try:
         await asyncio.sleep(0.05)
     finally:
         reporter.cancel()
-    assert telemetry.counted("zuv.callbacks_run") > 0
+    assert telemetry.counted("zuvloop.callbacks_run") > 0
 
 
 async def test_instrument_accepts_an_explicit_loop() -> None:
-    reporter = zuv.instrument(running_loop(), interval=5.0)
+    reporter = zuvloop.instrument(running_loop(), interval=5.0)
     reporter.cancel()
 
 
 async def test_instrument_rejects_a_foreign_loop() -> None:
     other = asyncio.new_event_loop()
     try:
-        with pytest.raises(TypeError, match="needs a zuv event loop"):
-            zuv.instrument(other)  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="needs a zuvloop event loop"):
+            zuvloop.instrument(other)  # type: ignore[arg-type]
     finally:
         other.close()
 
@@ -218,13 +218,13 @@ async def test_a_failing_sampler_callback_is_reported() -> None:
 
 
 async def test_metrics_on_a_closed_loop_are_zero() -> None:
-    loop = zuv.new_event_loop()
+    loop = zuvloop.new_event_loop()
     loop.close()
     assert loop._metrics()["loop_count"] == 0
 
 
 async def test_the_stdlib_call_graph_apis_work_on_this_loop() -> None:
-    """3.14's introspection reads real asyncio.Task objects, which is what zuv schedules."""
+    """3.14's introspection reads real asyncio.Task objects, which is what zuvloop schedules."""
     import io
 
     started = asyncio.Event()

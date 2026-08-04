@@ -1,6 +1,6 @@
 # Architecture
 
-zuv is a CPython extension module written in Zig, with a small Python layer on
+zuvloop is a CPython extension module written in Zig, with a small Python layer on
 top. What lives where follows one rule: **native if it runs per callback or per
 packet, Python if it runs per connection or per loop.**
 
@@ -12,9 +12,9 @@ packet, Python if it runs per connection or per loop.**
 | Datagram sends and receives | `zig/datagram.zig` | Once per datagram |
 | Descriptor watchers | `zig/poller.zig` | One `uv_poll_t` per descriptor |
 | Name resolution | `zig/dns.zig` | On libuv's threadpool, not the executor |
-| Connection and server setup | `src/zuv/_connect.py` | Once per connection |
-| Lifecycle, executors, error reporting | `src/zuv/_base.py` | Once per loop |
-| OpenTelemetry emission | `src/zuv/_instrumentation.py` | The only file that imports OTel |
+| Connection and server setup | `src/zuvloop/_connect.py` | Once per connection |
+| Lifecycle, executors, error reporting | `src/zuvloop/_base.py` | Once per loop |
+| OpenTelemetry emission | `src/zuvloop/_instrumentation.py` | The only file that imports OTel |
 
 ## The GIL
 

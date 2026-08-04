@@ -15,7 +15,7 @@ asyncio loop, with every `Popen` keyword — `env`, `cwd`, `pass_fds`,
 
 The process is driven by asyncio's own subprocess transport. What that transport
 needs from a loop is `connect_read_pipe` and `connect_write_pipe`, and those are
-native here, so the **stdio data path is zuv's while the spawn is CPython's**.
+native here, so the **stdio data path is zuvloop's while the spawn is CPython's**.
 
 That is the same trade as sockets: a process is started once, so the tested
 implementation is worth more there than owning the fork. The bytes, which are not

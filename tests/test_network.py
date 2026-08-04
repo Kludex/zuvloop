@@ -12,9 +12,9 @@ from typing import Any
 
 import pytest
 
-import zuv
+import zuvloop
 from conftest import running_loop
-from zuv._server import Server
+from zuvloop._server import Server
 
 pytestmark = pytest.mark.anyio
 
@@ -74,7 +74,7 @@ class Collector(asyncio.Protocol):
         self.done.set_result(bytes(self.received))
 
 
-async def start_echo(**kwargs: Any) -> tuple[zuv.Server, int, list[Echo]]:
+async def start_echo(**kwargs: Any) -> tuple[zuvloop.Server, int, list[Echo]]:
     protocols: list[Echo] = []
 
     def factory() -> Echo:
@@ -892,7 +892,7 @@ async def test_connect_accepted_socket() -> None:
 async def test_unix_sockets_round_trip() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / "zuv.sock"
+        path = Path(directory) / "zuvloop.sock"
         server = await loop.create_unix_server(Echo, path)
         async with server:
             reader, writer = await asyncio.open_unix_connection(str(path))
@@ -906,7 +906,7 @@ async def test_unix_sockets_round_trip() -> None:
 async def test_unix_server_cleanup_preserves_a_replacement_path() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / "zuv.sock"
+        path = Path(directory) / "zuvloop.sock"
         server = await loop.create_unix_server(Echo, path)
         path.unlink()
         path.write_text("replacement")
@@ -920,7 +920,7 @@ async def test_unix_server_cleanup_preserves_a_replacement_path() -> None:
 async def test_unix_server_cleanup_tolerates_a_missing_path() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / "zuv.sock"
+        path = Path(directory) / "zuvloop.sock"
         server = await loop.create_unix_server(Echo, path)
         path.unlink()
 
@@ -931,7 +931,7 @@ async def test_unix_server_cleanup_tolerates_a_missing_path() -> None:
 async def test_unix_server_cleanup_tolerates_a_path_unlinked_while_binding() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / "zuv.sock"
+        path = Path(directory) / "zuvloop.sock"
 
         def vanishing_stat(target: Any, *args: Any, **kwargs: Any) -> os.stat_result:
             raise FileNotFoundError(target)
@@ -949,7 +949,7 @@ async def test_unix_server_cleanup_tolerates_a_path_unlinked_while_binding() -> 
 async def test_unix_server_closes_its_listeners_when_serving_fails() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / "zuv.sock"
+        path = Path(directory) / "zuvloop.sock"
 
         async def refuse(self: Server) -> None:
             raise RuntimeError("refused")
@@ -965,7 +965,7 @@ async def test_unix_server_closes_its_listeners_when_serving_fails() -> None:
 async def test_unix_server_closes_its_listener_when_the_cleanup_stat_fails() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
-        path = Path(directory) / "zuv.sock"
+        path = Path(directory) / "zuvloop.sock"
 
         def refuse_stat(target: Any, *args: Any, **kwargs: Any) -> os.stat_result:
             raise BlockingIOError("stat refused")
@@ -1098,7 +1098,7 @@ async def test_unix_server_can_start_serving_later() -> None:
 async def test_unix_server_reports_an_unusable_path() -> None:
     loop = running_loop()
     with pytest.raises(OSError):
-        await loop.create_unix_server(Echo, "/nonexistent-directory/zuv.sock")
+        await loop.create_unix_server(Echo, "/nonexistent-directory/zuvloop.sock")
 
 
 async def test_a_backlog_of_one_accepts_one_connection_per_wakeup() -> None:

@@ -8,7 +8,7 @@ from typing import Any
 from opentelemetry import metrics, trace
 from opentelemetry.trace import Status, StatusCode
 
-_NAMESPACE = "zuv"
+_NAMESPACE = "zuvloop"
 
 
 @functools.cache

@@ -10,14 +10,14 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import Any
 
-import zuv
+import zuvloop
 
 Factory = Callable[[], asyncio.AbstractEventLoop]
 Benchmark = Callable[[], Coroutine[Any, Any, float]]
 
 
 def loop_factories() -> dict[str, Factory]:
-    factories: dict[str, Factory] = {"asyncio": asyncio.new_event_loop, "zuv": zuv.new_event_loop}
+    factories: dict[str, Factory] = {"asyncio": asyncio.new_event_loop, "zuvloop": zuvloop.new_event_loop}
     try:
         import uvloop
     except ImportError:
@@ -175,7 +175,7 @@ async def bench_stream(total: int = 512 << 20) -> float:
 
 
 async def bench_getaddrinfo(iterations: int = 5_000) -> float:
-    """Resolution rate; zuv resolves on libuv's threadpool, not the executor."""
+    """Resolution rate; zuvloop resolves on libuv's threadpool, not the executor."""
     loop = asyncio.get_running_loop()
     started = time.perf_counter()
     for _ in range(iterations):
@@ -201,14 +201,14 @@ def humanise(value: float, unit: str) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Compare zuv against asyncio and uvloop.")
+    parser = argparse.ArgumentParser(description="Compare zuvloop against asyncio and uvloop.")
     parser.add_argument("--repeat", type=int, default=3, help="runs per benchmark; the best is reported")
     parser.add_argument("--only", nargs="*", choices=sorted(BENCHMARKS), help="benchmarks to run")
     args = parser.parse_args()
 
     factories = loop_factories()
     baseline = "uvloop" if "uvloop" in factories else "asyncio"
-    print(f"python {sys.version.split()[0]}   libuv {zuv.libuv_version()}\n")
+    print(f"python {sys.version.split()[0]}   libuv {zuvloop.libuv_version()}\n")
 
     for name in args.only or list(BENCHMARKS):
         benchmark, unit = BENCHMARKS[name]
@@ -224,7 +224,7 @@ def main() -> int:
         for label, value in results.items():
             spread = statistics.pstdev(samples[label]) / value if len(samples[label]) > 1 else 0.0
             print(f"  {label:<8}{humanise(value, unit)}  (+/- {spread:.1%})")
-        print(f"  {'':<8}{'zuv / ' + baseline:>15}  {results['zuv'] / results[baseline]:.2f}x\n")
+        print(f"  {'':<8}{'zuvloop / ' + baseline:>15}  {results['zuvloop'] / results[baseline]:.2f}x\n")
     return 0
 
 

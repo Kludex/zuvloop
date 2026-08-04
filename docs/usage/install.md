@@ -1,10 +1,10 @@
 # Installation
 
 ```console
-$ pip install zuv
+$ pip install zuvloop
 ```
 
-zuv has one runtime dependency, `opentelemetry-api`. Not the SDK, and nothing
+zuvloop has one runtime dependency, `opentelemetry-api`. Not the SDK, and nothing
 vendor-specific — see [Instrumentation](instrumentation.md) for why the API
 alone is enough.
 
@@ -42,7 +42,7 @@ A wheel built for the wrong interpreter fails at import, not at build time. If
 you are unsure what you have, ask:
 
 ```console
-$ python -c "import zuv; print(zuv.libuv_version())"
+$ python -c "import zuvloop; print(zuvloop.libuv_version())"
 1.51.0
 ```
 ///

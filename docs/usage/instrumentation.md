@@ -1,6 +1,6 @@
 # Instrumentation
 
-zuv emits plain [OpenTelemetry](https://opentelemetry.io). Its only runtime
+zuvloop emits plain [OpenTelemetry](https://opentelemetry.io). Its only runtime
 dependency is `opentelemetry-api` — not the SDK, and nothing vendor-specific.
 
 Until an application installs a provider, OpenTelemetry hands back proxy
@@ -13,32 +13,32 @@ there is no flag to turn this off.
 
 | Signal | Kind | Measured by |
 | --- | --- | --- |
-| `zuv.slow_callback` | span, with real start and end timestamps | `uv_hrtime()` around the callback |
-| `zuv.unhandled_exception` | span, with the exception recorded | the loop's error path |
-| `zuv.slow_callbacks`, `zuv.unhandled_exceptions` | counters | as above |
-| `zuv.callback_duration` | histogram | `uv_hrtime()` |
-| `zuv.loop_count`, `events`, `events_waiting`, `idle_time_ns`, `callbacks_run`, `ready`, `timers`, `watchers` | gauges | native counters and `uv_metrics_info()`, sampled on a dedicated `uv_timer_t` |
+| `zuvloop.slow_callback` | span, with real start and end timestamps | `uv_hrtime()` around the callback |
+| `zuvloop.unhandled_exception` | span, with the exception recorded | the loop's error path |
+| `zuvloop.slow_callbacks`, `zuvloop.unhandled_exceptions` | counters | as above |
+| `zuvloop.callback_duration` | histogram | `uv_hrtime()` |
+| `zuvloop.loop_count`, `events`, `events_waiting`, `idle_time_ns`, `callbacks_run`, `ready`, `timers`, `watchers` | gauges | native counters and `uv_metrics_info()`, sampled on a dedicated `uv_timer_t` |
 
 ## Collecting it
 
 Anything that speaks OpenTelemetry collects it. `logfire.configure()` is one such
-thing, and zuv does not import logfire to work with it:
+thing, and zuvloop does not import logfire to work with it:
 
 ```python
 import logfire
-import zuv
+import zuvloop
 
 
 async def main() -> None:
-    zuv.instrument()  # start the periodic loop gauges
+    zuvloop.instrument()  # start the periodic loop gauges
     ...
 
 
 logfire.configure()  # installs the OTel providers
-zuv.run(main())
+zuvloop.run(main())
 ```
 
-[`zuv.instrument()`](../reference/api.md#zuvinstrument) starts the gauge sampler. Spans and counters
+[`zuvloop.instrument()`](../reference/api.md#zuvloopinstrument) starts the gauge sampler. Spans and counters
 need no setup — they are emitted as the events happen.
 
 ## Slow callbacks

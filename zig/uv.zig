@@ -1,4 +1,4 @@
-//! Hand-written declarations for the subset of libuv that zuv uses.
+//! Hand-written declarations for the subset of libuv that zuvloop uses.
 //!
 //! `uv.h` cannot be run through translate-c: on Darwin it pulls in `mach/mach.h`,
 //! whose message structs defeat the translator. Declaring the ABI here also keeps

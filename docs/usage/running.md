@@ -1,18 +1,18 @@
 # Running the loop
 
-zuv is a loop factory. Everything below is a different way to hand that factory
+zuvloop is a loop factory. Everything below is a different way to hand that factory
 to something that starts a loop.
 
 ## Directly
 
 ```python
-import zuv
+import zuvloop
 
-zuv.run(main())
+zuvloop.run(main())
 ```
 
-`zuv.run()` takes the same arguments as `asyncio.run()` — `debug` and
-`loop_factory` included — and is exactly `asyncio.run()` with zuv's factory as
+`zuvloop.run()` takes the same arguments as `asyncio.run()` — `debug` and
+`loop_factory` included — and is exactly `asyncio.run()` with zuvloop's factory as
 the default.
 
 ## Through asyncio
@@ -20,9 +20,9 @@ the default.
 ```python
 import asyncio
 
-import zuv
+import zuvloop
 
-asyncio.run(main(), loop_factory=zuv.new_event_loop)
+asyncio.run(main(), loop_factory=zuvloop.new_event_loop)
 ```
 
 Prefer this when something else already owns the call to `asyncio.run()`.
@@ -31,7 +31,7 @@ Prefer this when something else already owns the call to `asyncio.run()`.
 loop to outlive a single coroutine:
 
 ```python
-with asyncio.Runner(loop_factory=zuv.new_event_loop) as runner:
+with asyncio.Runner(loop_factory=zuvloop.new_event_loop) as runner:
     runner.run(setup())
     runner.run(main())
 ```
@@ -43,17 +43,17 @@ Most frameworks accept a loop factory somewhere. A few examples:
 //// tab | uvicorn
 
 ```console
-$ uvicorn app:app --loop zuv_loop:zuv_loop_factory
+$ uvicorn app:app --loop zuvloop_loop:zuvloop_loop_factory
 ```
 
-Where `zuv_loop.py` is:
+Where `zuvloop_loop.py` is:
 
 ```python
-import zuv
+import zuvloop
 
 
-def zuv_loop_factory():
-    return zuv.new_event_loop()
+def zuvloop_loop_factory():
+    return zuvloop.new_event_loop()
 ```
 ////
 
@@ -62,9 +62,9 @@ def zuv_loop_factory():
 ```python
 import anyio
 
-import zuv
+import zuvloop
 
-anyio.run(main, backend="asyncio", backend_options={"loop_factory": zuv.new_event_loop})
+anyio.run(main, backend="asyncio", backend_options={"loop_factory": zuvloop.new_event_loop})
 ```
 ////
 
@@ -73,28 +73,28 @@ anyio.run(main, backend="asyncio", backend_options={"loop_factory": zuv.new_even
 ```python
 import pytest
 
-import zuv
+import zuvloop
 
 
 @pytest.fixture
 def anyio_backend():
-    return "asyncio", {"loop_factory": zuv.new_event_loop}
+    return "asyncio", {"loop_factory": zuvloop.new_event_loop}
 ```
 ////
 
 ## Creating a loop by hand
 
 ```python
-import zuv
+import zuvloop
 
-loop = zuv.new_event_loop()
+loop = zuvloop.new_event_loop()
 try:
     loop.run_until_complete(main())
 finally:
     loop.close()
 ```
 
-`zuv.new_event_loop()` returns a [`zuv.EventLoop`](../reference/api.md#zuveventloop), which is an
+`zuvloop.new_event_loop()` returns a [`zuvloop.EventLoop`](../reference/api.md#zuvloopeventloop), which is an
 `asyncio.AbstractEventLoop`. Close it when you are done: the loop owns a libuv
 loop, a self-pipe and any transports still open, and closing is what releases
 them.
@@ -109,11 +109,11 @@ registered from the main thread.
 ## Debug mode
 
 ```python
-zuv.run(main(), debug=True)
+zuvloop.run(main(), debug=True)
 ```
 
 Debug mode times every callback and reports the slow ones through
-`call_exception_handler`, the same as asyncio. zuv also turns each into an
+`call_exception_handler`, the same as asyncio. zuvloop also turns each into an
 OpenTelemetry span carrying the awaiting call graph — see
 [Instrumentation](instrumentation.md).
 

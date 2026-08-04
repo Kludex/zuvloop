@@ -16,7 +16,7 @@ from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-import zuv
+import zuvloop
 
 
 @pytest.fixture(scope="session")
@@ -80,22 +80,22 @@ def attribute(span: ReadableSpan, key: str) -> Any:
     return span.attributes[key]
 
 
-def running_loop() -> zuv.EventLoop:
+def running_loop() -> zuvloop.EventLoop:
     """The running loop, typed - `asyncio.get_running_loop` widens to the ABC."""
     loop = asyncio.get_running_loop()
-    assert isinstance(loop, zuv.EventLoop)
+    assert isinstance(loop, zuvloop.EventLoop)
     return loop
 
 
 @pytest.fixture
 def anyio_backend() -> tuple[str, dict[str, object]]:
-    return "asyncio", {"loop_factory": zuv.new_event_loop}
+    return "asyncio", {"loop_factory": zuvloop.new_event_loop}
 
 
 @pytest.fixture
-def loop() -> Iterator[zuv.EventLoop]:
+def loop() -> Iterator[zuvloop.EventLoop]:
     """A loop that is *not* running, for driving lifecycle behaviour by hand."""
-    instance = zuv.new_event_loop()
+    instance = zuvloop.new_event_loop()
     try:
         yield instance
     finally:

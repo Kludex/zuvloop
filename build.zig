@@ -61,7 +61,7 @@ pub fn build(b: *std.Build) void {
     const python_include = b.option([]const u8, "python-include", "CPython include directory") orelse
         @panic("-Dpython-include is required");
     const ext_path = b.option([]const u8, "ext-path", "Installed name of the extension module") orelse
-        "_zuv.so";
+        "_zuvloop.so";
     const os = target.result.os.tag;
 
     const mod = b.createModule(.{
@@ -102,7 +102,7 @@ pub fn build(b: *std.Build) void {
                 "-D_POSIX_C_SOURCE=200112",
             }) catch @panic("OOM");
         },
-        else => @panic("unsupported target: zuv builds on Linux and macOS"),
+        else => @panic("unsupported target: zuvloop builds on Linux and macOS"),
     }
 
     mod.addCSourceFiles(.{
@@ -112,7 +112,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const lib = b.addLibrary(.{
-        .name = "_zuv",
+        .name = "_zuvloop",
         .root_module = mod,
         .linkage = .dynamic,
     });
