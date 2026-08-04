@@ -71,9 +71,9 @@ while `zuv` hands them to libc with `AI_NUMERICHOST`, which is slower but cannot
 
 A few decisions worth knowing about:
 
-- **The GIL is released for the whole `uv_run` call** and reacquired per callback batch. Callbacks
-  that need no Python work - buffer allocation, write completions with nothing waiting - never
-  take it.
+- **The GIL is released for the whole `uv_run` call.** Callbacks reacquire it through a thread
+  state saved once by the loop, rather than `PyGILState_Ensure`, and a nested callback within the
+  same batch pays nothing.
 - **`call_soon(cb, a, b)` allocates no tuple.** Up to three arguments are stored inside the handle
   and passed straight to `PyObject_Vectorcall`.
 - **Timers use one `uv_timer_t` and an internal heap**, rather than a libuv handle per timer.
@@ -107,13 +107,18 @@ async def main() -> None:
 Slow-callback reports carry the awaiting call graph, captured with `asyncio.format_call_graph()`
 (new in 3.14), so you see *why* the callback was running rather than just its repr.
 
-Because `zuv` schedules real `asyncio.Task` objects, the 3.14 out-of-process tooling works
-unchanged:
+Because `zuv` schedules real `asyncio.Task` objects rather than its own, the 3.14 introspection
+APIs work unchanged - `asyncio.all_tasks()`, `asyncio.current_task()`, `asyncio.capture_call_graph()`
+and `asyncio.print_call_graph()` are all covered by the test suite. The same applies to the
+out-of-process tooling, which reads those task objects straight out of process memory:
 
 ```console
 $ python -m asyncio ps <pid>
 $ python -m asyncio pstree <pid>
 ```
+
+Those two need the platform's usual debugging privileges (on macOS, `sudo`) - a restriction that
+applies to any event loop, `zuv` or not.
 
 ## Not implemented yet
 

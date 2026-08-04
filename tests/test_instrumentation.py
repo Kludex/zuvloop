@@ -220,3 +220,35 @@ async def test_metrics_on_a_closed_loop_are_zero() -> None:
 async def test_publishing_metrics_reaches_real_gauges() -> None:
     loop = running_loop()
     publish_metrics(loop._metrics())
+
+
+async def test_the_stdlib_call_graph_apis_work_on_this_loop() -> None:
+    """3.14's introspection reads real asyncio.Task objects, which is what zuv schedules."""
+    import io
+
+    started = asyncio.Event()
+
+    async def leaf() -> None:
+        started.set()
+        await asyncio.sleep(5)
+
+    async def branch() -> None:
+        await leaf()
+
+    task = running_loop().create_task(branch(), name="introspected-branch")
+    await started.wait()
+
+    graph = asyncio.capture_call_graph(task)
+    assert graph is not None
+    assert graph.future is task
+
+    rendered = asyncio.format_call_graph(task)
+    assert "leaf" in rendered
+
+    buffer = io.StringIO()
+    asyncio.print_call_graph(task, file=buffer)
+    assert "branch" in buffer.getvalue()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task

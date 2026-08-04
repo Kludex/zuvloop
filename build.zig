@@ -62,12 +62,7 @@ pub fn build(b: *std.Build) void {
         @panic("-Dpython-include is required");
     const ext_path = b.option([]const u8, "ext-path", "Installed name of the extension module") orelse
         "_zuv.so";
-    const free_threaded = b.option(bool, "free-threaded", "Target a free-threaded CPython build") orelse false;
-
     const os = target.result.os.tag;
-
-    const options = b.addOptions();
-    options.addOption(bool, "free_threaded", free_threaded);
 
     const mod = b.createModule(.{
         .root_source_file = b.path("zig/module.zig"),
@@ -76,7 +71,6 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .pic = true,
     });
-    mod.addOptions("build_options", options);
     mod.addIncludePath(.{ .cwd_relative = python_include });
     mod.addIncludePath(b.path("vendor/libuv/include"));
     mod.addIncludePath(b.path("vendor/libuv/src"));

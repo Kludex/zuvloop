@@ -26,7 +26,6 @@ class ZigBuildHook(BuildHookInterface[Any]):
             "build",
             f"-Dpython-include={sysconfig.get_paths()['include']}",
             f"-Dext-path=_zuv{suffix}",
-            f"-Dfree-threaded={str(bool(sysconfig.get_config_var('Py_GIL_DISABLED'))).lower()}",
             "-Doptimize=ReleaseFast",
             "--prefix",
             str(root / "src" / "zuv"),
