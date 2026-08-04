@@ -725,6 +725,32 @@ fn closeAllHandles(st: *State) void {
     if (uv.uv_loop_close(st.uvloop) != 0) @panic("libuv loop still owns resources after shutdown");
 }
 
+/// Runs on CPython's main interpreter thread. Signal-owning loops cannot be
+/// closed by a finalizer on another thread because Python only permits signal
+/// handlers to be changed from the main thread.
+fn closeFromPending(arg: ?*anyopaque) callconv(.c) c_int {
+    const callback: *py.Object = @ptrCast(@alignCast(arg.?));
+    const result = c.PyObject_CallNoArgs(callback);
+    if (result) |value| {
+        py.decref(value);
+    } else {
+        py.writeUnraisable(callback);
+    }
+    py.decref(callback);
+    return 0;
+}
+
+fn deferClose(_: *py.Object, callback: *py.Object) py.Error!*py.Object {
+    // The callback independently owns the signal numbers and preserved wakeup
+    // descriptor until closeFromPending restores process-global signal state.
+    py.incref(callback);
+    if (c.Py_AddPendingCall(closeFromPending, callback) != 0) {
+        py.decref(callback);
+        return py.errRuntime("failed to defer event loop close to the main thread");
+    }
+    return py.noneRef();
+}
+
 // ---------------------------------------------------------------------------
 // type plumbing
 
@@ -866,6 +892,7 @@ var methods = [_]c.PyMethodDef{
     py.method("_getaddrinfo", dns.getaddrinfo, "Resolve a host on the libuv threadpool."),
     py.method("_getnameinfo", dns.getnameinfo, "Reverse-resolve an address on the libuv threadpool."),
     py.method("_make_transport", transportmod.makeTransport, "Wrap a connected descriptor in a stream transport."),
+    py.methodO("_defer_close", deferClose, "Defer loop closure to the main interpreter thread."),
     py.methodNoArgs("_close", closeLoop, "Release the libuv loop."),
     py.sentinel,
 };

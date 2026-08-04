@@ -126,6 +126,34 @@ def test_unclosed_loop_finalization_restores_signal_state() -> None:
         signal.signal(signal.SIGUSR1, original)
 
 
+def test_worker_thread_finalization_restores_signal_state_on_main_thread() -> None:
+    original = signal.getsignal(signal.SIGUSR1)
+    loop = zuv.new_event_loop()
+    loop.add_signal_handler(signal.SIGUSR1, print)
+    loop_ref = weakref.ref(loop)
+    owner = [loop]
+    del loop
+
+    def finalize() -> None:
+        owned = owner.pop()
+        del owned
+        gc.collect()
+
+    try:
+        with pytest.warns(ResourceWarning, match="unclosed event loop"):
+            thread = threading.Thread(target=finalize)
+            thread.start()
+            thread.join()
+
+        gc.collect()
+        assert loop_ref() is None
+        assert signal.set_wakeup_fd(-1) == -1
+        assert signal.getsignal(signal.SIGUSR1) is signal.SIG_DFL
+    finally:
+        signal.set_wakeup_fd(-1)
+        signal.signal(signal.SIGUSR1, original)
+
+
 def test_a_signal_between_loop_runs_is_delivered_on_the_next_run() -> None:
     original = signal.getsignal(signal.SIGUSR1)
     loop = zuv.new_event_loop()

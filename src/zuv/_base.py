@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import os
 import signal
 import socket
 import sys
@@ -11,6 +12,7 @@ import weakref
 from asyncio import events as _events
 from collections.abc import Callable, Coroutine
 from contextvars import Context
+from functools import partial
 from typing import Any
 
 from . import _zuv
@@ -50,6 +52,27 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
                 # unraisable; warning filters must not prevent cleanup.
                 pass
             if not self.is_running():
+                if self._signal_handlers and threading.current_thread() is not threading.main_thread():
+                    wakeup_fd = self._csock.fileno()
+                    try:
+                        self._defer_close(
+                            partial(_finish_deferred_signal_cleanup, tuple(self._signal_handlers), wakeup_fd)
+                        )
+                    except BaseException:
+                        try:
+                            _warn(
+                                f"could not close signal-owning event loop {self!r} from the main thread",
+                                ResourceWarning,
+                                source=self,
+                            )
+                        except BaseException:
+                            pass
+                        return
+                    # Keep the descriptor installed in CPython alive until the
+                    # pending callback can disable it on the main thread.
+                    self._csock.detach()
+                    self._signal_handlers.clear()
+                    self._wakeup_fd_attached = False
                 try:
                     self.close()
                 except BaseException:
@@ -293,6 +316,16 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
 
 def _stop_when_done(future: asyncio.Future[Any]) -> None:
     asyncio.futures._get_loop(future).stop()  # type: ignore[attr-defined]
+
+
+def _finish_deferred_signal_cleanup(signals: tuple[int, ...], wakeup_fd: int) -> None:
+    signal.set_wakeup_fd(-1)
+    try:
+        for sig in signals:
+            handler = signal.default_int_handler if sig == signal.SIGINT else signal.SIG_DFL
+            signal.signal(sig, handler)
+    finally:
+        os.close(wakeup_fd)
 
 
 def _shutdown_executor(loop: LoopBase, future: asyncio.Future[None], executor: concurrent.futures.Executor) -> None:
