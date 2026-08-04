@@ -44,6 +44,15 @@ const Inbox = struct {
         }
         return reversed;
     }
+
+    fn traverse(self: *Inbox, visitproc: c.visitproc, arg: ?*anyopaque) c_int {
+        var node = @atomicLoad(?*Handle, &self.head, .acquire);
+        while (node) |h| : (node = h.next) {
+            const r = py.visit(@ptrCast(h), visitproc, arg);
+            if (r != 0) return r;
+        }
+        return 0;
+    }
 };
 
 pub const State = struct {
@@ -957,6 +966,8 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
             transport = owned.owner_next;
         }
         r = dns.traverse(st, visitproc, arg);
+        if (r != 0) return r;
+        r = st.inbox.traverse(visitproc, arg);
         if (r != 0) return r;
         r = pollermod.traverse(st, visitproc, arg);
         if (r != 0) return r;
