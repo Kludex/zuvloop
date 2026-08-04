@@ -221,13 +221,13 @@ var timer_methods = [_]c.PyMethodDef{
 
 fn slots(methods: [*]c.PyMethodDef) [8]c.PyType_Slot {
     return .{
-        .{ .slot = c.Py_tp_dealloc, .pfunc = @constCast(@ptrCast(&dealloc)) },
-        .{ .slot = c.Py_tp_traverse, .pfunc = @constCast(@ptrCast(&traverse)) },
-        .{ .slot = c.Py_tp_clear, .pfunc = @constCast(@ptrCast(&clear_)) },
-        .{ .slot = c.Py_tp_repr, .pfunc = @constCast(@ptrCast(&repr)) },
+        .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
+        .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
+        .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&clear_)) },
+        .{ .slot = c.Py_tp_repr, .pfunc = @ptrCast(@constCast(&repr)) },
         .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(methods) },
         .{ .slot = c.Py_tp_getset, .pfunc = @ptrCast(&getsets) },
-        .{ .slot = c.Py_tp_doc, .pfunc = @constCast(@ptrCast("A scheduled callback.")) },
+        .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("A scheduled callback.")) },
         .{ .slot = 0, .pfunc = null },
     };
 }

@@ -37,7 +37,7 @@ pub const Pid = std.c.pid_t;
 
 pub const HandleType = enum(c_uint) {
     unknown = 0,
-    @"async" = 1,
+    async = 1,
     check = 2,
     fs_event = 3,
     fs_poll = 4,

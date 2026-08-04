@@ -22,7 +22,7 @@ fn exec(module: ?*py.Object) callconv(.c) c_int {
 }
 
 var slots = [_]c.PyModuleDef_Slot{
-    .{ .slot = c.Py_mod_exec, .value = @constCast(@ptrCast(&exec)) },
+    .{ .slot = c.Py_mod_exec, .value = @ptrCast(@constCast(&exec)) },
     .{ .slot = c.Py_mod_multiple_interpreters, .value = c.Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED },
     .{ .slot = c.Py_mod_gil, .value = c.Py_MOD_GIL_USED },
     .{ .slot = 0, .value = null },
