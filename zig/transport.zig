@@ -40,6 +40,7 @@ var str_buffer_updated: ?*py.Object = null;
 var str_pause_writing: ?*py.Object = null;
 var str_resume_writing: ?*py.Object = null;
 var str_detach: ?*py.Object = null;
+var str_sock_detach: ?*py.Object = null;
 var str_high: ?*py.Object = null;
 var str_low: ?*py.Object = null;
 var str_start_reading: ?*py.Object = null;
@@ -58,6 +59,7 @@ pub const Transport = extern struct {
     extra: ?*py.Object,
     conn_lost_exc: ?*py.Object,
     read_bytes: ?*py.Object,
+    socket_view: ?*py.Object,
     cb_connection_lost: ?*py.Object,
     cb_data_received: ?*py.Object,
     cb_eof_received: ?*py.Object,
@@ -268,7 +270,14 @@ fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) vo
         handleEof(self);
         return;
     }
-    forceClose(self, py.errUv(@intCast(nread)) catch null);
+    forceClose(self, takeUvError(@intCast(nread)));
+}
+
+fn takeUvError(status: c_int) ?*py.Object {
+    switch (py.errUv(status)) {
+        error.Python => {},
+    }
+    return c.PyErr_GetRaisedException();
 }
 
 fn handleEof(self: *Transport) void {
@@ -310,7 +319,7 @@ fn onWritten(req: ?*uv.Write, status: c_int) callconv(.c) void {
     py.decref(self);
 
     if (status < 0) {
-        forceClose(self, py.errUv(status) catch null);
+        forceClose(self, takeUvError(status));
         return;
     }
     maybeResumeProtocol(self);
@@ -379,7 +388,7 @@ fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!vo
             pending[0].len -= remaining;
         } else if (written < 0 and written != uv.EAGAIN) {
             releaseViews(views);
-            forceClose(self, py.errUv(written) catch null);
+            forceClose(self, takeUvError(written));
             return;
         }
     }
@@ -403,12 +412,24 @@ fn maybeResumeProtocol(self: *Transport) void {
 // ---------------------------------------------------------------------------
 // teardown
 
+/// libuv owns the descriptor, so the socket object handed out through
+/// `get_extra_info("socket")` must be detached rather than closed - otherwise
+/// Python would close a descriptor libuv has already closed and reused.
+fn releaseSocketView(self: *Transport) void {
+    const view = self.socket_view orelse return;
+    self.socket_view = null;
+    const result = c.PyObject_CallMethodNoArgs(view, str_sock_detach);
+    if (result) |r| py.decref(r) else c.PyErr_Clear();
+    py.decref(view);
+}
+
 fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     const self: *Transport = @ptrCast(@alignCast(uv.getData(handle.?)));
     const st = self.loopState();
     st.gilEnter();
     defer st.gilExit();
 
+    releaseSocketView(self);
     self.flags |= CONN_LOST;
     scheduleCall(self, self.cb_connection_lost, self.conn_lost_exc orelse py.none());
     if (self.server) |server| {
@@ -508,6 +529,15 @@ fn abort(self_obj: *py.Object) py.Error!*py.Object {
 
 fn getProtocol(self_obj: *py.Object) py.Error!*py.Object {
     return py.newref(asTransport(self_obj).protocol orelse py.none()).?;
+}
+
+/// `_adopt_socket_view(sock)`: the socket object mirroring libuv's descriptor.
+fn adoptSocketView(self_obj: *py.Object, sock: *py.Object) py.Error!*py.Object {
+    const self = asTransport(self_obj);
+    releaseSocketView(self);
+    py.incref(sock);
+    self.socket_view = sock;
+    return py.noneRef();
 }
 
 fn setProtocol(self_obj: *py.Object, protocol: *py.Object) py.Error!*py.Object {
@@ -775,6 +805,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     const tp = py.typeOf(obj.?);
     c.PyObject_GC_UnTrack(obj);
     c.PyObject_ClearWeakRefs(obj);
+    releaseSocketView(self);
     if (self.view.obj != null) c.PyBuffer_Release(&self.view);
     py.clear(&self.read_bytes);
     py.clear(&self.loop);
@@ -802,6 +833,7 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
         self.extra,
         self.conn_lost_exc,
         self.read_bytes,
+        self.socket_view,
         self.cb_connection_lost,
         self.cb_data_received,
         self.cb_eof_received,
@@ -841,6 +873,7 @@ var methods = [_]c.PyMethodDef{
     py.methodNoArgs("abort", abort, "Close the transport immediately."),
     py.methodNoArgs("get_protocol", getProtocol, "Return the current protocol."),
     py.methodO("set_protocol", setProtocol, "Replace the current protocol."),
+    py.methodO("_adopt_socket_view", adoptSocketView, "Track the socket object mirroring libuv's descriptor."),
     py.methodNoArgs("is_reading", isReading, "Return True while reads are delivered."),
     py.methodNoArgs("pause_reading", pauseReading, "Stop delivering reads."),
     py.methodNoArgs("resume_reading", resumeReading, "Resume delivering reads."),
@@ -884,6 +917,7 @@ pub fn register(module: *py.Object) py.Error!void {
     str_pause_writing = py.intern("pause_writing") orelse return py.Error.Python;
     str_resume_writing = py.intern("resume_writing") orelse return py.Error.Python;
     str_detach = py.intern("_detach") orelse return py.Error.Python;
+    str_sock_detach = py.intern("detach") orelse return py.Error.Python;
     str_high = py.intern("high") orelse return py.Error.Python;
     str_low = py.intern("low") orelse return py.Error.Python;
     str_start_reading = py.intern("_start_reading") orelse return py.Error.Python;

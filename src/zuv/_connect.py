@@ -4,7 +4,7 @@ import asyncio
 import os
 import socket
 import ssl as ssl_module
-from asyncio import sslproto
+from asyncio import sslproto, trsock
 from collections.abc import Callable, Sequence
 from typing import Any, cast
 
@@ -308,10 +308,20 @@ class ConnectionOperations(SocketOperations):
             "proto": sock.proto,
         }
         kind = _zuv.KIND_PIPE if sock.family == socket.AF_UNIX else _zuv.KIND_TCP
+        family, kind_, proto = sock.family, sock.type, sock.proto
         # Detach only once libuv owns the descriptor, so a failure leaves the
         # socket object responsible for closing it.
-        transport = self._make_transport(sock.fileno(), kind, protocol, waiter, extra, server)
+        fd = sock.fileno()
+        transport = self._make_transport(fd, kind, protocol, waiter, extra, server)
         sock.detach()
+
+        # anyio - and so httpx, Starlette and FastAPI - reaches for the raw
+        # socket through get_extra_info("socket"). The view below mirrors the
+        # descriptor libuv now owns; the transport detaches it on close so
+        # Python never closes a descriptor that is not its own.
+        view = socket.socket(family, kind_, proto, fileno=fd)
+        extra["socket"] = trsock.TransportSocket(view)
+        transport._adopt_socket_view(view)
         return transport
 
     async def _wrap_socket(

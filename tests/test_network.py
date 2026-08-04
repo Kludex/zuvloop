@@ -4,6 +4,7 @@ import asyncio
 import os
 import socket
 import ssl
+import struct
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -169,6 +170,38 @@ async def test_abort_drops_the_connection() -> None:
         transport.abort()
         assert protocol.done is not None
         await protocol.done
+
+
+async def test_connection_lost_receives_the_socket_error() -> None:
+    loop = running_loop()
+    listener = socket.socket()
+    listener.setblocking(False)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    accepted = loop.create_task(loop.sock_accept(listener))
+
+    class LostError(asyncio.Protocol):
+        def __init__(self) -> None:
+            self.done = loop.create_future()
+
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            transport.write(b"make the peer reset unread data")  # type: ignore[attr-defined]
+
+        def connection_lost(self, exc: BaseException | None) -> None:
+            self.done.set_result(exc)
+
+    try:
+        transport, protocol = await loop.create_connection(LostError, *listener.getsockname())
+        peer, _addr = await accepted
+        peer.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        peer.close()
+
+        exc = await asyncio.wait_for(protocol.done, 2)
+
+        assert isinstance(exc, ConnectionResetError)
+        assert transport.is_closing()
+    finally:
+        listener.close()
 
 
 async def test_pause_and_resume_reading() -> None:
