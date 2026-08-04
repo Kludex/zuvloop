@@ -654,6 +654,10 @@ fn hasHandles(st: *State) bool {
 }
 
 fn freeStateStorage(st: *State) void {
+    if (st.scratch) |scratch| {
+        const scratch_slice: []u8 = scratch[0..transportmod.copy_threshold];
+        alloc.free(scratch_slice);
+    }
     alloc.free(@as([*]u64, @ptrCast(@alignCast(st.block.ptr)))[0 .. st.block.len / 8]);
     alloc.destroy(st);
 }
