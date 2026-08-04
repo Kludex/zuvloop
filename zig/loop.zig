@@ -713,7 +713,7 @@ fn newLoop(tp: ?*c.PyTypeObject, _: ?*py.Object, _: ?*py.Object) callconv(.c) ?*
     const loop_size = uv.uv_loop_size();
     const idle_size = uv.uv_handle_size(.idle);
     const timer_size = uv.uv_handle_size(.timer);
-    const async_size = uv.uv_handle_size(.@"async");
+    const async_size = uv.uv_handle_size(.async);
     const words = alloc.alloc(u64, (loop_size + idle_size + 2 * timer_size + async_size + 7) / 8) catch {
         py.decref(obj);
         _ = c.PyErr_NoMemory();
@@ -860,13 +860,13 @@ var getsets = [_]c.PyGetSetDef{
 };
 
 var slots = [_]c.PyType_Slot{
-    .{ .slot = c.Py_tp_new, .pfunc = @constCast(@ptrCast(&newLoop)) },
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @constCast(@ptrCast(&dealloc)) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @constCast(@ptrCast(&traverse)) },
-    .{ .slot = c.Py_tp_clear, .pfunc = @constCast(@ptrCast(&clear_)) },
+    .{ .slot = c.Py_tp_new, .pfunc = @ptrCast(@constCast(&newLoop)) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
+    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&clear_)) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
     .{ .slot = c.Py_tp_getset, .pfunc = @ptrCast(&getsets) },
-    .{ .slot = c.Py_tp_doc, .pfunc = @constCast(@ptrCast("libuv-backed event loop core.")) },
+    .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("libuv-backed event loop core.")) },
     .{ .slot = 0, .pfunc = null },
 };
 
