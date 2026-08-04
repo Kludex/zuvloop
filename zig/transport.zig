@@ -646,11 +646,19 @@ fn setWriteBufferLimits(
     const self = asTransport(self_obj);
     var high_water: usize = default_high_water;
     if (high) |value| {
-        if (!py.isNone(value)) high_water = @intCast(try py.asIsize(value));
+        if (!py.isNone(value)) {
+            const parsed = try py.asIsize(value);
+            if (parsed < 0) return py.errValue("high water mark must be non-negative");
+            high_water = @intCast(parsed);
+        }
     }
     var low_water: usize = high_water / 4;
     if (low) |value| {
-        if (!py.isNone(value)) low_water = @intCast(try py.asIsize(value));
+        if (!py.isNone(value)) {
+            const parsed = try py.asIsize(value);
+            if (parsed < 0) return py.errValue("low water mark must be non-negative");
+            low_water = @intCast(parsed);
+        }
     }
     if (low_water > high_water) return py.errValue("high water mark must be >= low water mark");
     self.high_water = high_water;

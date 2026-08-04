@@ -258,6 +258,10 @@ async def test_write_buffer_limits_validate_their_arguments() -> None:
         assert transport.get_write_buffer_limits() == (2048, 8192)
         with pytest.raises(ValueError, match="high water mark"):
             transport.set_write_buffer_limits(high=10, low=100)
+        with pytest.raises(ValueError, match="high water mark must be non-negative"):
+            transport.set_write_buffer_limits(high=-1)
+        with pytest.raises(ValueError, match="low water mark must be non-negative"):
+            transport.set_write_buffer_limits(low=-1)
         with pytest.raises(TypeError, match="unexpected keyword"):
             transport.set_write_buffer_limits(medium=1)  # type: ignore[call-arg]
         with pytest.raises(TypeError, match="at most 2"):
