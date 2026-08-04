@@ -763,3 +763,41 @@ async def test_transports_are_weak_referenceable() -> None:
         transport.close()
         assert protocol.done is not None
         await protocol.done
+
+
+async def test_contextvars_reach_protocol_callbacks() -> None:
+    """asyncio delivers reads in the context captured when the transport was made."""
+    import contextvars
+
+    marker: contextvars.ContextVar[str] = contextvars.ContextVar("marker")
+    marker.set("set-before-the-connection")
+    loop = running_loop()
+    seen: dict[str, str] = {}
+
+    class Watcher(asyncio.Protocol):
+        def __init__(self) -> None:
+            self.done = loop.create_future()
+
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            seen["connection_made"] = marker.get("MISSING")
+
+        def data_received(self, data: bytes) -> None:
+            seen["data_received"] = marker.get("MISSING")
+            self.done.set_result(None)
+
+        def connection_lost(self, exc: BaseException | None) -> None:
+            seen["connection_lost"] = marker.get("MISSING")
+
+    server, port, _ = await start_echo()
+    async with server:
+        transport, protocol = await loop.create_connection(Watcher, "127.0.0.1", port)
+        transport.write(b"ping")
+        await protocol.done
+        transport.close()
+        await asyncio.sleep(0.05)
+
+    assert seen == {
+        "connection_made": "set-before-the-connection",
+        "data_received": "set-before-the-connection",
+        "connection_lost": "set-before-the-connection",
+    }

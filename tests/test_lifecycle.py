@@ -90,11 +90,13 @@ def test_loop_close_releases_open_transports() -> None:
 
 def test_loop_close_releases_pending_dns_requests() -> None:
     loop = zuv.new_event_loop()
-    futures = [loop._getaddrinfo(f"zuv-pending-{index}.invalid", 80, 0, 0, 0, 0) for index in range(64)]
+    futures = [loop._getaddrinfo(f"zuv-pending-{index}.invalid", 80, 0, 0, 0, 0) for index in range(128)]
     loop_ref = weakref.ref(loop)
     future_refs = [weakref.ref(future) for future in futures]
 
+    started = time.monotonic()
     loop.close()
+    assert time.monotonic() - started < 0.1
     del futures, loop
     gc.collect()
 

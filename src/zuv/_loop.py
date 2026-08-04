@@ -34,7 +34,9 @@ class EventLoop(ConnectionOperations):
             raise RuntimeError("signal handlers can only be added from the main thread")
         self._signal_handlers[sig] = (callback, args, contextvars.copy_context())
         try:
-            signal.signal(sig, self._handle_signal)
+            # Installing any Python handler is what makes CPython write the
+            # signal number to the wakeup fd; the loop dispatches from there.
+            signal.signal(sig, _noop_signal_handler)
             signal.siginterrupt(sig, False)
         except OSError as exc:
             del self._signal_handlers[sig]
@@ -48,12 +50,9 @@ class EventLoop(ConnectionOperations):
         signal.signal(sig, handler)
         return True
 
-    def _handle_signal(self, signum: int, frame: FrameType | None) -> None:
-        entry = self._signal_handlers.get(signum)
-        if entry is None:  # pragma: no cover - the handler is removed before delivery
-            return
-        callback, args, context = entry
-        self.call_soon_threadsafe(callback, *args, context=context)
+
+def _noop_signal_handler(signum: int, frame: FrameType | None) -> None:
+    """Delivery happens through the wakeup fd; this only keeps it installed."""
 
 
 def _check_signal(sig: int) -> None:

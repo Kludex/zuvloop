@@ -60,6 +60,7 @@ pub const Transport = extern struct {
     conn_lost_exc: ?*py.Object,
     read_bytes: ?*py.Object,
     socket_view: ?*py.Object,
+    context: ?*py.Object,
     cb_connection_lost: ?*py.Object,
     cb_data_received: ?*py.Object,
     cb_eof_received: ?*py.Object,
@@ -160,10 +161,32 @@ fn bindProtocol(self: *Transport, protocol: *py.Object) void {
     }
 }
 
+/// Used for callbacks asyncio invokes synchronously from `write()`, which
+/// simply inherit whichever context is already active.
 fn callProtocol(self: *Transport, callback: ?*py.Object, arg: ?*py.Object) void {
     const cb = callback orelse return;
     const result = if (arg) |a| c.PyObject_CallOneArg(cb, a) else c.PyObject_CallNoArgs(cb);
     if (result) |r| py.decref(r) else reportError(self, "Error in protocol callback");
+}
+
+/// Used for the read path. asyncio delivers reads from a handle whose context
+/// was copied when the transport was created, so contextvars set before the
+/// connection existed stay visible inside `data_received`. libuv calls straight
+/// into us with no context entered, so it is entered here instead.
+fn callInContext(self: *Transport, callback: ?*py.Object, arg: ?*py.Object) void {
+    const cb = callback orelse return;
+    const context = self.context;
+    if (context) |ctx| {
+        if (c.PyContext_Enter(ctx) < 0) {
+            reportError(self, "Error entering the transport context");
+            return;
+        }
+    }
+    const result = if (arg) |a| c.PyObject_CallOneArg(cb, a) else c.PyObject_CallNoArgs(cb);
+    if (result) |r| py.decref(r) else reportError(self, "Error in protocol callback");
+    if (context) |ctx| {
+        if (c.PyContext_Exit(ctx) < 0) py.writeUnraisable(@ptrCast(self));
+    }
 }
 
 fn reportError(self: *Transport, comptime message: [:0]const u8) void {
@@ -180,7 +203,7 @@ fn scheduleCall(self: *Transport, callback: ?*py.Object, arg: ?*py.Object) void 
     if (st.closed) return;
     var argv: [1]?*py.Object = .{arg};
     const n: usize = if (arg == null) 0 else 1;
-    const h = handlemod.create(handlemod.handle_type.?, self.loop.?, cb, argv[0..n], null) catch {
+    const h = handlemod.create(handlemod.handle_type.?, self.loop.?, cb, argv[0..n], self.context) catch {
         c.PyErr_Clear();
         return;
     };
@@ -205,10 +228,17 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
             return;
         };
         defer py.decref(size);
-        const target = c.PyObject_CallOneArg(self.cb_get_buffer orelse {
+        const getter = self.cb_get_buffer orelse {
             buf.* = .{ .base = @ptrFromInt(@alignOf(u8)), .len = 0 };
             return;
-        }, size);
+        };
+        if (self.context) |ctx| {
+            if (c.PyContext_Enter(ctx) < 0) c.PyErr_Clear();
+        }
+        const target = c.PyObject_CallOneArg(getter, size);
+        if (self.context) |ctx| {
+            if (c.PyContext_Exit(ctx) < 0) c.PyErr_Clear();
+        }
         if (target) |t| {
             defer py.decref(t);
             if (c.PyObject_GetBuffer(t, &self.view, c.PyBUF_WRITABLE) == 0) {
@@ -250,7 +280,7 @@ fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) vo
                 return;
             };
             defer py.decref(n);
-            callProtocol(self, self.cb_buffer_updated, n);
+            callInContext(self, self.cb_buffer_updated, n);
             return;
         }
         var data = self.read_bytes orelse return;
@@ -260,7 +290,7 @@ fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) vo
             c.PyErr_Clear();
             return;
         }
-        callProtocol(self, self.cb_data_received, data);
+        callInContext(self, self.cb_data_received, data);
         return;
     }
     py.clear(&self.read_bytes);
@@ -287,13 +317,20 @@ fn handleEof(self: *Transport) void {
         closeTransport(self);
         return;
     };
-    const keep = c.PyObject_CallNoArgs(cb) orelse {
+    if (self.context) |ctx| {
+        if (c.PyContext_Enter(ctx) < 0) c.PyErr_Clear();
+    }
+    const keep = c.PyObject_CallNoArgs(cb);
+    if (self.context) |ctx| {
+        if (c.PyContext_Exit(ctx) < 0) c.PyErr_Clear();
+    }
+    const kept = keep orelse {
         reportError(self, "Error in eof_received");
         closeTransport(self);
         return;
     };
-    defer py.decref(keep);
-    if (c.PyObject_IsTrue(keep) != 1) closeTransport(self);
+    defer py.decref(kept);
+    if (c.PyObject_IsTrue(kept) != 1) closeTransport(self);
 }
 
 fn startReading(self: *Transport) py.Error!void {
@@ -725,6 +762,8 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
     self.high_water = default_high_water;
     self.low_water = default_high_water / 4;
     self.kind = kind;
+    self.context = c.PyContext_CopyCurrent();
+    if (self.context == null) return py.Error.Python;
 
     // Everything after descriptor adoption must be infallible: otherwise the
     // Python socket would still believe it owns a descriptor now owned by
@@ -805,7 +844,9 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     const tp = py.typeOf(obj.?);
     c.PyObject_GC_UnTrack(obj);
     c.PyObject_ClearWeakRefs(obj);
+    c.PyObject_ClearManagedDict(obj);
     releaseSocketView(self);
+    py.clear(&self.context);
     if (self.view.obj != null) c.PyBuffer_Release(&self.view);
     py.clear(&self.read_bytes);
     py.clear(&self.loop);
@@ -834,6 +875,7 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
         self.conn_lost_exc,
         self.read_bytes,
         self.socket_view,
+        self.context,
         self.cb_connection_lost,
         self.cb_data_received,
         self.cb_eof_received,
@@ -846,11 +888,14 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
         const r = py.visit(slot, visitproc, arg);
         if (r != 0) return r;
     }
+    const managed = c.PyObject_VisitManagedDict(obj, visitproc, arg);
+    if (managed != 0) return managed;
     return py.visit(@ptrCast(py.typeOf(obj.?)), visitproc, arg);
 }
 
 fn clear_(obj: ?*py.Object) callconv(.c) c_int {
     const self = asTransport(obj.?);
+    c.PyObject_ClearManagedDict(obj);
     py.clear(&self.protocol);
     py.clear(&self.server);
     py.clear(&self.extra);
@@ -902,8 +947,10 @@ var spec = c.PyType_Spec{
     .name = "zuv._zuv.Transport",
     .basicsize = 0,
     .itemsize = 0,
+    // asyncio's transports are ordinary objects that accept attributes, and
+    // callers - test suites especially - rely on being able to set them.
     .flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | c.Py_TPFLAGS_MANAGED_WEAKREF |
-        c.Py_TPFLAGS_IMMUTABLETYPE | c.Py_TPFLAGS_DISALLOW_INSTANTIATION,
+        c.Py_TPFLAGS_MANAGED_DICT | c.Py_TPFLAGS_IMMUTABLETYPE | c.Py_TPFLAGS_DISALLOW_INSTANTIATION,
     .slots = &slots,
 };
 

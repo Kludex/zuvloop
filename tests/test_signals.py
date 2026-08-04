@@ -111,3 +111,31 @@ def test_a_closed_loop_rejects_signal_handlers(loop: zuv.EventLoop) -> None:
     loop.close()
     with pytest.raises(RuntimeError, match="closed"):
         loop.add_signal_handler(signal.SIGUSR1, print)
+
+
+async def test_a_signal_nobody_registered_is_ignored() -> None:
+    """The wakeup fd carries every signal, not only the ones the loop wants."""
+    original = signal.getsignal(signal.SIGUSR2)
+    signal.signal(signal.SIGUSR2, lambda *_: None)  # installed outside the loop
+    try:
+        os.kill(os.getpid(), signal.SIGUSR2)
+        await asyncio.sleep(0.05)
+    finally:
+        signal.signal(signal.SIGUSR2, original)
+
+
+async def test_an_application_may_install_its_own_handler() -> None:
+    """uvicorn replaces the handler with signal.signal; delivery must survive."""
+    loop = running_loop()
+    received = loop.create_future()
+    seen: list[int] = []
+    loop.add_signal_handler(signal.SIGUSR1, received.set_result, "loop handler")
+    original = signal.getsignal(signal.SIGUSR1)
+    signal.signal(signal.SIGUSR1, lambda signum, _frame: seen.append(signum))
+    try:
+        os.kill(os.getpid(), signal.SIGUSR1)
+        assert await asyncio.wait_for(received, 2) == "loop handler"
+        assert seen == [signal.SIGUSR1]
+    finally:
+        signal.signal(signal.SIGUSR1, original)
+        loop.remove_signal_handler(signal.SIGUSR1)

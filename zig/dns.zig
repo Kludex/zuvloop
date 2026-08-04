@@ -24,8 +24,8 @@ var gaierror: ?*py.Object = null;
 const max_host = 1024;
 
 const Request = struct {
-    loop: *LoopObject,
-    future: *py.Object,
+    state: *loopmod.State,
+    future: ?*py.Object,
     kind: uv.ReqType,
     prev: ?*Request = null,
     next: ?*Request = null,
@@ -48,14 +48,14 @@ fn allocRequest(loop: *LoopObject, kind: uv.ReqType) py.Error!*Request {
     const size = req_offset + uv.uv_req_size(kind);
     const raw = alloc.alignedAlloc(u8, .@"8", size) catch return py.errNoMemory();
     const self: *Request = @ptrCast(raw.ptr);
-    self.* = .{ .loop = loop, .future = undefined, .kind = kind };
+    const st = loop.state();
+    self.* = .{ .state = st, .future = null, .kind = kind };
 
     const future = c.PyObject_CallMethodNoArgs(@ptrCast(loop), str_create_future) orelse {
         alloc.free(raw);
         return py.Error.Python;
     };
     self.future = future;
-    const st = loop.state();
     self.next = @ptrCast(@alignCast(st.dns_requests));
     if (self.next) |next| next.prev = self;
     st.dns_requests = self;
@@ -64,14 +64,14 @@ fn allocRequest(loop: *LoopObject, kind: uv.ReqType) py.Error!*Request {
 }
 
 fn freeRequest(self: *Request, kind: uv.ReqType) void {
-    const st = self.loop.state();
+    const st = self.state;
     if (self.prev) |prev| {
         prev.next = self.next;
     } else {
         st.dns_requests = self.next;
     }
     if (self.next) |next| next.prev = self.prev;
-    py.decref(self.future);
+    py.xdecref(self.future);
     alloc.free(@as([*]u8, @ptrCast(self))[0 .. req_offset + uv.uv_req_size(kind)]);
 }
 
@@ -87,6 +87,13 @@ pub fn cancelAll(st: *loopmod.State) void {
         };
         _ = uv.uv_cancel(raw);
     }
+}
+
+/// Drops every Python future before the remaining native requests move to the
+/// background reaper. Their callbacks become purely native from this point.
+pub fn releaseFutures(st: *loopmod.State) void {
+    var node: ?*Request = @ptrCast(@alignCast(st.dns_requests));
+    while (node) |req| : (node = req.next) py.clear(&req.future);
 }
 
 fn copyZ(dst: []u8, value: *py.Object, what: [:0]const u8) py.Error!?[*:0]const u8 {
@@ -171,21 +178,26 @@ fn buildResults(res: ?*std.c.addrinfo) py.Error!*py.Object {
 
 fn onAddrInfo(req: ?*uv.GetAddrInfo, status: c_int, res: ?*std.c.addrinfo) callconv(.c) void {
     const self: *Request = @ptrCast(@alignCast(uv.getData(req.?)));
-    const st = self.loop.state();
+    const st = self.state;
+    if (loopmod.isReaping(st)) {
+        uv.uv_freeaddrinfo(res);
+        freeRequest(self, .getaddrinfo);
+        return;
+    }
     st.gilEnter();
     defer st.gilExit();
 
     if (!st.closed) {
         if (status < 0) {
-            failFuture(self.future, status);
+            failFuture(self.future.?, status);
         } else if (buildResults(res)) |list| {
             defer py.decref(list);
-            settle(self.future, str_set_result, list);
+            settle(self.future.?, str_set_result, list);
         } else |_| {
             const exc = c.PyErr_GetRaisedException();
             if (exc) |e| {
                 defer py.decref(e);
-                settle(self.future, str_set_exception, e);
+                settle(self.future.?, str_set_exception, e);
             }
         }
     }
@@ -195,18 +207,22 @@ fn onAddrInfo(req: ?*uv.GetAddrInfo, status: c_int, res: ?*std.c.addrinfo) callc
 
 fn onNameInfo(req: ?*uv.GetNameInfo, status: c_int, hostname: ?[*:0]const u8, service: ?[*:0]const u8) callconv(.c) void {
     const self: *Request = @ptrCast(@alignCast(uv.getData(req.?)));
-    const st = self.loop.state();
+    const st = self.state;
+    if (loopmod.isReaping(st)) {
+        freeRequest(self, .getnameinfo);
+        return;
+    }
     st.gilEnter();
     defer st.gilExit();
 
     if (!st.closed) {
         if (status < 0) {
-            failFuture(self.future, status);
+            failFuture(self.future.?, status);
         } else if (c.Py_BuildValue("ss", hostname orelse "", service orelse "")) |pair| {
             defer py.decref(pair);
-            settle(self.future, str_set_result, pair);
+            settle(self.future.?, str_set_result, pair);
         } else {
-            py.writeUnraisable(self.future);
+            py.writeUnraisable(self.future.?);
         }
     }
     freeRequest(self, .getnameinfo);
@@ -250,14 +266,14 @@ pub fn getaddrinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
 
     if (resolveNumeric(&req.hints, host, service)) |list| {
         defer py.decref(list);
-        const future = py.newref(req.future).?;
-        settle(req.future, str_set_result, list);
+        const future = py.newref(req.future.?).?;
+        settle(req.future.?, str_set_result, list);
         freeRequest(req, .getaddrinfo);
         return future;
     }
 
     try py.errUvIfNeg(uv.uv_getaddrinfo(loop.state().uvloop, req.addrReq(), onAddrInfo, host, service, &req.hints));
-    return py.newref(req.future).?;
+    return py.newref(req.future.?).?;
 }
 
 /// `_getnameinfo(sockaddr, flags)`
@@ -273,7 +289,7 @@ pub fn getnameinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
     const req = try allocRequest(loop, .getnameinfo);
     errdefer freeRequest(req, .getnameinfo);
     try py.errUvIfNeg(uv.uv_getnameinfo(loop.state().uvloop, req.nameReq(), onNameInfo, storage.constPtr(), flags));
-    return py.newref(req.future).?;
+    return py.newref(req.future.?).?;
 }
 
 pub fn register() py.Error!void {

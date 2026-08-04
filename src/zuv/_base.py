@@ -243,11 +243,26 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
             signal.set_wakeup_fd(-1)
 
     def _drain_self_pipe(self, sock: socket.socket) -> None:
+        """Read the wakeup bytes; each one is a signal number to dispatch.
+
+        Signals arrive through `signal.set_wakeup_fd` rather than from the
+        Python-level handler, because applications legitimately install their own
+        handler with `signal.signal` afterwards - uvicorn does - and that must not
+        silently unhook the loop's own delivery.
+        """
         try:
             while True:
-                sock.recv(4096)
+                for signum in sock.recv(4096):
+                    self._dispatch_signal(signum)
         except BlockingIOError, InterruptedError:
             pass
+
+    def _dispatch_signal(self, signum: int) -> None:
+        entry = self._signal_handlers.get(signum)
+        if entry is None:
+            return
+        callback, args, context = entry
+        self.call_soon(callback, *args, context=context)
 
 
 def _stop_when_done(future: asyncio.Future[Any]) -> None:
@@ -264,5 +279,5 @@ def _shutdown_executor(loop: LoopBase, future: asyncio.Future[None], executor: c
             loop.call_soon_threadsafe(asyncio.futures._set_result_unless_cancelled, future, None)  # type: ignore[attr-defined]
         except RuntimeError:
             # close() can win the race after call_soon_threadsafe starts.
-            if not loop.is_closed():
+            if not loop.is_closed():  # pragma: no cover - only a closed loop raises here
                 raise

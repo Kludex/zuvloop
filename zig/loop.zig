@@ -73,6 +73,10 @@ pub const State = struct {
     timer_active: bool = false,
     sampler_active: bool = false,
 
+    /// 0 = synchronous ownership, 1 = reaper running with a live LoopObject,
+    /// 2 = reaper running after LoopObject deallocation, 3 = reaper finished.
+    reap_state: u8 = 0,
+
     thread_id: c_ulong = 0,
     slow_callback_duration: f64 = 0.1,
     callbacks_run: u64 = 0,
@@ -112,6 +116,10 @@ var str_on_slow_callback: ?*py.Object = null;
 
 pub inline fn asLoop(obj: *py.Object) *LoopObject {
     return @ptrCast(@alignCast(obj));
+}
+
+pub inline fn isReaping(st: *State) bool {
+    return @atomicLoad(u8, &st.reap_state, .acquire) != 0;
 }
 
 /// Seconds on the loop's monotonic clock.
@@ -623,13 +631,74 @@ fn walkClose(handle: ?*uv.Handle, _: ?*anyopaque) callconv(.c) void {
     }
 }
 
-/// Closes every handle and drains their close callbacks so `uv_loop_close`
-/// can succeed. Runs with the GIL held, hence the depth bump in the callbacks.
+fn countHandle(handle: ?*uv.Handle, arg: ?*anyopaque) callconv(.c) void {
+    _ = handle;
+    const count: *usize = @ptrCast(@alignCast(arg.?));
+    count.* += 1;
+}
+
+fn hasHandles(st: *State) bool {
+    var count: usize = 0;
+    uv.uv_walk(st.uvloop, countHandle, &count);
+    return count != 0;
+}
+
+fn freeStateStorage(st: *State) void {
+    alloc.free(@as([*]u64, @ptrCast(@alignCast(st.block.ptr)))[0 .. st.block.len / 8]);
+    alloc.destroy(st);
+}
+
+fn releaseStateFromLoopObject(st: *State) void {
+    while (true) switch (@atomicLoad(u8, &st.reap_state, .acquire)) {
+        0, 3 => {
+            freeStateStorage(st);
+            return;
+        },
+        1 => {
+            // Transfer final freeing to the reaper. If it just finished, retry
+            // and consume state 3 ourselves.
+            if (@cmpxchgStrong(u8, &st.reap_state, 1, 2, .acq_rel, .acquire) == null) return;
+        },
+        else => @panic("invalid DNS reaper ownership state"),
+    };
+}
+
+fn reapLoop(st: *State) void {
+    _ = uv.uv_run(st.uvloop, .default);
+    if (uv.uv_loop_close(st.uvloop) != 0) @panic("libuv loop still owns requests after DNS reaping");
+
+    // This must be the reaper's final access when the LoopObject still exists:
+    // deallocation may observe state 3 and immediately free the allocation.
+    if (@cmpxchgStrong(u8, &st.reap_state, 1, 3, .acq_rel, .acquire)) |current| {
+        if (current != 2) @panic("invalid DNS reaper ownership state");
+        freeStateStorage(st);
+    }
+}
+
+fn startDnsReaper(st: *State) bool {
+    dns.releaseFutures(st);
+    @atomicStore(u8, &st.reap_state, 1, .release);
+    const thread = std.Thread.spawn(.{}, reapLoop, .{st}) catch {
+        @atomicStore(u8, &st.reap_state, 0, .release);
+        return false;
+    };
+    thread.detach();
+    return true;
+}
+
+/// Closes every handle and drains Python-facing callbacks with the GIL held.
+/// Resolver work that libuv cannot cancel is handed to a native-only reaper so
+/// a slow system resolver cannot hold up EventLoop.close().
 fn closeAllHandles(st: *State) void {
     dns.cancelAll(st);
     uv.uv_walk(st.uvloop, walkClose, null);
-    // All handles are closing and all requests have been cancelled. Running to
-    // completion guarantees every callback has released its native ownership.
+    while (hasHandles(st)) _ = uv.uv_run(st.uvloop, .once);
+    if (uv.uv_loop_close(st.uvloop) == 0) return;
+
+    if (st.dns_requests != null and startDnsReaper(st)) return;
+
+    // Thread creation can fail under extreme resource pressure. Synchronous
+    // draining is the only safe fallback because libuv still owns each request.
     _ = uv.uv_run(st.uvloop, .default);
     if (uv.uv_loop_close(st.uvloop) != 0) @panic("libuv loop still owns resources after shutdown");
 }
@@ -711,9 +780,8 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
             pollermod.closeAll(st);
             closeAllHandles(st);
         }
-        alloc.free(@as([*]u64, @ptrCast(@alignCast(st.block.ptr)))[0 .. st.block.len / 8]);
-        alloc.destroy(st);
         self.st = null;
+        releaseStateFromLoopObject(st);
     }
     tp.tp_free.?(obj);
     py.decref(tp);
