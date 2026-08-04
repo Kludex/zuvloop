@@ -144,6 +144,27 @@ def test_a_signal_between_loop_runs_is_delivered_on_the_next_run() -> None:
         signal.signal(signal.SIGUSR1, original)
 
 
+def test_a_loop_without_handlers_does_not_disable_another_loops_signals() -> None:
+    original = signal.getsignal(signal.SIGUSR1)
+    owner = zuv.new_event_loop()
+    other = zuv.new_event_loop()
+    received: list[str] = []
+    try:
+        owner.add_signal_handler(signal.SIGUSR1, received.append, "delivered")
+        owner.run_until_complete(asyncio.sleep(0))
+        other.run_until_complete(asyncio.sleep(0))
+
+        os.kill(os.getpid(), signal.SIGUSR1)
+        owner.run_until_complete(asyncio.sleep(0.01))
+
+        assert received == ["delivered"]
+    finally:
+        owner.remove_signal_handler(signal.SIGUSR1)
+        owner.close()
+        other.close()
+        signal.signal(signal.SIGUSR1, original)
+
+
 def test_a_closed_loop_rejects_signal_handlers(loop: zuv.EventLoop) -> None:
     loop.close()
     with pytest.raises(RuntimeError, match="closed"):

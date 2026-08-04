@@ -37,6 +37,7 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         self._asyncgens: weakref.WeakSet[Any] = weakref.WeakSet()
         self._asyncgens_shutdown_called = False
         self._signal_handlers: dict[int, tuple[Callable[..., object], tuple[Any, ...], Context]] = {}
+        self._wakeup_fd_attached = False
         self._instrumentation = Instrumentation()
         self._setup_self_pipe()
 
@@ -241,15 +242,21 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
     def _attach_wakeup_fd(self) -> None:
         # Only the main thread may own the wakeup fd, and only it runs Python
         # signal handlers - so a loop on any other thread simply skips this.
-        if threading.current_thread() is threading.main_thread():
+        if threading.current_thread() is threading.main_thread() and self._signal_handlers:
             signal.set_wakeup_fd(self._csock.fileno())
+            self._wakeup_fd_attached = True
 
     def _detach_wakeup_fd(self) -> None:
         # Registered handlers must keep the fd active between separate calls
         # to run_forever/run_until_complete. A signal arriving while the loop
         # is stopped remains queued in the self-pipe for the next run.
-        if threading.current_thread() is threading.main_thread() and not self._signal_handlers:
+        if (
+            threading.current_thread() is threading.main_thread()
+            and self._wakeup_fd_attached
+            and not self._signal_handlers
+        ):
             signal.set_wakeup_fd(-1)
+            self._wakeup_fd_attached = False
 
     def _drain_self_pipe(self, sock: socket.socket) -> None:
         """Read the wakeup bytes; each one is a signal number to dispatch.
