@@ -39,17 +39,17 @@ reported, with the run-to-run spread beside it.
 
 | Benchmark | asyncio | uvloop | zuv | zuv / uvloop |
 | --- | ---: | ---: | ---: | ---: |
-| `call_soon` | 2.65M/s | 5.35M/s | **7.81M/s** | **1.46x** |
-| `call_soon` with arguments | 2.22M/s | 3.72M/s | **6.20M/s** | **1.66x** |
-| timer schedule + cancel | 1.54M/s | 2.23M/s | **11.8M/s** | **5.29x** |
-| bulk stream | 7.9 GiB/s | 9.1 GiB/s | **9.8 GiB/s** | **1.08x** |
-| loop iterations (`sleep(0)`) | 72.2k/s | 79.6k/s | 79.8k/s | 1.00x |
-| echo round trips, 1 KiB | 47.2k/s | 57.2k/s | **60.0k/s** | **1.05x** |
-| uvicorn, plaintext | 52.2k req/s | 70.1k req/s | 63.2k req/s | 0.90x |
-| uvicorn, 10 KiB body | 50.7k req/s | 68.4k req/s | 63.2k req/s | 0.92x |
-| aiohttp server | 48.8k req/s | 60.2k req/s | 57.8k req/s | 0.96x |
-| aiohttp client | 12.5k req/s | 16.1k req/s | 15.0k req/s | 0.93x |
-| `getaddrinfo`, numeric host | 27.8k/s | 1.50M/s | 897k/s | 0.59x |
+| `call_soon` | 2.76M/s | 4.73M/s | **6.04M/s** | **1.28x** |
+| `call_soon` with arguments | 2.40M/s | 3.66M/s | **6.14M/s** | **1.68x** |
+| timer schedule + cancel | 1.52M/s | 2.52M/s | **9.73M/s** | **3.85x** |
+| bulk stream | 8.3 GiB/s | 8.7 GiB/s | **10.5 GiB/s** | **1.22x** |
+| loop iterations (`sleep(0)`) | 74.8k/s | 80.4k/s | 80.1k/s | 1.00x |
+| echo round trips, 1 KiB | 41.3k/s | 57.3k/s | **59.2k/s** | **1.03x** |
+| uvicorn, plaintext | 50.5k req/s | 67.0k req/s | **71.8k req/s** | **1.07x** |
+| uvicorn, 10 KiB body | 48.2k req/s | 65.1k req/s | **68.6k req/s** | **1.05x** |
+| aiohttp server | 47.5k req/s | 58.7k req/s | **60.2k req/s** | **1.03x** |
+| aiohttp client | 12.7k req/s | 15.6k req/s | **16.1k req/s** | **1.03x** |
+| `getaddrinfo`, numeric host | 29.2k/s | 1.53M/s | 898k/s | 0.59x |
 
 Scheduling and timers are where the design differs most: arguments live inside the handle
 rather than in a tuple, and timers share one `uv_timer_t` behind a heap instead of taking a
@@ -61,24 +61,21 @@ and allocating a large object to shrink it again costs more than the copy. Above
 fills the final object directly and nothing is copied. The threshold the transport is judged
 against follows the traffic, doubling whenever a read fills the buffer.
 
-**uvloop is still ahead on real HTTP serving** - 4 to 10% across uvicorn and aiohttp, against a
-run-to-run spread of 1 to 3%. zuv is 18 to 25% faster than stock asyncio there. The HTTP rows
-depend as much on the server's parser as on the loop, so `uvicorn` is measured with `httptools`
-and the benchmark prints which parser it found; the same numbers on uvicorn's pure-Python
-fallback are a third as large for every loop, and say nothing about the loop at all.
-The gap is one thing, and `benchmarks/write_batching.py` isolates it. Serving a response as a
-single `write()` puts zuv slightly ahead of uvloop. Splitting the same response into a header
-write and a body write - what ASGI and aiohttp both do, on every response - costs each loop
-very differently:
+Writes issued during one turn of the loop are sent together, as a single vectored write. That
+matters more than it sounds: ASGI and aiohttp both send a response as a header write followed by
+a body write, so a loop that writes each piece as it arrives spends two syscalls on every
+response. `benchmarks/write_batching.py` measures exactly that, by serving one fixed response
+both ways:
 
 | response split into two writes | asyncio | uvloop | zuv |
 | --- | ---: | ---: | ---: |
-| throughput lost | -31% | **-3%** | -21% |
+| throughput lost | -36% | -0.1% | **-0.7%** |
 
-uvloop coalesces consecutive writes into one vectored syscall and barely notices; zuv issues each
-one as it arrives and pays a second `write(2)` per response, which is the whole HTTP deficit.
-In the profile it is visible directly - uvloop's hot syscall is `writev`, zuv's is `write`.
-`getaddrinfo` is the other gap:
+The HTTP rows depend as much on the server's parser as on the loop, so `uvicorn` is measured with
+`httptools` and the benchmark prints which parser it found; the same numbers on uvicorn's
+pure-Python fallback are a third as large for every loop, and say nothing about the loop at all.
+
+`getaddrinfo` is the one benchmark uvloop still wins:
 uvloop parses address literals itself, while zuv hands them to libc with `AI_NUMERICHOST`,
 which is slower but cannot disagree with `socket.getaddrinfo`. It is still 32x asyncio.
 
@@ -136,9 +133,11 @@ A few decisions worth knowing about:
   and passed straight to `PyObject_Vectorcall`.
 - **Timers use one `uv_timer_t` and an internal heap**, rather than a libuv handle per timer.
   Cancellation is O(1) and the heap is compacted lazily, matching asyncio's scheduler semantics.
-- **Writes try `uv_try_write` first**, and never copy. A socket with room in its send buffer
-  completes the write without allocating anything; when a write has to be queued, the request holds
-  a buffer view of the caller's memory rather than a copy of it.
+- **Writes are batched per turn and never copied.** Everything written during one turn of the loop
+  goes out as a single vectored `uv_try_write`, so a response sent in pieces still costs one
+  syscall; when the socket cannot take it all, the queued request holds a buffer view of the
+  caller's memory rather than a copy of it. The flush runs from a prepare handle, which libuv runs
+  before it computes the poll timeout - so no write ever waits on the loop going to sleep.
 - **Reads land directly in the `bytes` object** handed to `data_received`, so the kernel writes once
   and nothing is copied afterwards. `BufferedProtocol` goes one better and reads into the protocol's
   own buffer.
