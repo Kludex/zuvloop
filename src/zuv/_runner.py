@@ -20,7 +20,7 @@ def run[T](main: Coroutine[Any, Any, T], *, debug: bool | None = None) -> T:
 
 
 class MetricsReporter:
-    """Publishes the loop's counters to logfire.
+    """Publishes the loop's counters as OpenTelemetry gauges.
 
     Sampling runs on a dedicated libuv timer inside the extension, so it never
     enters the callback queue; Python is handed a finished snapshot.
@@ -35,7 +35,7 @@ class MetricsReporter:
 
 
 def instrument(loop: EventLoop | None = None, *, interval: float = 10.0) -> MetricsReporter:
-    """Report loop counters to logfire every `interval` seconds.
+    """Record loop counters as OpenTelemetry gauges every `interval` seconds.
 
     Slow callbacks and unhandled exceptions are always reported; this adds the
     periodic gauges, which need a running loop to sample from.
