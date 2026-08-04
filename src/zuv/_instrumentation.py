@@ -16,9 +16,7 @@ def _counter(name: str, description: str) -> Any:
 
 @functools.cache
 def _histogram(name: str, description: str, unit: str) -> Any:
-    return logfire.DEFAULT_LOGFIRE_INSTANCE.metric_histogram(
-        f"{_NAMESPACE}.{name}", unit=unit, description=description
-    )
+    return logfire.DEFAULT_LOGFIRE_INSTANCE.metric_histogram(f"{_NAMESPACE}.{name}", unit=unit, description=description)
 
 
 @functools.cache

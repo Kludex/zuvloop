@@ -98,8 +98,11 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         for result, agen in zip(results, closing, strict=True):
             if isinstance(result, BaseException):
                 self.call_exception_handler(
-                    {"message": f"an error occurred during closing of asynchronous generator {agen!r}",
-                     "exception": result, "asyncgen": agen}
+                    {
+                        "message": f"an error occurred during closing of asynchronous generator {agen!r}",
+                        "exception": result,
+                        "asyncgen": agen,
+                    }
                 )
 
     async def shutdown_default_executor(self, timeout: float | None = None) -> None:
@@ -180,7 +183,7 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
             return
         try:
             self._exception_handler(self, context)
-        except (SystemExit, KeyboardInterrupt):
+        except SystemExit, KeyboardInterrupt:
             raise
         except BaseException as exc:
             self.default_exception_handler(
@@ -204,8 +207,11 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
 
     def _asyncgen_firstiter(self, agen: Any) -> None:
         if self._asyncgens_shutdown_called:
-            warnings.warn(f"asynchronous generator {agen!r} was scheduled after loop.shutdown_asyncgens() call",
-                          ResourceWarning, source=self)
+            warnings.warn(
+                f"asynchronous generator {agen!r} was scheduled after loop.shutdown_asyncgens() call",
+                ResourceWarning,
+                source=self,
+            )
         self._asyncgens.add(agen)
 
     def _asyncgen_finalizer(self, agen: Any) -> None:
@@ -238,7 +244,7 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         try:
             while True:
                 sock.recv(4096)
-        except (BlockingIOError, InterruptedError):
+        except BlockingIOError, InterruptedError:
             pass
 
 
@@ -246,9 +252,7 @@ def _stop_when_done(future: asyncio.Future[Any]) -> None:
     asyncio.futures._get_loop(future).stop()  # type: ignore[attr-defined]
 
 
-def _shutdown_executor(
-    loop: LoopBase, future: asyncio.Future[None], executor: concurrent.futures.Executor
-) -> None:
+def _shutdown_executor(loop: LoopBase, future: asyncio.Future[None], executor: concurrent.futures.Executor) -> None:
     try:
         executor.shutdown(wait=True)
     finally:

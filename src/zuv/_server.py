@@ -67,7 +67,7 @@ class Server(asyncio.AbstractServer):
         for _ in range(self._backlog):
             try:
                 conn, _addr = sock.accept()
-            except (BlockingIOError, InterruptedError):
+            except BlockingIOError, InterruptedError:
                 return
             except OSError as exc:  # pragma: no cover - needs descriptor exhaustion
                 self._loop.call_exception_handler(

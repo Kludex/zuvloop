@@ -225,8 +225,14 @@ async def test_metrics_report_loop_activity() -> None:
     assert metrics["loop_count"] > 0
     assert metrics["watchers"] >= 1
     assert set(metrics) == {
-        "loop_count", "events", "events_waiting", "idle_time_ns",
-        "callbacks_run", "ready", "timers", "watchers",
+        "loop_count",
+        "events",
+        "events_waiting",
+        "idle_time_ns",
+        "callbacks_run",
+        "ready",
+        "timers",
+        "watchers",
     }
 
 

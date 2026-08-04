@@ -56,6 +56,7 @@ pub const Transport = extern struct {
     server: ?*py.Object,
     extra: ?*py.Object,
     conn_lost_exc: ?*py.Object,
+    read_bytes: ?*py.Object,
     cb_connection_lost: ?*py.Object,
     cb_data_received: ?*py.Object,
     cb_eof_received: ?*py.Object,
@@ -81,22 +82,43 @@ pub const Transport = extern struct {
 
 var handle_offset: usize = 0;
 
-/// A queued write: the libuv request and its payload in one allocation.
+/// A queued write: the libuv request, the buffer views keeping the caller's
+/// memory alive, and the vector libuv reads from - all in one allocation.
+///
+/// Retaining views rather than copying is what makes a large `write()` free:
+/// the exporter stays alive (and, for a bytearray, locked against resizing)
+/// until libuv reports the write complete.
 const WriteReq = struct {
     transport: *Transport,
     size: usize,
     total: usize,
+    nviews: usize,
 
     inline fn req(self: *WriteReq) *uv.Write {
         return @ptrCast(@as([*]u8, @ptrCast(self)) + write_req_offset);
     }
 
-    inline fn payload(self: *WriteReq) [*]u8 {
-        return @as([*]u8, @ptrCast(self)) + write_req_offset + uv.uv_req_size(.write);
+    inline fn views(self: *WriteReq) [*]c.Py_buffer {
+        return @ptrCast(@alignCast(@as([*]u8, @ptrCast(self)) + write_req_offset + uv.uv_req_size(.write)));
+    }
+
+    inline fn bufs(self: *WriteReq) [*]uv.Buf {
+        const after = @as([*]u8, @ptrCast(self)) + write_req_offset + uv.uv_req_size(.write);
+        return @ptrCast(@alignCast(after + self.nviews * @sizeOf(c.Py_buffer)));
+    }
+
+    fn release(self: *WriteReq) void {
+        const owned = self.views();
+        var i: usize = 0;
+        while (i < self.nviews) : (i += 1) c.PyBuffer_Release(&owned[i]);
     }
 };
 
 var write_req_offset: usize = 0;
+
+fn releaseViews(views: []c.Py_buffer) void {
+    for (views) |*view| c.PyBuffer_Release(view);
+}
 
 // ---------------------------------------------------------------------------
 // protocol dispatch
@@ -196,14 +218,20 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
         return;
     }
 
-    const shared = loopmod.readBuffer(st) orelse {
+    // Read straight into a bytes object: libuv fills the final buffer, so the
+    // protocol gets its data without a second copy.
+    const target = c.PyBytes_FromStringAndSize(null, read_buffer_size) orelse {
+        c.PyErr_Clear();
         buf.* = .{ .base = @ptrFromInt(@alignOf(u8)), .len = 0 };
         return;
     };
-    buf.* = .{ .base = shared, .len = read_buffer_size };
+    py.xdecref(self.read_bytes);
+    self.read_bytes = target;
+    buf.* = .{ .base = @ptrCast(c.PyBytes_AsString(target)), .len = read_buffer_size };
 }
 
 fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) void {
+    _ = buf;
     const self: *Transport = @ptrCast(@alignCast(uv.getData(stream.?)));
     const st = self.loopState();
     st.gilEnter();
@@ -220,16 +248,19 @@ fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) vo
             };
             defer py.decref(n);
             callProtocol(self, self.cb_buffer_updated, n);
-        } else {
-            const data = py.bytes(buf.base[0..@intCast(nread)]) orelse {
-                c.PyErr_Clear();
-                return;
-            };
-            defer py.decref(data);
-            callProtocol(self, self.cb_data_received, data);
+            return;
         }
+        var data = self.read_bytes orelse return;
+        self.read_bytes = null;
+        defer py.decref(data);
+        if (c._PyBytes_Resize(@ptrCast(&data), @intCast(nread)) < 0) {
+            c.PyErr_Clear();
+            return;
+        }
+        callProtocol(self, self.cb_data_received, data);
         return;
     }
+    py.clear(&self.read_bytes);
     if (nread == 0) return;
 
     if (nread == uv.EOF) {
@@ -273,6 +304,7 @@ fn onWritten(req: ?*uv.Write, status: c_int) callconv(.c) void {
 
     // abort() zeroes the queue while requests are still in flight.
     self.write_buffer_size -= @min(wr.size, self.write_buffer_size);
+    wr.release();
     alloc.free(@as([*]u8, @ptrCast(wr))[0..wr.total]);
     py.decref(self);
 
@@ -284,29 +316,32 @@ fn onWritten(req: ?*uv.Write, status: c_int) callconv(.c) void {
     if (self.write_buffer_size == 0 and self.flags & CLOSING != 0) shutdownAndClose(self);
 }
 
-fn queueWrite(self: *Transport, bufs: []const uv.Buf) py.Error!void {
+/// Takes ownership of `views`, releasing them once libuv reports completion.
+fn queueWrite(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) py.Error!void {
     var size: usize = 0;
     for (bufs) |b| size += b.len;
-    if (size == 0) return;
-
-    const req_size = uv.uv_req_size(.write);
-    const total = write_req_offset + req_size + size;
-    const raw = alloc.alignedAlloc(u8, .@"8", total) catch return py.errNoMemory();
-    const wr: *WriteReq = @ptrCast(raw.ptr);
-    wr.* = .{ .transport = self, .size = size, .total = total };
-
-    var cursor = wr.payload();
-    for (bufs) |b| {
-        @memcpy(cursor[0..b.len], b.base[0..b.len]);
-        cursor += b.len;
+    if (size == 0) {
+        releaseViews(views);
+        return;
     }
+
+    const n = views.len;
+    const total = write_req_offset + uv.uv_req_size(.write) + n * @sizeOf(c.Py_buffer) + bufs.len * @sizeOf(uv.Buf);
+    const raw = alloc.alignedAlloc(u8, .@"16", total) catch {
+        releaseViews(views);
+        return py.errNoMemory();
+    };
+    const wr: *WriteReq = @ptrCast(raw.ptr);
+    wr.* = .{ .transport = self, .size = size, .total = total, .nviews = n };
+    @memcpy(wr.views()[0..n], views);
+    @memcpy(wr.bufs()[0..bufs.len], bufs);
     uv.setData(wr.req(), wr);
 
-    const one = [_]uv.Buf{.{ .base = wr.payload(), .len = size }};
     py.incref(self);
-    const status = uv.uv_write(wr.req(), self.stream(), &one, 1, onWritten);
+    const status = uv.uv_write(wr.req(), self.stream(), wr.bufs(), @intCast(bufs.len), onWritten);
     if (status < 0) {
         py.decref(self);
+        wr.release();
         alloc.free(raw);
         return py.errUv(status);
     }
@@ -315,9 +350,14 @@ fn queueWrite(self: *Transport, bufs: []const uv.Buf) py.Error!void {
 }
 
 /// Writes what the socket accepts immediately and queues the rest.
-fn writeBufs(self: *Transport, bufs: []uv.Buf) py.Error!void {
-    if (self.flags & CONN_LOST != 0) return;
+/// Takes ownership of `views` on every path.
+fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!void {
+    if (self.flags & CONN_LOST != 0) {
+        releaseViews(views);
+        return;
+    }
     if (self.flags & (CLOSING | EOF_WRITTEN) != 0) {
+        releaseViews(views);
         return py.errRuntime("Cannot call write() after write_eof() or close()");
     }
 
@@ -330,15 +370,19 @@ fn writeBufs(self: *Transport, bufs: []uv.Buf) py.Error!void {
                 remaining -= pending[0].len;
                 pending = pending[1..];
             }
-            if (pending.len == 0) return;
+            if (pending.len == 0) {
+                releaseViews(views);
+                return;
+            }
             pending[0].base += remaining;
             pending[0].len -= remaining;
         } else if (written < 0 and written != uv.EAGAIN) {
+            releaseViews(views);
             forceClose(self, py.errUv(written) catch null);
             return;
         }
     }
-    try queueWrite(self, pending);
+    try queueWrite(self, pending, views);
 }
 
 fn maybePauseProtocol(self: *Transport) void {
@@ -478,12 +522,14 @@ pub fn startReadingMethod(self_obj: *py.Object) py.Error!*py.Object {
 
 fn write(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
     const self = asTransport(self_obj);
-    var view: c.Py_buffer = undefined;
-    if (c.PyObject_GetBuffer(data, &view, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
-    defer c.PyBuffer_Release(&view);
-    if (view.len == 0) return py.noneRef();
-    var bufs = [_]uv.Buf{.{ .base = @ptrCast(view.buf), .len = @intCast(view.len) }};
-    try writeBufs(self, &bufs);
+    var views = [_]c.Py_buffer{undefined};
+    if (c.PyObject_GetBuffer(data, &views[0], c.PyBUF_SIMPLE) < 0) return py.Error.Python;
+    if (views[0].len == 0) {
+        c.PyBuffer_Release(&views[0]);
+        return py.noneRef();
+    }
+    var bufs = [_]uv.Buf{.{ .base = @ptrCast(views[0].buf), .len = @intCast(views[0].len) }};
+    try writeBufs(self, &bufs, &views);
     return py.noneRef();
 }
 
@@ -504,19 +550,21 @@ fn writelines(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
     };
 
     var filled: usize = 0;
-    defer while (filled > 0) {
-        filled -= 1;
-        c.PyBuffer_Release(&views[filled]);
-    };
     while (filled < n) : (filled += 1) {
-        const item = c.PySequence_GetItem(seq, @intCast(filled)) orelse return py.Error.Python;
+        const item = c.PySequence_GetItem(seq, @intCast(filled)) orelse {
+            releaseViews(views[0..filled]);
+            return py.Error.Python;
+        };
         // The buffer view keeps the exporter alive, so the item reference can go.
         const acquired = c.PyObject_GetBuffer(item, &views[filled], c.PyBUF_SIMPLE);
         py.decref(item);
-        if (acquired < 0) return py.Error.Python;
+        if (acquired < 0) {
+            releaseViews(views[0..filled]);
+            return py.Error.Python;
+        }
         bufs[filled] = .{ .base = @ptrCast(views[filled].buf), .len = @intCast(views[filled].len) };
     }
-    try writeBufs(self, bufs);
+    try writeBufs(self, bufs, views);
     return py.noneRef();
 }
 
@@ -676,6 +724,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     const tp = py.typeOf(obj.?);
     c.PyObject_GC_UnTrack(obj);
     if (self.view.obj != null) c.PyBuffer_Release(&self.view);
+    py.clear(&self.read_bytes);
     py.clear(&self.loop);
     py.clear(&self.protocol);
     py.clear(&self.server);
@@ -700,6 +749,7 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
         self.server,
         self.extra,
         self.conn_lost_exc,
+        self.read_bytes,
         self.cb_connection_lost,
         self.cb_data_received,
         self.cb_eof_received,
@@ -721,6 +771,7 @@ fn clear_(obj: ?*py.Object) callconv(.c) c_int {
     py.clear(&self.server);
     py.clear(&self.extra);
     py.clear(&self.conn_lost_exc);
+    py.clear(&self.read_bytes);
     py.clear(&self.cb_connection_lost);
     py.clear(&self.cb_data_received);
     py.clear(&self.cb_eof_received);
@@ -788,7 +839,7 @@ pub fn register(module: *py.Object) py.Error!void {
     buffered_protocol_type = py.importFrom("asyncio.protocols", "BufferedProtocol") orelse return py.Error.Python;
 
     handle_offset = std.mem.alignForward(usize, @sizeOf(Transport), 16);
-    write_req_offset = std.mem.alignForward(usize, @sizeOf(WriteReq), 8);
+    write_req_offset = std.mem.alignForward(usize, @sizeOf(WriteReq), 16);
     const handle_size = @max(uv.uv_handle_size(.tcp), uv.uv_handle_size(.named_pipe));
     spec.basicsize = @intCast(handle_offset + handle_size);
 

@@ -31,6 +31,26 @@ Or hand the loop factory to asyncio directly:
 asyncio.run(main(), loop_factory=zuv.new_event_loop)
 ```
 
+## Performance
+
+`python benchmarks/run.py`, on an M3 Max running macOS 26 and CPython 3.14, best of three:
+
+| Benchmark | asyncio | uvloop | zuv | zuv / uvloop |
+| --- | ---: | ---: | ---: | ---: |
+| `call_soon` | 2.2M/s | 5.4M/s | **7.9M/s** | **1.48x** |
+| `call_soon` with arguments | 2.3M/s | 3.7M/s | **6.0M/s** | **1.61x** |
+| timer schedule + cancel | 1.5M/s | 2.0M/s | **11.9M/s** | **5.94x** |
+| loop iterations (`sleep(0)`) | 72.7k/s | 79.1k/s | 78.8k/s | 1.00x |
+| echo round trips, 1 KiB | 45.3k/s | 52.4k/s | **53.6k/s** | **1.02x** |
+| bulk stream | 8.5 GiB/s | 8.7 GiB/s | **9.8 GiB/s** | **1.12x** |
+| `getaddrinfo`, numeric host | 27.8k/s | 1.50M/s | 903k/s | 0.60x |
+
+Scheduling and timers are where the design differs most: arguments live inside the handle rather
+than in a tuple, and timers share one `uv_timer_t` behind a heap instead of taking a libuv handle
+each. `getaddrinfo` is the one place uvloop is still ahead - it parses address literals itself,
+while `zuv` hands them to libc with `AI_NUMERICHOST`, which is slower but cannot disagree with
+`socket.getaddrinfo`. It is still 32x asyncio.
+
 ## Requirements
 
 - Python 3.14 or newer
@@ -58,8 +78,12 @@ A few decisions worth knowing about:
   and passed straight to `PyObject_Vectorcall`.
 - **Timers use one `uv_timer_t` and an internal heap**, rather than a libuv handle per timer.
   Cancellation is O(1) and the heap is compacted lazily, matching asyncio's scheduler semantics.
-- **Writes try `uv_try_write` first.** A socket with room in its send buffer completes the write
-  without allocating a request or copying.
+- **Writes try `uv_try_write` first**, and never copy. A socket with room in its send buffer
+  completes the write without allocating anything; when a write has to be queued, the request holds
+  a buffer view of the caller's memory rather than a copy of it.
+- **Reads land directly in the `bytes` object** handed to `data_received`, so the kernel writes once
+  and nothing is copied afterwards. `BufferedProtocol` goes one better and reads into the protocol's
+  own buffer.
 - **Sockets are created, bound and accepted in Python.** Those happen once per connection, so the
   readable implementation is worth more there than the last microsecond.
 

@@ -31,9 +31,7 @@ async def test_tls_round_trip(server_context: ssl.SSLContext, client_context: ss
         await writer.wait_closed()
 
 
-async def test_tls_exposes_the_peer_certificate(
-    server_context: ssl.SSLContext, client_context: ssl.SSLContext
-) -> None:
+async def test_tls_exposes_the_peer_certificate(server_context: ssl.SSLContext, client_context: ssl.SSLContext) -> None:
     server = await asyncio.start_server(echo, "127.0.0.1", 0, ssl=server_context)
     port = server.sockets[0].getsockname()[1]
     async with server:

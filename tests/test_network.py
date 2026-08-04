@@ -349,9 +349,7 @@ async def test_create_connection_binds_a_local_address() -> None:
     server, port, _ = await start_echo()
     loop = running_loop()
     async with server:
-        transport, protocol = await loop.create_connection(
-            Collector, "127.0.0.1", port, local_addr=("127.0.0.1", 0)
-        )
+        transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port, local_addr=("127.0.0.1", 0))
         assert transport.get_extra_info("sockname")[0] == "127.0.0.1"
         transport.close()
         assert protocol.done is not None
@@ -671,9 +669,7 @@ async def test_a_client_handshake_against_a_plain_server_fails(client_context: s
     port = server.sockets[0].getsockname()[1]
     async with server:
         with pytest.raises(OSError):
-            await loop.create_connection(
-                Collector, "127.0.0.1", port, ssl=client_context, server_hostname="localhost"
-            )
+            await loop.create_connection(Collector, "127.0.0.1", port, ssl=client_context, server_hostname="localhost")
 
 
 async def test_tls_defaults_the_server_hostname_to_the_host(

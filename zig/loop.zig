@@ -58,7 +58,6 @@ pub const State = struct {
     timers: collections.Timers = .empty,
     inbox: Inbox = .{},
     pollers: pollermod.Map = .empty,
-    read_buf: ?[*]u8 = null,
 
     tstate: ?*c.PyThreadState = null,
     gil_depth: c_int = 1,
@@ -169,17 +168,6 @@ fn onCloseFreeState(handle: ?*uv.Handle) callconv(.c) void {
 
 // ---------------------------------------------------------------------------
 // scheduling internals
-
-/// Shared landing buffer for stream reads; grown once, reused forever.
-pub fn readBuffer(st: *State) ?[*]u8 {
-    if (st.read_buf) |b| return b;
-    const buf = alloc.alloc(u8, transportmod.read_buffer_size) catch {
-        c.PyErr_Clear();
-        return null;
-    };
-    st.read_buf = buf.ptr;
-    return buf.ptr;
-}
 
 pub inline fn startIdle(st: *State) void {
     if (!st.idle_active and st.ready.len != 0) {
@@ -707,7 +695,6 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
             pollermod.closeAll(st);
             closeAllHandles(st);
         }
-        if (st.read_buf) |b| alloc.free(@as([]u8, b[0..transportmod.read_buffer_size]));
         alloc.free(@as([*]u64, @ptrCast(@alignCast(st.block.ptr)))[0 .. st.block.len / 8]);
         alloc.destroy(st);
         self.st = null;

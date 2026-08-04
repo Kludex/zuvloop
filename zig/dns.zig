@@ -180,6 +180,26 @@ fn onNameInfo(req: ?*uv.GetNameInfo, status: c_int, hostname: ?[*:0]const u8, se
     freeRequest(self, .getnameinfo);
 }
 
+/// Resolves a literal address without leaving the calling thread.
+///
+/// Numeric hosts are the common case for `create_connection` and friends, and
+/// `AI_NUMERICHOST | AI_NUMERICSERV` guarantees libc answers from the string
+/// alone - no resolver, no threadpool hop.
+fn resolveNumeric(hints: *const std.c.addrinfo, host: ?[*:0]const u8, service: ?[*:0]const u8) ?*py.Object {
+    if (hints.flags.CANONNAME) return null;
+    var numeric = hints.*;
+    numeric.flags.NUMERICHOST = true;
+    numeric.flags.NUMERICSERV = true;
+
+    var res: ?*std.c.addrinfo = null;
+    if (std.c.getaddrinfo(host, service, &numeric, &res) != @as(std.c.EAI, @enumFromInt(0))) return null;
+    defer if (res) |list| std.c.freeaddrinfo(list);
+    return buildResults(res) catch {
+        c.PyErr_Clear();
+        return null;
+    };
+}
+
 /// `_getaddrinfo(host, port, family, type, proto, flags)`
 pub fn getaddrinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py.Object {
     try py.expectArgs(args, 6, "_getaddrinfo");
@@ -195,6 +215,14 @@ pub fn getaddrinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
     req.hints.socktype = try py.asCInt(args[3].?);
     req.hints.protocol = try py.asCInt(args[4].?);
     req.hints.flags = @bitCast(@as(u32, @bitCast(try py.asCInt(args[5].?))));
+
+    if (resolveNumeric(&req.hints, host, service)) |list| {
+        defer py.decref(list);
+        const future = py.newref(req.future).?;
+        settle(req.future, str_set_result, list);
+        freeRequest(req, .getaddrinfo);
+        return future;
+    }
 
     try py.errUvIfNeg(uv.uv_getaddrinfo(loop.state().uvloop, req.addrReq(), onAddrInfo, host, service, &req.hints));
     return py.newref(req.future).?;

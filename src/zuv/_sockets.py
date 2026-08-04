@@ -62,7 +62,7 @@ class SocketOperations(LoopBase):
         try:
             sock.connect(address)
             return
-        except (BlockingIOError, InterruptedError):
+        except BlockingIOError, InterruptedError:
             pass
 
         future = self.create_future()
@@ -108,7 +108,7 @@ def _attempt(future: asyncio.Future[Any], op: Callable[..., Any], args: tuple[An
         return True
     try:
         result = op(*args)
-    except (BlockingIOError, InterruptedError):
+    except BlockingIOError, InterruptedError:
         return False
     except OSError as exc:
         future.set_exception(exc)

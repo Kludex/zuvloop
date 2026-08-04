@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: 0.16.0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --python ${{ matrix.python-version }} --group dev --group bench
+
+      - name: Lint
+        run: |
+          uv run ruff check
+          uv run ruff format --check src tests benchmarks scripts hatch_build.py
+
+      - name: Type check
+        run: uv run mypy
+
+      - name: Test
+        run: |
+          uv run coverage run -m pytest
+          uv run coverage report
+
+      - name: Benchmark
+        run: uv run python benchmarks/run.py --repeat 1 --only call_soon timers echo_1kb
