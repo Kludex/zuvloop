@@ -715,6 +715,25 @@ async def test_unix_server_closes_its_listeners_when_serving_fails() -> None:
         assert not path.exists()
 
 
+async def test_unix_server_closes_its_listener_when_the_cleanup_stat_fails() -> None:
+    loop = running_loop()
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "zuv.sock"
+
+        def refuse_stat(target: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+            raise BlockingIOError("stat refused")
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(os, "stat", refuse_stat)
+            with pytest.raises(BlockingIOError, match="stat refused"):
+                await loop.create_unix_server(Echo, path)
+
+        # The socket is closed rather than left for the garbage collector to
+        # notice, which would report it against whatever runs next.
+        with pytest.raises(ConnectionRefusedError):
+            await asyncio.open_unix_connection(str(path))
+
+
 async def test_unix_server_rejects_conflicting_arguments() -> None:
     loop = running_loop()
     with socket.socket(socket.AF_UNIX) as sock:
