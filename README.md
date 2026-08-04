@@ -75,14 +75,13 @@ by running them unmodified with the loop swapped underneath.
 | Suite | Result |
 | --- | --- |
 | uvicorn | 1257 passed, no failures |
-| aiohttp | 4471 passed, 38 failed - 33 of which also fail on stock asyncio |
+| aiohttp | 4473 passed, 36 failed - 33 of which also fail on stock asyncio |
 
-Of the five aiohttp failures that are zuv's alone, two are the `blockbuster` plugin flagging
-`os.stat` inside `create_unix_server` - a call stdlib asyncio makes in the same place, and which
-the plugin exempts by file path rather than by behaviour. Two pass in isolation and fail only in
-suite order. The last is a genuine difference, below.
+Three aiohttp failures are zuv's alone. Two are the `blockbuster` plugin flagging `os.stat`
+inside `create_unix_server` - a call stdlib asyncio makes in the same place, and which the plugin
+exempts by file path rather than by behaviour. The third is a genuine difference, below.
 
-For reference, uvloop cannot complete that suite: it fails around fourteen tests in
+For reference, uvloop cannot complete that suite: it fails fifteen tests in
 `test_client_functional.py` and then hangs.
 
 ### Known differences
