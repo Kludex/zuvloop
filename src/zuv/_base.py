@@ -239,7 +239,10 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
             signal.set_wakeup_fd(self._csock.fileno())
 
     def _detach_wakeup_fd(self) -> None:
-        if threading.current_thread() is threading.main_thread():
+        # Registered handlers must keep the fd active between separate calls
+        # to run_forever/run_until_complete. A signal arriving while the loop
+        # is stopped remains queued in the self-pipe for the next run.
+        if threading.current_thread() is threading.main_thread() and not self._signal_handlers:
             signal.set_wakeup_fd(-1)
 
     def _drain_self_pipe(self, sock: socket.socket) -> None:

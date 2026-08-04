@@ -38,6 +38,7 @@ class EventLoop(ConnectionOperations):
             # signal number to the wakeup fd; the loop dispatches from there.
             signal.signal(sig, _noop_signal_handler)
             signal.siginterrupt(sig, False)
+            self._attach_wakeup_fd()
         except OSError as exc:
             del self._signal_handlers[sig]
             raise RuntimeError(f"sig {sig} cannot be caught") from exc
@@ -48,6 +49,7 @@ class EventLoop(ConnectionOperations):
             return False
         handler = signal.default_int_handler if sig == signal.SIGINT else signal.SIG_DFL
         signal.signal(sig, handler)
+        self._detach_wakeup_fd()
         return True
 
 
