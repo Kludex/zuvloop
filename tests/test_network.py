@@ -500,6 +500,48 @@ async def test_a_write_from_pause_writing_is_still_sent() -> None:
         await server.wait_closed()
 
 
+async def test_pause_writing_cannot_overfill_a_reentrant_batch() -> None:
+    """A full batch flush calls Python before the outer write claims its slot."""
+    loop = running_loop()
+    sinks: list[Sink] = []
+
+    def sink_factory() -> Sink:
+        sink = Sink()
+        sinks.append(sink)
+        return sink
+
+    server = await loop.create_server(sink_factory, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+
+    class RefillsBatch(Collector):
+        def pause_writing(self) -> None:
+            assert self.transport is not None
+            for _ in range(4):
+                self.transport.write(b"r")
+
+    async def until_markers_arrive() -> None:
+        while b"rrrr" not in sinks[0].received:
+            await asyncio.sleep(0.01)
+
+    transport, client = await loop.create_connection(RefillsBatch, "127.0.0.1", port)
+    try:
+        transport.set_write_buffer_limits(high=1024, low=256)
+        for _ in range(4):
+            transport.write(b"x" * (2 << 20))
+
+        # The fifth write synchronously flushes the four-slot batch. Its pause
+        # callback refills every slot before this outer call resumes.
+        transport.write(b"fifth")
+        assert transport.get_write_buffer_size() <= (8 << 20) + 9
+        await asyncio.wait_for(until_markers_arrive(), 5)
+    finally:
+        transport.abort()
+        assert client.done is not None
+        await client.done
+        server.close()
+        await server.wait_closed()
+
+
 async def test_write_buffer_limits_validate_their_arguments() -> None:
     server, port, _ = await start_echo()
     loop = running_loop()

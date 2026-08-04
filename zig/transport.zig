@@ -531,9 +531,18 @@ pub fn discardPending(self: *Transport) void {
     releaseViews(self.pending_views[0..count]);
 }
 
-fn appendPending(self: *Transport, bufs: []const uv.Buf, views: []const c.Py_buffer) void {
-    for (bufs, views) |b, v| {
-        if (self.pending_count == pending_max) flushPending(self);
+fn appendPending(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) void {
+    for (bufs, views, 0..) |b, v, i| {
+        // Flushing may call pause_writing(), which is allowed to reenter write()
+        // and refill the batch. Re-establish the capacity invariant after every
+        // trip through Python before indexing the fixed-size arrays.
+        while (self.pending_count == pending_max) {
+            flushPending(self);
+            if (self.flags & (CONN_LOST | CLOSING | EOF_WRITTEN) != 0) {
+                releaseViews(views[i..]);
+                return;
+            }
+        }
         self.pending_bufs[self.pending_count] = b;
         self.pending_views[self.pending_count] = v;
         self.pending_count += 1;
