@@ -67,6 +67,33 @@ The remaining gap is on the write side, not the read side. `getaddrinfo` is the 
 uvloop parses address literals itself, while zuv hands them to libc with `AI_NUMERICHOST`,
 which is slower but cannot disagree with `socket.getaddrinfo`. It is still 32x asyncio.
 
+## Compatibility
+
+zuv is checked against the test suites of the projects that exercise an event loop hardest,
+by running them unmodified with the loop swapped underneath.
+
+| Suite | Result |
+| --- | --- |
+| uvicorn | 1257 passed, no failures |
+| aiohttp | 4471 passed, 38 failed - 33 of which also fail on stock asyncio |
+
+Of the five aiohttp failures that are zuv's alone, two are the `blockbuster` plugin flagging
+`os.stat` inside `create_unix_server` - a call stdlib asyncio makes in the same place, and which
+the plugin exempts by file path rather than by behaviour. Two pass in isolation and fail only in
+suite order. The last is a genuine difference, below.
+
+For reference, uvloop cannot complete that suite: it fails around fourteen tests in
+`test_client_functional.py` and then hangs.
+
+### Known differences
+
+**Patching `loop.time()` does not move the scheduler.** asyncio runs its timers off `self.time()`,
+so replacing that method fast-forwards the loop - a trick test suites use to expire timeouts
+without waiting. zuv keeps the timer heap in Zig and reads the clock directly, so a patched
+`time()` changes what `loop.time()` returns and nothing else. Making the scheduler consult Python
+on every timer operation would cost more than the compatibility is worth; a loop that needs a
+controllable clock should schedule against one explicitly.
+
 ## Requirements
 
 - Python 3.14 or newer
