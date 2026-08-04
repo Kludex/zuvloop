@@ -105,6 +105,19 @@ async def test_call_later_ordering() -> None:
     assert seen == ["first", "second", "third"]
 
 
+async def test_loop_time_is_time_monotonic() -> None:
+    # Not merely monotonic: callers mix the two clocks, so they have to be one.
+    loop = running_loop()
+    assert loop.time() == pytest.approx(time.monotonic(), abs=0.01)
+
+
+async def test_call_at_accepts_a_time_monotonic_deadline() -> None:
+    loop = running_loop()
+    done = loop.create_future()
+    loop.call_at(time.monotonic() + 0.01, done.set_result, None)
+    await asyncio.wait_for(done, 1)
+
+
 async def test_call_at_uses_the_loop_clock() -> None:
     loop = running_loop()
     done = loop.create_future()

@@ -144,6 +144,40 @@ def test_a_signal_between_loop_runs_is_delivered_on_the_next_run() -> None:
         signal.signal(signal.SIGUSR1, original)
 
 
+def test_a_signal_whose_handler_was_removed_before_draining_is_dropped() -> None:
+    original = signal.getsignal(signal.SIGUSR1)
+    loop = zuv.new_event_loop()
+    received: list[str] = []
+    try:
+        loop.add_signal_handler(signal.SIGUSR1, received.append, "delivered")
+        loop.run_until_complete(asyncio.sleep(0))
+
+        # The wakeup byte is already in the pipe when the handler goes away.
+        os.kill(os.getpid(), signal.SIGUSR1)
+        loop.remove_signal_handler(signal.SIGUSR1)
+        loop.run_until_complete(asyncio.sleep(0.01))
+
+        assert received == []
+    finally:
+        loop.close()
+        signal.signal(signal.SIGUSR1, original)
+
+
+def test_finalizing_a_running_loop_leaves_it_running() -> None:
+    loop = zuv.new_event_loop()
+
+    async def finalize() -> None:
+        with pytest.warns(ResourceWarning, match="unclosed event loop"):
+            loop.__del__()
+        assert loop.is_running()
+        assert not loop.is_closed()
+
+    try:
+        loop.run_until_complete(finalize())
+    finally:
+        loop.close()
+
+
 def test_a_loop_without_handlers_does_not_disable_another_loops_signals() -> None:
     original = signal.getsignal(signal.SIGUSR1)
     owner = zuv.new_event_loop()

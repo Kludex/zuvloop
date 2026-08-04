@@ -123,9 +123,17 @@ pub inline fn isReaping(st: *State) bool {
     return @atomicLoad(u8, &st.reap_state, .acquire) != 0;
 }
 
-/// Seconds on the loop's monotonic clock.
+/// Seconds on the clock `time.monotonic()` reads.
+///
+/// Being monotonic is not enough: asyncio code mixes `loop.time()` with
+/// `time.monotonic()` freely - aiohttp dates its pooled connections that way -
+/// so the two have to be the same clock, not merely two well-behaved ones.
+/// `uv_hrtime()` is not: on macOS it counts time spent asleep, which
+/// `time.monotonic()` does not, and the two drift apart by the machine's uptime.
 pub inline fn now() f64 {
-    return @as(f64, @floatFromInt(uv.uv_hrtime())) / 1e9;
+    var ns: c.PyTime_t = 0;
+    _ = c.PyTime_MonotonicRaw(&ns);
+    return @as(f64, @floatFromInt(ns)) / 1e9;
 }
 
 fn isHandleCancelled(obj: *py.Object) bool {
