@@ -500,6 +500,27 @@ async def test_server_wait_closed_waits_for_clients() -> None:
     await asyncio.wait_for(closed, 2)
 
 
+@pytest.mark.parametrize("method", ["close_clients", "abort_clients"])
+async def test_server_can_close_clients_without_closing_listener(method: str) -> None:
+    server, port, _ = await start_echo()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        getattr(server, method)()
+        assert await asyncio.wait_for(reader.read(), 2) == b""
+        assert server.is_serving()
+
+        second_reader, second_writer = await asyncio.open_connection("127.0.0.1", port)
+        second_writer.write(b"still serving")
+        assert await second_reader.readexactly(13) == b"still serving"
+        second_writer.close()
+        await second_writer.wait_closed()
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
 @pytest.mark.parametrize("tls", [False, True])
 async def test_server_factory_failure_does_not_prevent_wait_closed(
     tls: bool, server_context: ssl.SSLContext

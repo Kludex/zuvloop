@@ -509,7 +509,7 @@ fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     self.flags |= CONN_LOST;
     scheduleCall(self, self.cb_connection_lost, self.conn_lost_exc orelse py.none());
     if (self.server) |server| {
-        const res = c.PyObject_CallMethodNoArgs(server, str_detach);
+        const res = c.PyObject_CallMethodOneArg(server, str_detach, @ptrCast(self));
         if (res) |r| py.decref(r) else py.writeUnraisable(@ptrCast(self));
     }
     py.decref(self);

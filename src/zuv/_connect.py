@@ -336,6 +336,12 @@ class ConnectionOperations(SocketOperations):
         view = socket.socket(family, kind_, proto, fileno=fd)
         extra["socket"] = trsock.TransportSocket(view)
         transport._adopt_socket_view(view)
+        if server is not None:
+            try:
+                server._attach(transport)
+            except BaseException:
+                transport.abort()
+                raise
         return transport
 
     async def _wrap_socket(

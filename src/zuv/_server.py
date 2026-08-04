@@ -36,6 +36,7 @@ class Server(asyncio.AbstractServer):
         self._ssl_handshake_timeout = ssl_handshake_timeout
         self._ssl_shutdown_timeout = ssl_shutdown_timeout
         self._active = 0
+        self._transports: set[asyncio.Transport] = set()
         self._serving = False
         self._waiters: list[asyncio.Future[None]] = []
         self._cleanup_path: str | None = None
@@ -84,7 +85,12 @@ class Server(asyncio.AbstractServer):
                 self._detach()
                 raise
 
-    def _detach(self) -> None:
+    def _attach(self, transport: asyncio.Transport) -> None:
+        self._transports.add(transport)
+
+    def _detach(self, transport: asyncio.Transport | None = None) -> None:
+        if transport is not None:
+            self._transports.discard(transport)
         self._active -= 1
         if self._active == 0 and self._sockets is None:
             self._wakeup()
@@ -112,11 +118,13 @@ class Server(asyncio.AbstractServer):
         if self._active == 0:
             self._wakeup()
 
-    def close_clients(self) -> None:  # pragma: no cover - parity with asyncio 3.13+
-        self.close()
+    def close_clients(self) -> None:
+        for transport in tuple(self._transports):
+            transport.close()
 
-    def abort_clients(self) -> None:  # pragma: no cover - parity with asyncio 3.13+
-        self.close()
+    def abort_clients(self) -> None:
+        for transport in tuple(self._transports):
+            transport.abort()
 
     def _wakeup(self) -> None:
         waiters, self._waiters = self._waiters, []
