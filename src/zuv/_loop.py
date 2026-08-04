@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import inspect
 import signal
 import threading
 from collections.abc import Callable
@@ -23,7 +24,7 @@ class EventLoop(ConnectionOperations):
         return f"<{type(self).__name__} running={self.is_running()} closed={self.is_closed()} debug={self.get_debug()}>"
 
     def add_signal_handler(self, sig: int, callback: Callable[..., object], *args: Any) -> None:
-        if asyncio.iscoroutine(callback) or asyncio.iscoroutinefunction(callback):
+        if asyncio.iscoroutine(callback) or inspect.iscoroutinefunction(callback):
             raise TypeError("coroutines cannot be used with add_signal_handler()")
         self._check_closed()
         _check_signal(sig)

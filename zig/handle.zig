@@ -175,6 +175,29 @@ fn when(self_obj: *py.Object) py.Error!*py.Object {
     return py.float(self.when) orelse py.Error.Python;
 }
 
+fn getCallback(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
+    const self: *Handle = @ptrCast(@alignCast(self_obj.?));
+    return py.newref(self.callback orelse py.none());
+}
+
+fn getArgs(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
+    const self: *Handle = @ptrCast(@alignCast(self_obj.?));
+    const n: usize = @intCast(self.nargs);
+    const items = self.argv();
+    const tuple = c.PyTuple_New(self.nargs) orelse return null;
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        _ = c.PyTuple_SetItem(tuple, @intCast(i), py.newref(items[i]));
+    }
+    return tuple;
+}
+
+var getsets = [_]c.PyGetSetDef{
+    .{ .name = "_callback", .get = getCallback, .set = null, .doc = "The scheduled callable.", .closure = null },
+    .{ .name = "_args", .get = getArgs, .set = null, .doc = "Arguments the callable receives.", .closure = null },
+    .{ .name = null, .get = null, .set = null, .doc = null, .closure = null },
+};
+
 fn repr(obj: ?*py.Object) callconv(.c) ?*py.Object {
     const self: *Handle = @ptrCast(@alignCast(obj.?));
     const name = py.typeOf(obj.?).tp_name;
@@ -195,13 +218,14 @@ var timer_methods = [_]c.PyMethodDef{
     py.sentinel,
 };
 
-fn slots(methods: [*]c.PyMethodDef) [7]c.PyType_Slot {
+fn slots(methods: [*]c.PyMethodDef) [8]c.PyType_Slot {
     return .{
         .{ .slot = c.Py_tp_dealloc, .pfunc = @constCast(@ptrCast(&dealloc)) },
         .{ .slot = c.Py_tp_traverse, .pfunc = @constCast(@ptrCast(&traverse)) },
         .{ .slot = c.Py_tp_clear, .pfunc = @constCast(@ptrCast(&clear_)) },
         .{ .slot = c.Py_tp_repr, .pfunc = @constCast(@ptrCast(&repr)) },
         .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(methods) },
+        .{ .slot = c.Py_tp_getset, .pfunc = @ptrCast(&getsets) },
         .{ .slot = c.Py_tp_doc, .pfunc = @constCast(@ptrCast("A scheduled callback.")) },
         .{ .slot = 0, .pfunc = null },
     };

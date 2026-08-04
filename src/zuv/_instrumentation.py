@@ -41,7 +41,7 @@ class Instrumentation:
             "Executing {handle} took {duration} seconds",
             handle=repr(handle),
             duration=duration,
-            call_graph=capture_call_graph(),
+            call_graph=capture_call_graph(handle),
         )
 
     def report_exception(self, context: dict[str, Any]) -> None:
@@ -55,15 +55,21 @@ class Instrumentation:
         )
 
 
-def capture_call_graph() -> str | None:
-    """Render the chain of coroutines awaiting the current task.
+def capture_call_graph(handle: object = None) -> str | None:
+    """Render the chain of coroutines a slow callback belongs to.
 
     Uses `asyncio.format_call_graph`, added in 3.14, so a slow callback carries
-    the *reason* it is being awaited rather than just its own repr.
+    the *reason* it was running rather than just its own repr. A task's step runs
+    as a bound method of the task, and the duration is only known once the step
+    has returned - by then the task is no longer current, so it is recovered from
+    the handle instead.
     """
-    if asyncio.current_task() is None:
+    task = getattr(getattr(handle, "_callback", None), "__self__", None)
+    if not isinstance(task, asyncio.Task):
+        task = asyncio.current_task()
+    if task is None:
         return None
-    return asyncio.format_call_graph()
+    return asyncio.format_call_graph(task)
 
 
 _GAUGES = {

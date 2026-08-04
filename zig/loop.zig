@@ -544,7 +544,13 @@ fn onSampler(timer: ?*uv.Timer) callconv(.c) void {
     };
     defer py.decref(snapshot);
     const result = c.PyObject_CallOneArg(callback, snapshot);
-    if (result) |r| py.decref(r) else py.writeUnraisable(@ptrCast(self));
+    if (result) |r| {
+        py.decref(r);
+        return;
+    }
+    const exc = c.PyErr_GetRaisedException() orelse return;
+    defer py.decref(exc);
+    callExceptionHandler(self, "Exception in the metrics sampler", exc, null);
 }
 
 /// `_start_metrics(interval_seconds, callback)`: samples on a libuv timer, so
