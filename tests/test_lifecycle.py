@@ -41,6 +41,21 @@ def test_failed_transport_open_does_not_corrupt_the_loop() -> None:
         loop.close()
 
 
+def test_failed_transport_open_does_not_retain_the_loop() -> None:
+    loop = zuv.new_event_loop()
+    loop_ref = weakref.ref(loop)
+
+    with pytest.raises(OSError):
+        loop._make_transport(-1, 0, asyncio.Protocol(), None, None, None)
+
+    loop._ssock.close()
+    loop._csock.close()
+    del loop
+    gc.collect()
+
+    assert loop_ref() is None
+
+
 def test_failed_transport_construction_does_not_adopt_the_descriptor() -> None:
     loop = zuv.new_event_loop()
     left, right = socket.socketpair()

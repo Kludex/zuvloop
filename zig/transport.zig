@@ -52,6 +52,7 @@ pub var transport_type: ?*c.PyTypeObject = null;
 pub const Transport = extern struct {
     ob_base: c.PyObject,
     loop: ?*py.Object,
+    state: ?*loopmod.State,
     protocol: ?*py.Object,
     server: ?*py.Object,
     extra: ?*py.Object,
@@ -76,7 +77,7 @@ pub const Transport = extern struct {
     }
 
     inline fn loopState(self: *Transport) *loopmod.State {
-        return loopmod.asLoop(self.loop.?).state();
+        return self.state.?;
     }
 };
 
@@ -690,11 +691,10 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
     const self = asTransport(obj);
     errdefer py.decref(obj);
 
+    self.state = st;
     self.high_water = default_high_water;
     self.low_water = default_high_water / 4;
     self.kind = kind;
-    py.incref(self_obj);
-    self.loop = self_obj;
 
     // Everything after descriptor adoption must be infallible: otherwise the
     // Python socket would still believe it owns a descriptor now owned by
@@ -750,6 +750,8 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
     }
     if (kind == KIND_TCP) _ = uv.uv_tcp_nodelay(@ptrCast(self.stream()), 1);
 
+    py.incref(self_obj);
+    self.loop = self_obj;
     if (!py.isNone(args[4].?)) {
         py.incref(args[4].?);
         self.extra = args[4];
