@@ -437,6 +437,20 @@ fn shutdownAndClose(self: *Transport) void {
     uv.uv_close(uv.asHandle(self.stream()), onClosed);
 }
 
+/// Closes a transport discovered while the owning loop is shutting down.
+/// The transport callback must be preserved because it releases the native
+/// self-reference acquired by `makeTransport`.
+pub fn closeFromLoop(handle: *uv.Handle) void {
+    const self: *Transport = @ptrCast(@alignCast(uv.getData(handle)));
+    self.flags |= CLOSING;
+    self.flags &= ~OPEN;
+    if (self.flags & READING != 0) {
+        _ = uv.uv_read_stop(self.stream());
+        self.flags &= ~READING;
+    }
+    uv.uv_close(handle, onClosed);
+}
+
 fn closeTransport(self: *Transport) void {
     if (self.flags & CLOSING != 0) return;
     self.flags |= CLOSING;

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import gc
+import socket
 import threading
 import time
 from typing import Any
@@ -36,6 +38,22 @@ def test_failed_transport_open_does_not_corrupt_the_loop() -> None:
             loop._make_transport(-1, 0, asyncio.Protocol(), None, None, None)
     finally:
         loop.close()
+
+
+def test_loop_close_releases_open_transports() -> None:
+    gc.collect()
+    before = sum(type(obj) is zuv.Transport for obj in gc.get_objects())
+    loop = zuv.new_event_loop()
+    left, right = socket.socketpair()
+    transport = loop._make_transport(left.fileno(), 1, asyncio.Protocol(), None, None, None)
+    left.detach()
+    right.close()
+
+    loop.close()
+    del transport, loop
+    gc.collect()
+
+    assert sum(type(obj) is zuv.Transport for obj in gc.get_objects()) == before
 
 
 def test_asyncio_run_accepts_the_loop_factory() -> None:

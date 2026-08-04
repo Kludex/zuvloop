@@ -199,6 +199,7 @@ pub extern fn uv_metrics_info(loop: *Loop, metrics: *Metrics) c_int;
 pub extern fn uv_metrics_idle_time(loop: *Loop) u64;
 
 pub extern fn uv_handle_size(@"type": HandleType) usize;
+pub extern fn uv_handle_get_type(handle: *const Handle) HandleType;
 pub extern fn uv_req_size(@"type": ReqType) usize;
 pub extern fn uv_close(handle: *Handle, close_cb: ?CloseCb) void;
 pub extern fn uv_is_active(handle: *const Handle) c_int;

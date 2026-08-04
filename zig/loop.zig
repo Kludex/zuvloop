@@ -615,7 +615,11 @@ fn drainInbox(st: *State) void {
 
 fn walkClose(handle: ?*uv.Handle, _: ?*anyopaque) callconv(.c) void {
     const h = handle orelse return;
-    if (uv.uv_is_closing(h) == 0) uv.uv_close(h, onCloseFreeState);
+    if (uv.uv_is_closing(h) != 0) return;
+    switch (uv.uv_handle_get_type(h)) {
+        .tcp, .named_pipe => transportmod.closeFromLoop(h),
+        else => uv.uv_close(h, onCloseFreeState),
+    }
 }
 
 /// Closes every handle and drains their close callbacks so `uv_loop_close`
