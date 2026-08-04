@@ -45,6 +45,7 @@ var str_low: ?*py.Object = null;
 var str_start_reading: ?*py.Object = null;
 var str_set_result_unless_cancelled: ?*py.Object = null;
 var set_result_unless_cancelled: ?*py.Object = null;
+var buffered_protocol_type: ?*py.Object = null;
 
 pub var transport_type: ?*c.PyTypeObject = null;
 
@@ -106,6 +107,9 @@ fn cacheCallback(protocol: *py.Object, name: ?*py.Object, slot: *?*py.Object) vo
     if (slot.* == null) c.PyErr_Clear();
 }
 
+/// Re-reads which reading protocol the object implements. `set_protocol` can
+/// swap a plain protocol for a buffered one - `start_tls` does exactly that -
+/// so bufferedness is decided here rather than by the caller.
 fn bindProtocol(self: *Transport, protocol: *py.Object) void {
     py.clear(&self.protocol);
     py.incref(protocol);
@@ -114,10 +118,19 @@ fn bindProtocol(self: *Transport, protocol: *py.Object) void {
     cacheCallback(protocol, str_eof_received, &self.cb_eof_received);
     cacheCallback(protocol, str_pause_writing, &self.cb_pause_writing);
     cacheCallback(protocol, str_resume_writing, &self.cb_resume_writing);
-    if (self.flags & BUFFERED != 0) {
+
+    py.clear(&self.cb_get_buffer);
+    py.clear(&self.cb_buffer_updated);
+    py.clear(&self.cb_data_received);
+
+    const buffered = c.PyObject_IsInstance(protocol, buffered_protocol_type);
+    if (buffered < 0) c.PyErr_Clear();
+    if (buffered == 1) {
+        self.flags |= BUFFERED;
         cacheCallback(protocol, str_get_buffer, &self.cb_get_buffer);
         cacheCallback(protocol, str_buffer_updated, &self.cb_buffer_updated);
     } else {
+        self.flags &= ~BUFFERED;
         cacheCallback(protocol, str_data_received, &self.cb_data_received);
     }
 }
@@ -429,7 +442,9 @@ fn getProtocol(self_obj: *py.Object) py.Error!*py.Object {
 }
 
 fn setProtocol(self_obj: *py.Object, protocol: *py.Object) py.Error!*py.Object {
-    bindProtocol(asTransport(self_obj), protocol);
+    const self = asTransport(self_obj);
+    if (self.view.obj != null) c.PyBuffer_Release(&self.view);
+    bindProtocol(self, protocol);
     return py.noneRef();
 }
 
@@ -583,16 +598,15 @@ fn forceCloseMethod(self_obj: *py.Object, exc: *py.Object) py.Error!*py.Object {
 // ---------------------------------------------------------------------------
 // construction
 
-/// `loop._make_transport(fd, kind, protocol, waiter, extra, server, buffered)`
+/// `loop._make_transport(fd, kind, protocol, waiter, extra, server)`
 pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py.Object {
-    try py.expectArgs(args, 7, "_make_transport");
+    try py.expectArgs(args, 6, "_make_transport");
     const loop = loopmod.asLoop(self_obj);
     const st = loop.state();
     try loopmod.checkClosed(st);
 
     const fd = try py.asCInt(args[0].?);
     const kind = try py.asCInt(args[1].?);
-    const buffered = try py.isTrue(args[6].?);
 
     const obj = c.PyType_GenericAlloc(transport_type, 0) orelse return py.Error.Python;
     const self = asTransport(obj);
@@ -601,7 +615,6 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
     self.high_water = default_high_water;
     self.low_water = default_high_water / 4;
     self.kind = kind;
-    if (buffered) self.flags |= BUFFERED;
 
     const init_status = if (kind == KIND_TCP)
         uv.uv_tcp_init_ex(st.uvloop, @ptrCast(self.stream()), 0)
@@ -772,6 +785,7 @@ pub fn register(module: *py.Object) py.Error!void {
     str_start_reading = py.intern("_start_reading") orelse return py.Error.Python;
     str_set_result_unless_cancelled = py.intern("_set_result_unless_cancelled") orelse return py.Error.Python;
     set_result_unless_cancelled = py.importFrom("asyncio.futures", "_set_result_unless_cancelled") orelse return py.Error.Python;
+    buffered_protocol_type = py.importFrom("asyncio.protocols", "BufferedProtocol") orelse return py.Error.Python;
 
     handle_offset = std.mem.alignForward(usize, @sizeOf(Transport), 16);
     write_req_offset = std.mem.alignForward(usize, @sizeOf(WriteReq), 8);

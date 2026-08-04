@@ -162,6 +162,7 @@ class ConnectionOperations(SocketOperations):
         ssl_shutdown_timeout: float | None = None,
         start_serving: bool = True,
     ) -> Server:
+        _check_server_ssl(ssl)
         if host is not None or port is not None:
             if sock is not None:
                 raise ValueError("host/port and sock can not be specified at the same time")
@@ -190,6 +191,7 @@ class ConnectionOperations(SocketOperations):
         start_serving: bool = True,
         cleanup_socket: bool = True,
     ) -> Server:
+        _check_server_ssl(ssl)
         if path is not None:
             if sock is not None:
                 raise ValueError("path and sock can not be specified at the same time")
@@ -299,10 +301,9 @@ class ConnectionOperations(SocketOperations):
             "proto": sock.proto,
         }
         kind = _zuv.KIND_PIPE if sock.family == socket.AF_UNIX else _zuv.KIND_TCP
-        buffered = isinstance(protocol, asyncio.BufferedProtocol)
         fd = sock.detach()
         try:
-            return self._make_transport(fd, kind, protocol, waiter, extra, server, buffered)
+            return self._make_transport(fd, kind, protocol, waiter, extra, server)
         except BaseException:
             os.close(fd)
             raise
@@ -410,9 +411,12 @@ def _check_ssl_args(ssl: _SSLArg, server_hostname: str | None, host: str | None)
 def _resolve_context(ssl: _SSLArg, server_side: bool) -> ssl_module.SSLContext:
     if isinstance(ssl, ssl_module.SSLContext):
         return ssl
-    if server_side:
-        raise ValueError("Server side ssl needs an SSLContext, not a bool")
     return ssl_module.create_default_context()
+
+
+def _check_server_ssl(ssl: _SSLArg) -> None:
+    if ssl and not isinstance(ssl, ssl_module.SSLContext):
+        raise ValueError("Server side ssl needs an SSLContext, not a bool")
 
 
 def _check_socket(sock: socket.socket, kind: int, family: int | None = None) -> None:

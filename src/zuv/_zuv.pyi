@@ -83,5 +83,4 @@ class Loop:
         waiter: asyncio.Future[None] | None,
         extra: dict[str, Any] | None,
         server: object | None,
-        buffered: bool,
     ) -> Transport: ...
