@@ -76,7 +76,17 @@ class ServerThread:
 
 def measure(port: int, duration: str, connections: int) -> float:
     result = subprocess.run(
-        ["oha", "--no-tui", "--output-format", "json", "-z", duration, "-c", str(connections), f"http://127.0.0.1:{port}/"],
+        [
+            "oha",
+            "--no-tui",
+            "--output-format",
+            "json",
+            "-z",
+            duration,
+            "-c",
+            str(connections),
+            f"http://127.0.0.1:{port}/",
+        ],
         capture_output=True,
         text=True,
         check=True,

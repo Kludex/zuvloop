@@ -552,9 +552,7 @@ async def test_server_can_close_clients_without_closing_listener(method: str) ->
 
 
 @pytest.mark.parametrize("tls", [False, True])
-async def test_server_factory_failure_does_not_prevent_wait_closed(
-    tls: bool, server_context: ssl.SSLContext
-) -> None:
+async def test_server_factory_failure_does_not_prevent_wait_closed(tls: bool, server_context: ssl.SSLContext) -> None:
     loop = running_loop()
     errors: list[BaseException | None] = []
     loop.set_exception_handler(lambda _loop, context: errors.append(context.get("exception")))
