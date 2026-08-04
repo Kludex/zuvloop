@@ -150,6 +150,20 @@ async def test_transport_exposes_addresses() -> None:
         await protocol.done
 
 
+async def test_transport_is_an_asyncio_transport() -> None:
+    server, port, _ = await start_echo()
+    loop = running_loop()
+    async with server:
+        transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
+        assert isinstance(transport, asyncio.Transport)
+        assert isinstance(transport, asyncio.ReadTransport)
+        assert isinstance(transport, asyncio.WriteTransport)
+        assert not hasattr(transport, "_extra")
+        transport.close()
+        assert protocol.done is not None
+        await protocol.done
+
+
 async def test_transport_reports_closing_state() -> None:
     server, port, _ = await start_echo()
     loop = running_loop()
@@ -464,6 +478,22 @@ async def test_server_close_is_idempotent() -> None:
     assert server.sockets == ()
 
 
+async def test_cancelled_wait_closed_does_not_block_the_others() -> None:
+    server, _port, _ = await start_echo()
+    cancelled = asyncio.ensure_future(server.wait_closed())
+    waiting = asyncio.ensure_future(server.wait_closed())
+    await asyncio.sleep(0)
+
+    # The cancellation only resolves the future; `close()` reaches `_wakeup()`
+    # before the task resumes to unregister itself.
+    cancelled.cancel()
+    server.close()
+
+    await waiting
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+
+
 async def test_cancelled_server_creation_closes_listeners(monkeypatch: pytest.MonkeyPatch) -> None:
     loop = running_loop()
     started = loop.create_future()
@@ -651,6 +681,40 @@ async def test_unix_server_cleanup_tolerates_a_missing_path() -> None:
 
         server.close()
         await server.wait_closed()
+
+
+async def test_unix_server_cleanup_tolerates_a_path_unlinked_while_binding() -> None:
+    loop = running_loop()
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "zuv.sock"
+
+        def vanishing_stat(target: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+            raise FileNotFoundError(target)
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(os, "stat", vanishing_stat)
+            server = await loop.create_unix_server(Echo, path)
+
+        server.close()
+        await server.wait_closed()
+        assert path.exists()
+        path.unlink()
+
+
+async def test_unix_server_closes_its_listeners_when_serving_fails() -> None:
+    loop = running_loop()
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "zuv.sock"
+
+        async def refuse(self: Server) -> None:
+            raise RuntimeError("refused")
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(Server, "start_serving", refuse)
+            with pytest.raises(RuntimeError, match="refused"):
+                await loop.create_unix_server(Echo, path)
+
+        assert not path.exists()
 
 
 async def test_unix_server_rejects_conflicting_arguments() -> None:

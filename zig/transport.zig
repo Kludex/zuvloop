@@ -65,6 +65,10 @@ pub var transport_type: ?*c.PyTypeObject = null;
 
 pub const Transport = extern struct {
     ob_base: c.PyObject,
+    /// `asyncio.BaseTransport` declares `__slots__ = ('_extra',)`, so its instance
+    /// layout owns this word. Leaving it NULL keeps `_extra` looking unset, which
+    /// is what it is - `get_extra_info` reads our own `extra` instead.
+    base_extra: ?*py.Object,
     loop: ?*py.Object,
     state: ?*loopmod.State,
     protocol: ?*py.Object,
@@ -989,8 +993,10 @@ var spec = c.PyType_Spec{
     .itemsize = 0,
     // asyncio's transports are ordinary objects that accept attributes, and
     // callers - test suites especially - rely on being able to set them.
+    // Not immutable: CPython forbids an immutable type deriving from a mutable
+    // base, and `asyncio.Transport` is an ordinary class.
     .flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | c.Py_TPFLAGS_MANAGED_WEAKREF |
-        c.Py_TPFLAGS_MANAGED_DICT | c.Py_TPFLAGS_IMMUTABLETYPE | c.Py_TPFLAGS_DISALLOW_INSTANTIATION,
+        c.Py_TPFLAGS_MANAGED_DICT | c.Py_TPFLAGS_DISALLOW_INSTANTIATION,
     .slots = &slots,
 };
 
@@ -1017,7 +1023,19 @@ pub fn register(module: *py.Object) py.Error!void {
     const handle_size = @max(uv.uv_handle_size(.tcp), uv.uv_handle_size(.named_pipe));
     spec.basicsize = @intCast(handle_offset + handle_size);
 
-    transport_type = @ptrCast(c.PyType_FromModuleAndSpec(module, &spec, null) orelse return py.Error.Python);
+    // Inheriting from `asyncio.Transport` is what makes `isinstance(t, asyncio.Transport)`
+    // hold, which protocols in the wild - aiohttp's test suite among them - assert on.
+    // We override every method it declares, so nothing of its behaviour survives; only
+    // its instance layout does, and `base_extra` reserves exactly that.
+    const base = py.importFrom("asyncio.transports", "Transport") orelse return py.Error.Python;
+    defer py.decref(base);
+    if (@as(*c.PyTypeObject, @ptrCast(base)).tp_basicsize != @offsetOf(Transport, "loop")) {
+        return py.errRuntime("asyncio.Transport instance layout is not the one zuv was built against");
+    }
+    const bases = c.PyTuple_Pack(1, base) orelse return py.Error.Python;
+    defer py.decref(bases);
+
+    transport_type = @ptrCast(c.PyType_FromModuleAndSpec(module, &spec, bases) orelse return py.Error.Python);
     if (c.PyModule_AddObjectRef(module, "Transport", @ptrCast(transport_type)) < 0) return py.Error.Python;
     if (c.PyModule_AddIntConstant(module, "KIND_TCP", KIND_TCP) < 0) return py.Error.Python;
     if (c.PyModule_AddIntConstant(module, "KIND_PIPE", KIND_PIPE) < 0) return py.Error.Python;
