@@ -49,6 +49,7 @@ include = ["src", "zig", "vendor", "build.zig", "build.zig.zon", "hatch_build.py
 [tool.ruff]
 line-length = 120
 src = ["src", "tests"]
+extend-exclude = ["vendor"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "FA", "UP", "RUF100"]
@@ -59,11 +60,16 @@ combine-as-imports = true
 [tool.mypy]
 strict = true
 python_version = "3.14"
-files = ["src", "tests", "benchmarks"]
+files = ["src", "tests", "benchmarks", "hatch_build.py", "scripts"]
+exclude = ["^vendor/"]
 
 [[tool.mypy.overrides]]
-module = ["uvloop"]
+module = ["uvloop", "hatchling.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["hatch_build"]
+disallow_subclassing_any = false
 
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"

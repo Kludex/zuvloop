@@ -8,7 +8,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from ._loop import EventLoop
+    from ._connect import ConnectionOperations
 
 
 class Server(asyncio.AbstractServer):
@@ -20,7 +20,7 @@ class Server(asyncio.AbstractServer):
 
     def __init__(
         self,
-        loop: EventLoop,
+        loop: ConnectionOperations,
         sockets: Sequence[socket.socket],
         protocol_factory: Callable[[], asyncio.BaseProtocol],
         ssl: Any,
@@ -44,7 +44,7 @@ class Server(asyncio.AbstractServer):
     def sockets(self) -> tuple[socket.socket, ...]:
         return tuple(self._sockets or ())
 
-    def get_loop(self) -> EventLoop:
+    def get_loop(self) -> ConnectionOperations:
         return self._loop
 
     def is_serving(self) -> bool:
@@ -127,7 +127,7 @@ class Server(asyncio.AbstractServer):
     async def __aenter__(self) -> Server:
         return self
 
-    async def __aexit__(
+    async def __aexit__(  # type: ignore[override]  # typeshed types the arguments as object
         self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
     ) -> None:
         self.close()

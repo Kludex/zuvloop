@@ -5,6 +5,8 @@ import ssl
 
 import pytest
 
+from conftest import running_loop
+
 pytestmark = pytest.mark.anyio
 
 
@@ -45,7 +47,7 @@ async def test_tls_exposes_the_peer_certificate(
 
 
 async def test_tls_rejects_an_untrusted_certificate(server_context: ssl.SSLContext) -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     # The server side sees the client's rejection as a reset; that is expected here.
     loop.set_exception_handler(lambda _loop, _context: None)
     server = await asyncio.start_server(echo, "127.0.0.1", 0, ssl=server_context)
@@ -60,7 +62,7 @@ async def test_tls_rejects_an_untrusted_certificate(server_context: ssl.SSLConte
 
 
 async def test_a_failed_handshake_is_reported(server_context: ssl.SSLContext) -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     reported: list[dict[str, object]] = []
     loop.set_exception_handler(lambda _loop, context: reported.append(context))
     server = await loop.create_server(asyncio.Protocol, "127.0.0.1", 0, ssl=server_context)
@@ -81,7 +83,7 @@ async def test_a_failed_handshake_is_reported(server_context: ssl.SSLContext) ->
 async def test_start_tls_upgrades_a_plain_connection(
     server_context: ssl.SSLContext, client_context: ssl.SSLContext
 ) -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     upgraded = loop.create_future()
 
     class ServerSide(asyncio.Protocol):
@@ -120,14 +122,14 @@ async def test_start_tls_upgrades_a_plain_connection(
 
 
 async def test_server_side_tls_needs_a_context() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with pytest.raises(ValueError, match="needs an SSLContext"):
         await loop.create_server(asyncio.Protocol, "127.0.0.1", 0, ssl=True)
 
 
 async def test_start_tls_closes_the_transport_when_the_handshake_fails(client_context: ssl.SSLContext) -> None:
     """The echo server replies with the ClientHello, which is not a ServerHello."""
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
 
     class Echo(asyncio.Protocol):
         def connection_made(self, transport: asyncio.BaseTransport) -> None:

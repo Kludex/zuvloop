@@ -9,12 +9,13 @@ from typing import Any
 import pytest
 
 import zuv
+from conftest import running_loop
 
 pytestmark = pytest.mark.anyio
 
 
 async def test_call_soon_runs_in_order() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     seen: list[int] = []
     for index in range(5):
         loop.call_soon(seen.append, index)
@@ -24,7 +25,7 @@ async def test_call_soon_runs_in_order() -> None:
 
 
 async def test_call_soon_passes_many_arguments() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     captured: list[tuple[Any, ...]] = []
     loop.call_soon(lambda *args: captured.append(args), 1, 2, 3, 4, 5, 6)
     await asyncio.sleep(0)
@@ -35,7 +36,7 @@ async def test_call_soon_passes_many_arguments() -> None:
 async def test_call_soon_runs_in_the_calling_context() -> None:
     variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable")
     variable.set("outer")
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     seen: list[str] = []
     loop.call_soon(lambda: seen.append(variable.get()))
     await asyncio.sleep(0)
@@ -47,7 +48,7 @@ async def test_call_soon_accepts_an_explicit_context() -> None:
     variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable", default="default")
     context = contextvars.copy_context()
     context.run(variable.set, "explicit")
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     seen: list[str] = []
     loop.call_soon(lambda: seen.append(variable.get()), context=context)
     await asyncio.sleep(0)
@@ -56,19 +57,19 @@ async def test_call_soon_accepts_an_explicit_context() -> None:
 
 
 async def test_call_soon_rejects_unknown_keywords() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with pytest.raises(TypeError, match="context"):
         loop.call_soon(print, unexpected=1)  # type: ignore[call-arg]
 
 
 async def test_call_soon_requires_a_callback() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with pytest.raises(TypeError, match="requires a callback"):
         loop.call_soon()  # type: ignore[call-arg]
 
 
 async def test_cancelled_callback_does_not_run() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     seen: list[str] = []
     handle = loop.call_soon(seen.append, "nope")
     handle.cancel()
@@ -80,14 +81,14 @@ async def test_cancelled_callback_does_not_run() -> None:
 
 
 async def test_handle_repr_names_the_callback() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     handle = loop.call_soon(print)
     assert "print" in repr(handle)
     handle.cancel()
 
 
 async def test_call_later_never_fires_early() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     delay = 0.05
     started = loop.time()
     await asyncio.sleep(delay)
@@ -95,7 +96,7 @@ async def test_call_later_never_fires_early() -> None:
 
 
 async def test_call_later_ordering() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     seen: list[str] = []
     loop.call_later(0.03, seen.append, "third")
     loop.call_later(0.01, seen.append, "first")
@@ -105,7 +106,7 @@ async def test_call_later_ordering() -> None:
 
 
 async def test_call_at_uses_the_loop_clock() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     done = loop.create_future()
     handle = loop.call_at(loop.time() + 0.01, done.set_result, None)
     assert handle.when() > loop.time()
@@ -113,7 +114,7 @@ async def test_call_at_uses_the_loop_clock() -> None:
 
 
 async def test_call_later_requires_a_delay_and_a_callback() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with pytest.raises(TypeError, match="delay and a callback"):
         loop.call_later(0.1)  # type: ignore[call-arg]
     with pytest.raises(TypeError, match="time and a callback"):
@@ -121,14 +122,14 @@ async def test_call_later_requires_a_delay_and_a_callback() -> None:
 
 
 async def test_negative_delay_runs_promptly() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     done = loop.create_future()
     loop.call_later(-10, done.set_result, "now")
     assert await done == "now"
 
 
 async def test_cancelling_many_timers_compacts_the_heap() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     handles = [loop.call_later(30, print) for _ in range(400)]
     for handle in handles:
         handle.cancel()
@@ -139,7 +140,7 @@ async def test_cancelling_many_timers_compacts_the_heap() -> None:
 
 
 async def test_call_soon_threadsafe_from_another_thread() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     done = loop.create_future()
 
     def worker() -> None:
@@ -150,13 +151,13 @@ async def test_call_soon_threadsafe_from_another_thread() -> None:
 
 
 async def test_call_soon_threadsafe_validates_its_arguments() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with pytest.raises(TypeError, match="requires a callback"):
         loop.call_soon_threadsafe()  # type: ignore[call-arg]
 
 
 async def test_run_in_executor_uses_a_thread() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     result = await loop.run_in_executor(None, lambda: threading.current_thread().name)
     assert result.startswith("zuv")
 
@@ -164,7 +165,7 @@ async def test_run_in_executor_uses_a_thread() -> None:
 async def test_run_in_executor_accepts_an_explicit_executor() -> None:
     import concurrent.futures
 
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with concurrent.futures.ThreadPoolExecutor(1) as executor:
         assert await loop.run_in_executor(executor, time.monotonic) > 0
     loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(1))
@@ -172,7 +173,7 @@ async def test_run_in_executor_accepts_an_explicit_executor() -> None:
 
 
 async def test_task_factory_round_trip() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     assert loop.get_task_factory() is None
     made: list[str] = []
 
@@ -188,7 +189,7 @@ async def test_task_factory_round_trip() -> None:
 
 
 async def test_eager_task_factory_is_supported() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     loop.set_task_factory(asyncio.eager_task_factory)
 
     async def immediate() -> str:
@@ -201,7 +202,7 @@ async def test_eager_task_factory_is_supported() -> None:
 
 
 async def test_debug_mode_round_trip() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     assert loop.get_debug() is False
     loop.set_debug(True)
     assert loop.get_debug() is True
@@ -209,7 +210,7 @@ async def test_debug_mode_round_trip() -> None:
 
 
 async def test_slow_callback_duration_is_settable() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     assert loop.slow_callback_duration == pytest.approx(0.1)
     loop.slow_callback_duration = 0.5
     assert loop.slow_callback_duration == pytest.approx(0.5)
@@ -217,7 +218,7 @@ async def test_slow_callback_duration_is_settable() -> None:
 
 
 async def test_metrics_report_loop_activity() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     await asyncio.sleep(0.01)
     metrics = loop._metrics()
     assert metrics["callbacks_run"] > 0
@@ -230,14 +231,14 @@ async def test_metrics_report_loop_activity() -> None:
 
 
 async def test_timer_handle_cancelled_hook_is_accepted() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     handle = loop.call_later(10, print)
     handle.cancel()
-    assert loop._timer_handle_cancelled(handle) is None
+    loop._timer_handle_cancelled(handle)
 
 
 async def test_repr_describes_the_loop() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     assert "EventLoop running=True closed=False" in repr(loop)
 
 

@@ -6,7 +6,7 @@ import socket
 import ssl as ssl_module
 from asyncio import sslproto
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, cast
 
 from . import _zuv
 from ._server import Server
@@ -22,7 +22,7 @@ class ConnectionOperations(SocketOperations):
     to libuv, which owns every subsequent read and write.
     """
 
-    async def getaddrinfo(
+    async def getaddrinfo(  # type: ignore[override]  # returns the same tuples, typed loosely
         self,
         host: str | bytes | None,
         port: str | bytes | int | None,
@@ -39,7 +39,7 @@ class ConnectionOperations(SocketOperations):
 
     # -- clients -----------------------------------------------------------
 
-    async def create_connection(
+    async def create_connection(  # type: ignore[override]  # no happy-eyeballs arguments
         self,
         protocol_factory: Callable[[], asyncio.BaseProtocol],
         host: str | None = None,
@@ -145,7 +145,7 @@ class ConnectionOperations(SocketOperations):
 
     # -- servers -----------------------------------------------------------
 
-    async def create_server(
+    async def create_server(  # type: ignore[override]  # no keep_alive argument
         self,
         protocol_factory: Callable[[], asyncio.BaseProtocol],
         host: str | Sequence[str] | None = None,
@@ -178,7 +178,7 @@ class ConnectionOperations(SocketOperations):
             await server.start_serving()
         return server
 
-    async def create_unix_server(
+    async def create_unix_server(  # type: ignore[override]  # cleanup_socket is missing from typeshed
         self,
         protocol_factory: Callable[[], asyncio.BaseProtocol],
         path: str | os.PathLike[str] | None = None,
@@ -330,7 +330,7 @@ class ConnectionOperations(SocketOperations):
                 waiter,
                 server_side,
                 server_hostname,
-                ssl_handshake_timeout=ssl_handshake_timeout,
+                ssl_handshake_timeout=ssl_handshake_timeout,  # type: ignore[arg-type]  # typeshed says int
                 ssl_shutdown_timeout=ssl_shutdown_timeout,
             )
             transport = self._attach_transport(sock, driver, None, server)
@@ -343,7 +343,7 @@ class ConnectionOperations(SocketOperations):
             transport.close()
             raise
         if ssl:
-            return driver._app_transport, protocol  # type: ignore[attr-defined,no-any-return]
+            return cast("asyncio.Transport", driver._app_transport), protocol  # type: ignore[attr-defined]
         return transport, protocol
 
     async def start_tls(
@@ -366,19 +366,20 @@ class ConnectionOperations(SocketOperations):
             server_side,
             server_hostname,
             call_connection_made=False,
-            ssl_handshake_timeout=ssl_handshake_timeout,
+            ssl_handshake_timeout=ssl_handshake_timeout,  # type: ignore[arg-type]  # typeshed says int
             ssl_shutdown_timeout=ssl_shutdown_timeout,
         )
-        transport.pause_reading()
-        transport.set_protocol(ssl_protocol)
-        self.call_soon(ssl_protocol.connection_made, transport)
-        self.call_soon(transport.resume_reading)
+        stream = cast("asyncio.Transport", transport)
+        stream.pause_reading()
+        stream.set_protocol(ssl_protocol)
+        self.call_soon(ssl_protocol.connection_made, stream)
+        self.call_soon(stream.resume_reading)
         try:
             await waiter
         except BaseException:
-            transport.close()
+            stream.close()
             raise
-        return ssl_protocol._app_transport  # type: ignore[no-any-return]
+        return cast("asyncio.Transport", ssl_protocol._app_transport)
 
     # -- unsupported -------------------------------------------------------
 

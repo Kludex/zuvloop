@@ -8,6 +8,7 @@ import logfire_api as logfire
 import pytest
 
 import zuv
+from conftest import running_loop
 from zuv._instrumentation import capture_call_graph, publish_metrics
 
 pytestmark = pytest.mark.anyio
@@ -35,7 +36,7 @@ def recorder(monkeypatch: pytest.MonkeyPatch) -> Recorder:
 
 
 async def test_slow_callbacks_are_reported(recorder: Recorder) -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     loop.set_debug(True)
     loop.slow_callback_duration = 0.01
     try:
@@ -52,7 +53,7 @@ async def test_slow_callbacks_are_reported(recorder: Recorder) -> None:
 
 
 async def test_slow_callbacks_inside_a_task_carry_the_call_graph(recorder: Recorder) -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     loop.set_debug(True)
     loop.slow_callback_duration = 0.01
 
@@ -72,14 +73,14 @@ async def test_slow_callbacks_inside_a_task_carry_the_call_graph(recorder: Recor
 
 
 async def test_the_call_graph_is_absent_outside_a_task() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     captured = loop.create_future()
     loop.call_soon(lambda: captured.set_result(capture_call_graph(loop.call_soon(print))))
     assert await captured is None
 
 
 async def test_unhandled_exceptions_are_reported(recorder: Recorder) -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
 
     def boom() -> None:
         raise ValueError("kaboom")
@@ -99,7 +100,7 @@ async def test_unhandled_exceptions_are_reported(recorder: Recorder) -> None:
 
 
 async def test_a_custom_exception_handler_takes_over() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     seen: list[dict[str, Any]] = []
     previous = loop.get_exception_handler()
     loop.set_exception_handler(lambda _loop, context: seen.append(context))
@@ -113,7 +114,7 @@ async def test_a_custom_exception_handler_takes_over() -> None:
 
 
 async def test_a_failing_exception_handler_falls_back(recorder: Recorder) -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
 
     def broken(_loop: Any, _context: dict[str, Any]) -> None:
         raise RuntimeError("handler is broken")
@@ -129,13 +130,13 @@ async def test_a_failing_exception_handler_falls_back(recorder: Recorder) -> Non
 
 
 async def test_a_context_without_an_exception_is_still_reported(recorder: Recorder) -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     loop.default_exception_handler({"message": "just a note", "detail": 42})
     assert ("just a note", {"_exc_info": False, "detail": "42"}) in recorder.errors
 
 
 async def test_a_context_without_a_message_gets_a_default(recorder: Recorder) -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     loop.default_exception_handler({})
     assert recorder.errors[0][0] == "Unhandled exception in event loop"
 
@@ -164,7 +165,7 @@ async def test_instrument_samples_on_a_native_timer(monkeypatch: pytest.MonkeyPa
     finally:
         reporter.cancel()
     assert len(snapshots) >= 2
-    assert snapshots[0].keys() == asyncio.get_running_loop()._metrics().keys()
+    assert snapshots[0].keys() == running_loop()._metrics().keys()
     before = len(snapshots)
     await asyncio.sleep(0.05)
     assert len(snapshots) == before
@@ -172,7 +173,7 @@ async def test_instrument_samples_on_a_native_timer(monkeypatch: pytest.MonkeyPa
 
 async def test_instrument_accepts_an_explicit_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("zuv._runner.publish_metrics", lambda _snapshot: None)
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     reporter = zuv.instrument(loop, interval=5.0)
     reporter.cancel()
 
@@ -187,13 +188,13 @@ async def test_instrument_rejects_a_foreign_loop() -> None:
 
 
 async def test_the_sampling_interval_must_be_positive() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with pytest.raises(ValueError, match="must be positive"):
         loop._start_metrics(0, print)
 
 
 async def test_a_failing_sampler_callback_is_reported() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     seen: list[dict[str, Any]] = []
 
     def boom(_snapshot: dict[str, int]) -> None:
@@ -217,5 +218,5 @@ async def test_metrics_on_a_closed_loop_are_zero() -> None:
 
 
 async def test_publishing_metrics_reaches_real_gauges() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     publish_metrics(loop._metrics())

@@ -5,11 +5,13 @@ import socket
 
 import pytest
 
+from conftest import running_loop
+
 pytestmark = pytest.mark.anyio
 
 
 async def test_sock_recv_and_sendall() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     left, right = socket.socketpair()
     left.setblocking(False)
     right.setblocking(False)
@@ -22,7 +24,7 @@ async def test_sock_recv_and_sendall() -> None:
 
 
 async def test_sock_sendall_splits_large_payloads() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     left, right = socket.socketpair()
     left.setblocking(False)
     right.setblocking(False)
@@ -40,7 +42,7 @@ async def test_sock_sendall_splits_large_payloads() -> None:
 
 
 async def test_sock_recv_waits_for_data() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     left, right = socket.socketpair()
     left.setblocking(False)
     right.setblocking(False)
@@ -56,7 +58,7 @@ async def test_sock_recv_waits_for_data() -> None:
 
 
 async def test_sock_recv_into() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     left, right = socket.socketpair()
     left.setblocking(False)
     right.setblocking(False)
@@ -72,7 +74,7 @@ async def test_sock_recv_into() -> None:
 
 async def test_a_retried_operation_reports_errors() -> None:
     """The peer disappears while the send is parked waiting for writability."""
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     left, right = socket.socketpair()
     left.setblocking(False)
     right.setblocking(False)
@@ -85,7 +87,7 @@ async def test_a_retried_operation_reports_errors() -> None:
 
 
 async def test_sock_accept_and_connect() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
@@ -108,7 +110,7 @@ async def test_sock_accept_and_connect() -> None:
 
 
 async def test_sock_connect_reports_refusal(closed_port: int) -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     sock = socket.socket()
     sock.setblocking(False)
     try:
@@ -122,7 +124,7 @@ async def test_sock_connect_to_a_unix_path_needs_no_resolution() -> None:
     import tempfile
     from pathlib import Path
 
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
         path = str(Path(directory) / "direct.sock")
         listener = socket.socket(socket.AF_UNIX)
@@ -141,7 +143,7 @@ async def test_sock_connect_to_a_unix_path_needs_no_resolution() -> None:
 
 
 async def test_sock_operations_reject_blocking_sockets() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with socket.socket() as sock:
         with pytest.raises(ValueError, match="must be non-blocking"):
             await loop.sock_recv(sock, 1)
@@ -150,7 +152,7 @@ async def test_sock_operations_reject_blocking_sockets() -> None:
 
 
 async def test_sock_sendto_and_recvfrom() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     left = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     right = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     left.bind(("127.0.0.1", 0))
@@ -173,7 +175,7 @@ async def test_sock_sendto_and_recvfrom() -> None:
 
 
 async def test_readers_and_writers_can_be_replaced() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     left, right = socket.socketpair()
     left.setblocking(False)
     right.setblocking(False)
@@ -194,7 +196,7 @@ async def test_readers_and_writers_can_be_replaced() -> None:
 
 
 async def test_writers_fire_when_writable() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     left, right = socket.socketpair()
     left.setblocking(False)
     right.setblocking(False)
@@ -210,7 +212,7 @@ async def test_writers_fire_when_writable() -> None:
 
 
 async def test_readers_and_writers_share_a_descriptor() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     left, right = socket.socketpair()
     left.setblocking(False)
     right.setblocking(False)
@@ -231,7 +233,7 @@ async def test_readers_and_writers_share_a_descriptor() -> None:
 
 
 async def test_add_reader_validates_its_arguments() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with pytest.raises(TypeError, match="descriptor and a callback"):
         loop.add_reader(0)  # type: ignore[call-arg]
     with pytest.raises(TypeError, match="descriptor and a callback"):
@@ -239,7 +241,7 @@ async def test_add_reader_validates_its_arguments() -> None:
 
 
 async def test_add_reader_rejects_an_invalid_descriptor() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with pytest.raises(ValueError, match="negative"):
         loop.add_reader(-1, print)
     with pytest.raises(OSError):
@@ -247,23 +249,23 @@ async def test_add_reader_rejects_an_invalid_descriptor() -> None:
 
 
 async def test_remove_reader_for_an_unwatched_descriptor() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     assert loop.remove_reader(0) is False
     assert loop.remove_writer(0) is False
 
 
 async def test_sendfile_is_not_implemented() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with socket.socket() as sock:
         with pytest.raises(NotImplementedError):
             await loop.sock_sendfile(sock, None)
     with pytest.raises(NotImplementedError):
-        await loop.sendfile(None, None)  # type: ignore[arg-type]
+        await loop.sendfile(None, None)
 
 
 async def test_a_partially_drained_descriptor_reports_ready_again() -> None:
     """Reading one byte at a time leaves the descriptor readable between wakeups."""
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     left, right = socket.socketpair()
     left.setblocking(False)
     right.setblocking(False)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
+import ssl
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ from typing import Any
 import pytest
 
 import zuv
+from conftest import running_loop
 
 pytestmark = pytest.mark.anyio
 
@@ -22,7 +24,7 @@ class Echo(asyncio.Protocol):
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         self.transport = transport  # type: ignore[assignment]
-        self.closed = asyncio.get_running_loop().create_future()
+        self.closed = running_loop().create_future()
 
     def data_received(self, data: bytes) -> None:
         self.received += data
@@ -45,7 +47,7 @@ class Collector(asyncio.Protocol):
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         self.transport = transport  # type: ignore[assignment]
-        self.done = asyncio.get_running_loop().create_future()
+        self.done = running_loop().create_future()
 
     def data_received(self, data: bytes) -> None:
         self.received += data
@@ -67,7 +69,7 @@ async def start_echo(**kwargs: Any) -> tuple[zuv.Server, int, list[Echo]]:
         protocols.append(protocol)
         return protocol
 
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     server = await loop.create_server(factory, "127.0.0.1", 0, **kwargs)
     return server, server.sockets[0].getsockname()[1], protocols
 
@@ -132,7 +134,7 @@ async def test_empty_writes_are_ignored() -> None:
 
 async def test_transport_exposes_addresses() -> None:
     server, port, _ = await start_echo()
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     async with server:
         transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
         assert transport.get_extra_info("peername")[1] == port
@@ -148,7 +150,7 @@ async def test_transport_exposes_addresses() -> None:
 
 async def test_transport_reports_closing_state() -> None:
     server, port, _ = await start_echo()
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     async with server:
         transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
         assert transport.is_closing() is False
@@ -161,7 +163,7 @@ async def test_transport_reports_closing_state() -> None:
 
 async def test_abort_drops_the_connection() -> None:
     server, port, _ = await start_echo()
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     async with server:
         transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
         transport.abort()
@@ -171,7 +173,7 @@ async def test_abort_drops_the_connection() -> None:
 
 async def test_pause_and_resume_reading() -> None:
     server, port, _ = await start_echo()
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     async with server:
         transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
         assert transport.is_reading() is True
@@ -190,7 +192,7 @@ async def test_pause_and_resume_reading() -> None:
 
 
 async def test_write_eof_is_seen_as_eof_by_the_peer() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     seen: list[bool] = []
 
     class EofWatcher(asyncio.Protocol):
@@ -219,7 +221,7 @@ async def test_write_eof_is_seen_as_eof_by_the_peer() -> None:
 
 async def test_writes_after_close_are_rejected() -> None:
     server, port, _ = await start_echo()
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     async with server:
         transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
         transport.close()
@@ -230,7 +232,7 @@ async def test_writes_after_close_are_rejected() -> None:
 
 
 async def test_flow_control_pauses_the_protocol() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     server, port, protocols = await start_echo()
     async with server:
         transport, client = await loop.create_connection(Collector, "127.0.0.1", port)
@@ -247,7 +249,7 @@ async def test_flow_control_pauses_the_protocol() -> None:
 
 async def test_write_buffer_limits_validate_their_arguments() -> None:
     server, port, _ = await start_echo()
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     async with server:
         transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
         transport.set_write_buffer_limits()
@@ -267,7 +269,7 @@ async def test_write_buffer_limits_validate_their_arguments() -> None:
 
 async def test_protocol_can_be_replaced() -> None:
     server, port, _ = await start_echo()
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     async with server:
         transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
         assert transport.get_protocol() is protocol
@@ -279,7 +281,7 @@ async def test_protocol_can_be_replaced() -> None:
 
 
 async def test_buffered_protocol_reads_into_its_own_buffer() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     done = loop.create_future()
 
     class Buffered(asyncio.BufferedProtocol):
@@ -304,13 +306,13 @@ async def test_buffered_protocol_reads_into_its_own_buffer() -> None:
 
 
 async def test_connection_refused_is_reported(closed_port: int) -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with pytest.raises(ConnectionRefusedError):
         await loop.create_connection(Collector, "127.0.0.1", closed_port)
 
 
 async def test_create_connection_rejects_conflicting_arguments() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with socket.socket() as sock:
         with pytest.raises(ValueError, match="at the same time"):
             await loop.create_connection(Collector, "127.0.0.1", 80, sock=sock)
@@ -322,7 +324,7 @@ async def test_create_connection_rejects_conflicting_arguments() -> None:
 
 async def test_create_connection_from_an_existing_socket() -> None:
     server, port, _ = await start_echo()
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     async with server:
         sock = socket.socket()
         sock.setblocking(False)
@@ -337,7 +339,7 @@ async def test_create_connection_from_an_existing_socket() -> None:
 
 
 async def test_create_connection_rejects_a_datagram_socket() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         with pytest.raises(ValueError, match="socket was expected"):
             await loop.create_connection(Collector, sock=sock)
@@ -345,7 +347,7 @@ async def test_create_connection_rejects_a_datagram_socket() -> None:
 
 async def test_create_connection_binds_a_local_address() -> None:
     server, port, _ = await start_echo()
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     async with server:
         transport, protocol = await loop.create_connection(
             Collector, "127.0.0.1", port, local_addr=("127.0.0.1", 0)
@@ -357,13 +359,13 @@ async def test_create_connection_binds_a_local_address() -> None:
 
 
 async def test_create_connection_reports_every_address_failing(closed_port: int) -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with pytest.raises(OSError):
         await loop.create_connection(Collector, "localhost", closed_port)
 
 
 async def test_create_server_rejects_conflicting_arguments() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with socket.socket() as sock:
         with pytest.raises(ValueError, match="at the same time"):
             await loop.create_server(Echo, "127.0.0.1", 0, sock=sock)
@@ -372,7 +374,7 @@ async def test_create_server_rejects_conflicting_arguments() -> None:
 
 
 async def test_create_server_from_an_existing_socket() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
@@ -388,7 +390,7 @@ async def test_create_server_from_an_existing_socket() -> None:
 
 
 async def test_server_can_start_serving_later() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     server = await loop.create_server(Echo, "127.0.0.1", 0, start_serving=False)
     port = server.sockets[0].getsockname()[1]
     assert server.is_serving() is False
@@ -404,14 +406,14 @@ async def test_server_can_start_serving_later() -> None:
 
 
 async def test_server_binds_several_hosts() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     server = await loop.create_server(Echo, ["127.0.0.1", "::1"], 0, reuse_address=True)
     async with server:
         assert len(server.sockets) >= 1
 
 
 async def test_server_reuse_port() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     server = await loop.create_server(Echo, "127.0.0.1", 0, reuse_port=True)
     async with server:
         assert len(server.sockets) == 1
@@ -432,7 +434,7 @@ async def test_server_wait_closed_waits_for_clients() -> None:
     writer.write(b"open")
     assert await reader.readexactly(4) == b"open"
     server.close()
-    closed = asyncio.get_running_loop().create_task(server.wait_closed())
+    closed = running_loop().create_task(server.wait_closed())
     await asyncio.sleep(0.02)
     assert not closed.done()
     writer.close()
@@ -442,7 +444,7 @@ async def test_server_wait_closed_waits_for_clients() -> None:
 
 async def test_serve_forever_runs_until_cancelled() -> None:
     server, port, _ = await start_echo()
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     task = loop.create_task(server.serve_forever())
     await asyncio.sleep(0.02)
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
@@ -456,7 +458,7 @@ async def test_serve_forever_runs_until_cancelled() -> None:
 
 
 async def test_connect_accepted_socket() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
@@ -479,7 +481,7 @@ async def test_connect_accepted_socket() -> None:
 
 
 async def test_unix_sockets_round_trip() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "zuv.sock"
         server = await loop.create_unix_server(Echo, path)
@@ -493,7 +495,7 @@ async def test_unix_sockets_round_trip() -> None:
 
 
 async def test_unix_server_rejects_conflicting_arguments() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with socket.socket(socket.AF_UNIX) as sock:
         with pytest.raises(ValueError, match="at the same time"):
             await loop.create_unix_server(Echo, "/tmp/x", sock=sock)
@@ -502,7 +504,7 @@ async def test_unix_server_rejects_conflicting_arguments() -> None:
 
 
 async def test_unix_server_from_an_existing_socket() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
         path = str(Path(directory) / "explicit.sock")
         sock = socket.socket(socket.AF_UNIX)
@@ -517,7 +519,7 @@ async def test_unix_server_from_an_existing_socket() -> None:
 
 
 async def test_unix_server_rejects_a_bound_path_in_use() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "taken.sock"
         path.touch()
@@ -526,7 +528,7 @@ async def test_unix_server_rejects_a_bound_path_in_use() -> None:
 
 
 async def test_unix_connection_rejects_conflicting_arguments() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with socket.socket(socket.AF_UNIX) as sock:
         with pytest.raises(ValueError, match="at the same time"):
             await loop.create_unix_connection(Collector, "/tmp/x", sock=sock)
@@ -537,14 +539,14 @@ async def test_unix_connection_rejects_conflicting_arguments() -> None:
 
 
 async def test_unix_connection_to_a_missing_path_fails() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
         with pytest.raises(FileNotFoundError):
             await loop.create_unix_connection(Collector, Path(directory) / "absent.sock")
 
 
 async def test_unix_connection_from_an_existing_socket() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
         path = str(Path(directory) / "pair.sock")
         server = await loop.create_unix_server(Echo, path)
@@ -562,21 +564,21 @@ async def test_unix_connection_from_an_existing_socket() -> None:
 
 
 async def test_unix_connection_rejects_a_tcp_socket() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with socket.socket() as sock:
         with pytest.raises(ValueError, match="socket was expected"):
             await loop.create_unix_connection(Collector, sock=sock)
 
 
 async def test_server_without_address_reuse() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     server = await loop.create_server(Echo, "127.0.0.1", 0, reuse_address=False)
     async with server:
         assert len(server.sockets) == 1
 
 
 async def test_binding_a_busy_port_releases_every_socket() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     taken = await loop.create_server(Echo, "127.0.0.1", 0, reuse_address=False)
     port = taken.sockets[0].getsockname()[1]
     async with taken:
@@ -585,7 +587,7 @@ async def test_binding_a_busy_port_releases_every_socket() -> None:
 
 
 async def test_unix_server_can_start_serving_later() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "later.sock"
         server = await loop.create_unix_server(Echo, path, start_serving=False)
@@ -600,13 +602,12 @@ async def test_unix_server_can_start_serving_later() -> None:
 
 
 async def test_unix_server_reports_an_unusable_path() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with pytest.raises(OSError):
         await loop.create_unix_server(Echo, "/nonexistent-directory/zuv.sock")
 
 
 async def test_a_backlog_of_one_accepts_one_connection_per_wakeup() -> None:
-    loop = asyncio.get_running_loop()
     server, port, _ = await start_echo(backlog=1)
     async with server:
         writers = []
@@ -621,7 +622,7 @@ async def test_a_backlog_of_one_accepts_one_connection_per_wakeup() -> None:
 
 
 async def test_wait_closed_tolerates_a_cancelled_waiter() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     server, port, _ = await start_echo()
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     writer.write(b"x")
@@ -638,7 +639,7 @@ async def test_wait_closed_tolerates_a_cancelled_waiter() -> None:
 
 
 async def test_tls_client_needs_a_server_hostname() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     sock = socket.socket()
     sock.setblocking(False)
     try:
@@ -649,7 +650,7 @@ async def test_tls_client_needs_a_server_hostname() -> None:
 
 
 async def test_a_transport_can_wrap_an_unconnected_socket() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     sock = socket.socket()
     sock.setblocking(False)
     transport, _protocol = await loop.connect_accepted_socket(Collector, sock)
@@ -658,8 +659,8 @@ async def test_a_transport_can_wrap_an_unconnected_socket() -> None:
     await asyncio.sleep(0.02)
 
 
-async def test_a_client_handshake_against_a_plain_server_fails(client_context: object) -> None:
-    loop = asyncio.get_running_loop()
+async def test_a_client_handshake_against_a_plain_server_fails(client_context: ssl.SSLContext) -> None:
+    loop = running_loop()
 
     class NotTls(asyncio.Protocol):
         def connection_made(self, transport: asyncio.BaseTransport) -> None:
@@ -676,9 +677,9 @@ async def test_a_client_handshake_against_a_plain_server_fails(client_context: o
 
 
 async def test_tls_defaults_the_server_hostname_to_the_host(
-    server_context: object, client_context: object
+    server_context: ssl.SSLContext, client_context: ssl.SSLContext
 ) -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     server = await loop.create_server(Echo, "127.0.0.1", 0, ssl=server_context)
     port = server.sockets[0].getsockname()[1]
     async with server:

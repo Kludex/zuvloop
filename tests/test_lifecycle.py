@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 import zuv
+from conftest import running_loop
 
 pytestmark = pytest.mark.anyio
 
@@ -23,14 +24,14 @@ def test_run_returns_the_coroutine_result() -> None:
 
 def test_run_honours_debug_mode() -> None:
     async def main() -> bool:
-        return asyncio.get_running_loop().get_debug()
+        return running_loop().get_debug()
 
     assert zuv.run(main(), debug=True) is True
 
 
 def test_asyncio_run_accepts_the_loop_factory() -> None:
     async def main() -> str:
-        return type(asyncio.get_running_loop()).__name__
+        return type(running_loop()).__name__
 
     assert asyncio.run(main(), loop_factory=zuv.new_event_loop) == "EventLoop"
 
@@ -189,7 +190,7 @@ def test_close_shuts_down_the_default_executor(loop: zuv.EventLoop) -> None:
 
 
 async def test_shutdown_default_executor_joins_threads() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     await loop.run_in_executor(None, time.monotonic)
     await loop.shutdown_default_executor()
     with pytest.raises(RuntimeError, match="Executor shutdown"):
@@ -220,7 +221,7 @@ def test_shutdown_default_executor_times_out(loop: zuv.EventLoop) -> None:
 
 
 async def test_shutdown_asyncgens_closes_generators() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     closed: list[str] = []
 
     async def generator() -> Any:
@@ -237,7 +238,7 @@ async def test_shutdown_asyncgens_closes_generators() -> None:
 
 
 async def test_shutdown_asyncgens_reports_failures() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     reported: list[dict[str, Any]] = []
     loop.set_exception_handler(lambda _loop, context: reported.append(context))
 
@@ -298,7 +299,7 @@ def test_a_loop_runs_on_a_worker_thread() -> None:
 
 
 async def test_create_task_names_tasks() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     task = loop.create_task(asyncio.sleep(0), name="named")
     assert task.get_name() == "named"
     await task
@@ -308,7 +309,7 @@ async def test_tasks_are_visible_to_asyncio_introspection() -> None:
     async def worker() -> None:
         await asyncio.sleep(0.05)
 
-    task = asyncio.get_running_loop().create_task(worker(), name="introspected")
+    task = running_loop().create_task(worker(), name="introspected")
     await asyncio.sleep(0)
     assert task in asyncio.all_tasks()
     assert asyncio.current_task() is not None
@@ -330,7 +331,7 @@ def test_an_interrupt_after_the_task_finishes_consumes_its_error(loop: zuv.Event
 
 
 async def test_an_exception_handler_may_stop_the_program() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
 
     def handler(_loop: Any, _context: dict[str, Any]) -> None:
         raise SystemExit(2)

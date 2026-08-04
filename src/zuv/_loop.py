@@ -23,7 +23,9 @@ class EventLoop(ConnectionOperations):
     def __repr__(self) -> str:
         return f"<{type(self).__name__} running={self.is_running()} closed={self.is_closed()} debug={self.get_debug()}>"
 
-    def add_signal_handler(self, sig: int, callback: Callable[..., object], *args: Any) -> None:
+    def add_signal_handler(  # type: ignore[override]  # typeshed ties args to the callback with a TypeVarTuple
+        self, sig: int, callback: Callable[..., object], *args: Any
+    ) -> None:
         if asyncio.iscoroutine(callback) or inspect.iscoroutinefunction(callback):
             raise TypeError("coroutines cannot be used with add_signal_handler()")
         self._check_closed()

@@ -9,18 +9,19 @@ import threading
 import warnings
 import weakref
 from asyncio import events as _events
-from collections.abc import Callable, Coroutine, Generator
+from collections.abc import Callable, Coroutine
 from contextvars import Context
-from typing import Any, TypeVar
+from typing import Any
 
 from . import _zuv
 from ._instrumentation import Instrumentation
 
-_T = TypeVar("_T")
 _ExceptionHandler = Callable[[asyncio.AbstractEventLoop, dict[str, Any]], object]
 
 
-class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):
+# The native methods are stricter than typeshed's AbstractEventLoop, which
+# types several of them with TypeVarTuples this class cannot reproduce.
+class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
     """Lifecycle, task creation, executors and error reporting.
 
     Scheduling primitives (`call_soon`, `call_later`, `time`, the reader and
@@ -61,7 +62,7 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):
         new_task = not isinstance(future, asyncio.Future)
         task = asyncio.ensure_future(future, loop=self)
         if new_task:
-            task._log_destroy_pending = False  # type: ignore[attr-defined]
+            task._log_destroy_pending = False
         task.add_done_callback(_stop_when_done)
         try:
             self.run_forever()
@@ -123,20 +124,22 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):
     def create_future(self) -> asyncio.Future[Any]:
         return asyncio.Future(loop=self)
 
-    def create_task(
+    def create_task[T](
         self,
-        coro: Coroutine[Any, Any, _T] | Generator[Any, None, _T],
+        coro: Coroutine[Any, Any, T],
         *,
         name: str | None = None,
         context: Context | None = None,
         **kwargs: Any,
-    ) -> asyncio.Task[_T]:
+    ) -> asyncio.Task[T]:
         self._check_closed()
         if self._task_factory is None:
             return asyncio.Task(coro, loop=self, name=name, context=context, **kwargs)
         return self._task_factory(self, coro, name=name, context=context, **kwargs)
 
-    def set_task_factory(self, factory: Callable[..., asyncio.Task[Any]] | None) -> None:
+    def set_task_factory(  # type: ignore[override]  # typeshed's _TaskFactory is narrower than asyncio accepts
+        self, factory: Callable[..., asyncio.Task[Any]] | None
+    ) -> None:
         self._task_factory = factory
 
     def get_task_factory(self) -> Callable[..., asyncio.Task[Any]] | None:
@@ -144,9 +147,9 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):
 
     # -- executors ---------------------------------------------------------
 
-    def run_in_executor(
-        self, executor: concurrent.futures.Executor | None, func: Callable[..., _T], *args: Any
-    ) -> asyncio.Future[_T]:
+    def run_in_executor[T](  # type: ignore[override]  # typeshed loses the return type
+        self, executor: concurrent.futures.Executor | None, func: Callable[..., T], *args: Any
+    ) -> asyncio.Future[T]:
         self._check_closed()
         if executor is None:
             if self._executor_shutdown_called:
@@ -240,7 +243,7 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):
 
 
 def _stop_when_done(future: asyncio.Future[Any]) -> None:
-    asyncio.futures._get_loop(future).stop()
+    asyncio.futures._get_loop(future).stop()  # type: ignore[attr-defined]
 
 
 def _shutdown_executor(
@@ -249,4 +252,4 @@ def _shutdown_executor(
     try:
         executor.shutdown(wait=True)
     finally:
-        loop.call_soon_threadsafe(asyncio.futures._set_result_unless_cancelled, future, None)
+        loop.call_soon_threadsafe(asyncio.futures._set_result_unless_cancelled, future, None)  # type: ignore[attr-defined]

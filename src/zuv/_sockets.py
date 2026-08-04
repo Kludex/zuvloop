@@ -83,7 +83,7 @@ class SocketOperations(LoopBase):
         finally:
             self.remove_writer(fd)
 
-    async def sock_sendfile(
+    async def sock_sendfile(  # type: ignore[override]  # typeshed allows fallback=None
         self, sock: socket.socket, file: Any, offset: int = 0, count: int | None = None, *, fallback: bool = True
     ) -> int:
         raise NotImplementedError("zuv does not implement sock_sendfile(); read and sock_sendall() instead")

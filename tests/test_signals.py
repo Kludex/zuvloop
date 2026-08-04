@@ -8,12 +8,13 @@ import threading
 import pytest
 
 import zuv
+from conftest import running_loop
 
 pytestmark = pytest.mark.anyio
 
 
 async def test_a_signal_reaches_its_handler() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     received = loop.create_future()
     loop.add_signal_handler(signal.SIGUSR1, received.set_result, "delivered")
     try:
@@ -24,7 +25,7 @@ async def test_a_signal_reaches_its_handler() -> None:
 
 
 async def test_a_signal_wakes_a_parked_loop() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     received = loop.create_future()
     loop.add_signal_handler(signal.SIGUSR2, received.set_result, None)
     try:
@@ -35,7 +36,7 @@ async def test_a_signal_wakes_a_parked_loop() -> None:
 
 
 async def test_signal_handlers_can_be_removed() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     assert loop.remove_signal_handler(signal.SIGUSR1) is False
     loop.add_signal_handler(signal.SIGUSR1, print)
     assert loop.remove_signal_handler(signal.SIGUSR1) is True
@@ -43,7 +44,7 @@ async def test_signal_handlers_can_be_removed() -> None:
 
 
 async def test_sigint_is_restored_to_the_default_handler() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     original = signal.getsignal(signal.SIGINT)
     loop.add_signal_handler(signal.SIGINT, print)
     assert loop.remove_signal_handler(signal.SIGINT) is True
@@ -52,7 +53,7 @@ async def test_sigint_is_restored_to_the_default_handler() -> None:
 
 
 async def test_signal_handlers_validate_their_arguments() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with pytest.raises(TypeError, match="must be an int"):
         loop.add_signal_handler("SIGUSR1", print)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="invalid signal number"):
@@ -64,7 +65,7 @@ async def test_signal_handlers_validate_their_arguments() -> None:
 
 
 async def test_uncatchable_signals_are_rejected() -> None:
-    loop = asyncio.get_running_loop()
+    loop = running_loop()
     with pytest.raises(RuntimeError, match="cannot be caught"):
         loop.add_signal_handler(signal.SIGKILL, print)
 

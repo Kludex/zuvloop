@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import socket
 import ssl
 import subprocess
@@ -9,6 +10,14 @@ from pathlib import Path
 import pytest
 
 import zuv
+
+
+def running_loop() -> zuv.EventLoop:
+    """The running loop, typed - `asyncio.get_running_loop` widens to the ABC."""
+    loop = asyncio.get_running_loop()
+    assert isinstance(loop, zuv.EventLoop)
+    return loop
+
 
 @pytest.fixture
 def anyio_backend() -> tuple[str, dict[str, object]]:
