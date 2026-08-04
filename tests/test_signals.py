@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import os
 import signal
 import threading
+import weakref
 
 import pytest
 
@@ -86,6 +88,23 @@ def test_signal_handlers_require_the_main_thread() -> None:
     thread.start()
     thread.join()
     assert errors == ["signal handlers can only be added from the main thread"]
+
+
+def test_close_removes_signal_handlers_and_releases_the_loop() -> None:
+    original = signal.getsignal(signal.SIGUSR1)
+    loop = zuv.new_event_loop()
+    loop_ref = weakref.ref(loop)
+    try:
+        loop.add_signal_handler(signal.SIGUSR1, print)
+
+        loop.close()
+
+        assert signal.getsignal(signal.SIGUSR1) is signal.SIG_DFL
+        del loop
+        gc.collect()
+        assert loop_ref() is None
+    finally:
+        signal.signal(signal.SIGUSR1, original)
 
 
 def test_a_closed_loop_rejects_signal_handlers(loop: zuv.EventLoop) -> None:

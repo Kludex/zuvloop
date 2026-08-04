@@ -81,6 +81,8 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
             raise RuntimeError("Cannot close a running event loop")
         if self.is_closed():
             return
+        for sig in tuple(self._signal_handlers):
+            self.remove_signal_handler(sig)
         self._teardown_self_pipe()
         executor = self._default_executor
         self._default_executor = None
