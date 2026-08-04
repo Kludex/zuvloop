@@ -567,11 +567,9 @@ fn writelines(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
     var inline_storage: [inline_bufs]uv.Buf = undefined;
     var inline_views: [inline_bufs]c.Py_buffer = undefined;
     const bufs = if (n <= inline_bufs) inline_storage[0..n] else alloc.alloc(uv.Buf, n) catch return py.errNoMemory();
+    defer if (n > inline_bufs) alloc.free(bufs);
     const views = if (n <= inline_bufs) inline_views[0..n] else alloc.alloc(c.Py_buffer, n) catch return py.errNoMemory();
-    defer if (n > inline_bufs) {
-        alloc.free(bufs);
-        alloc.free(views);
-    };
+    defer if (n > inline_bufs) alloc.free(views);
 
     var filled: usize = 0;
     while (filled < n) : (filled += 1) {
