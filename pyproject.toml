@@ -24,7 +24,7 @@ classifiers = [
 dependencies = ["opentelemetry-api>=1.23"]
 
 [project.urls]
-Source = "https://github.com/Kludex/zuv"
+Source = "https://github.com/Kludex/zuvloop"
 
 [dependency-groups]
 dev = [
