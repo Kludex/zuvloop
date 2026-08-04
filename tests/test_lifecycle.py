@@ -252,6 +252,20 @@ def test_loop_close_releases_pending_dns_requests() -> None:
     assert all(ref() is None for ref in future_refs)
 
 
+def test_pending_dns_does_not_retain_an_abandoned_loop() -> None:
+    loop = zuv.new_event_loop()
+    future = loop._getaddrinfo("zuv-abandoned.invalid", 80, 0, 0, 0, 0)
+    loop_ref = weakref.ref(loop)
+    future_ref = weakref.ref(future)
+
+    with pytest.warns(ResourceWarning, match="unclosed event loop"):
+        del future, loop
+        gc.collect()
+
+    assert loop_ref() is None
+    assert future_ref() is None
+
+
 def test_asyncio_run_accepts_the_loop_factory() -> None:
     async def main() -> str:
         return type(running_loop()).__name__

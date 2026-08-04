@@ -96,6 +96,18 @@ pub fn releaseFutures(st: *loopmod.State) void {
     while (node) |req| : (node = req.next) py.clear(&req.future);
 }
 
+/// Exposes the futures owned by native libuv requests to cyclic GC. A Future
+/// points back to its loop, so hiding this edge would make an abandoned request
+/// look like an external root and prevent the loop finalizer from cancelling it.
+pub fn traverse(st: *loopmod.State, visitproc: c.visitproc, arg: ?*anyopaque) c_int {
+    var node: ?*Request = @ptrCast(@alignCast(st.dns_requests));
+    while (node) |req| : (node = req.next) {
+        const r = py.visit(req.future, visitproc, arg);
+        if (r != 0) return r;
+    }
+    return 0;
+}
+
 fn copyZ(dst: []u8, value: *py.Object, what: [:0]const u8) py.Error!?[*:0]const u8 {
     if (py.isNone(value)) return null;
     var len: c.Py_ssize_t = 0;

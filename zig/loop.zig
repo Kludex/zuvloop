@@ -956,6 +956,8 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
             if (r != 0) return r;
             transport = owned.owner_next;
         }
+        r = dns.traverse(st, visitproc, arg);
+        if (r != 0) return r;
         r = pollermod.traverse(st, visitproc, arg);
         if (r != 0) return r;
     }
