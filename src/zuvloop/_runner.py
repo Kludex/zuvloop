@@ -42,5 +42,5 @@ def instrument(loop: EventLoop | None = None, *, interval: float = 10.0) -> Metr
     """
     target = loop if loop is not None else asyncio.get_running_loop()
     if not isinstance(target, EventLoop):
-        raise TypeError(f"zuv.instrument() needs a zuv event loop, got {target!r}")
+        raise TypeError(f"zuvloop.instrument() needs a zuvloop event loop, got {target!r}")
     return MetricsReporter(target, interval)

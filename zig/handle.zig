@@ -240,7 +240,7 @@ const flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | c.Py_TPFLAGS_MANAGED
     c.Py_TPFLAGS_IMMUTABLETYPE | c.Py_TPFLAGS_DISALLOW_INSTANTIATION;
 
 var handle_spec = c.PyType_Spec{
-    .name = "zuv._zuv.Handle",
+    .name = "zuvloop._zuvloop.Handle",
     .basicsize = @sizeOf(Handle),
     .itemsize = 0,
     .flags = flags,
@@ -248,7 +248,7 @@ var handle_spec = c.PyType_Spec{
 };
 
 var timer_spec = c.PyType_Spec{
-    .name = "zuv._zuv.TimerHandle",
+    .name = "zuvloop._zuvloop.TimerHandle",
     .basicsize = @sizeOf(Handle),
     .itemsize = 0,
     .flags = flags,

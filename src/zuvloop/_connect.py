@@ -10,7 +10,7 @@ from asyncio import sslproto, trsock, unix_events
 from collections.abc import Callable, Sequence
 from typing import Any, cast
 
-from . import _zuv
+from . import _zuvloop
 from ._server import Server
 from ._sockets import SocketOperations
 
@@ -317,7 +317,7 @@ class ConnectionOperations(SocketOperations):
         protocol: asyncio.BaseProtocol,
         waiter: asyncio.Future[None] | None,
         server: Server | None,
-    ) -> _zuv.Transport:
+    ) -> _zuvloop.Transport:
         extra = {
             "sockname": _safe_addr(sock.getsockname),
             "peername": _safe_addr(sock.getpeername),
@@ -325,7 +325,7 @@ class ConnectionOperations(SocketOperations):
             "type": sock.type,
             "proto": sock.proto,
         }
-        kind = _zuv.KIND_PIPE if sock.family == socket.AF_UNIX else _zuv.KIND_TCP
+        kind = _zuvloop.KIND_PIPE if sock.family == socket.AF_UNIX else _zuvloop.KIND_TCP
         family, kind_, proto = sock.family, sock.type, sock.proto
         fd = sock.fileno()
 
@@ -528,7 +528,7 @@ class ConnectionOperations(SocketOperations):
 
     def _attach_datagram(
         self, sock: socket.socket, protocol: asyncio.BaseProtocol, connected: bool
-    ) -> _zuv.DatagramTransport:
+    ) -> _zuvloop.DatagramTransport:
         extra: dict[str, Any] = {
             "sockname": _safe_addr(sock.getsockname),
             "peername": _safe_addr(sock.getpeername),
@@ -641,16 +641,16 @@ class ConnectionOperations(SocketOperations):
     async def connect_read_pipe(
         self, protocol_factory: Callable[[], asyncio.BaseProtocol], pipe: Any
     ) -> tuple[asyncio.ReadTransport, Any]:
-        return await self._connect_pipe(protocol_factory, pipe, _zuv.KIND_PIPE)
+        return await self._connect_pipe(protocol_factory, pipe, _zuvloop.KIND_PIPE)
 
     async def connect_write_pipe(
         self, protocol_factory: Callable[[], asyncio.BaseProtocol], pipe: Any
     ) -> tuple[asyncio.WriteTransport, Any]:
-        return await self._connect_pipe(protocol_factory, pipe, _zuv.KIND_PIPE_WRITE)
+        return await self._connect_pipe(protocol_factory, pipe, _zuvloop.KIND_PIPE_WRITE)
 
     async def _connect_pipe(
         self, protocol_factory: Callable[[], asyncio.BaseProtocol], pipe: Any, kind: int
-    ) -> tuple[_zuv.Transport, Any]:
+    ) -> tuple[_zuvloop.Transport, Any]:
         fd = pipe.fileno()
         mode = os.fstat(fd).st_mode
         if not (stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode) or stat.S_ISCHR(mode)):

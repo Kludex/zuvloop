@@ -2,7 +2,7 @@
 icon: lucide/rotate-cw
 ---
 
-# zuv
+# zuvloop
 
 <p align="center">
     <em>A libuv event loop for asyncio, written in Zig.</em>
@@ -10,11 +10,11 @@ icon: lucide/rotate-cw
 
 ---
 
-**Source Code**: <a href="https://github.com/Kludex/zuv" target="_blank">https://github.com/Kludex/zuv</a>
+**Source Code**: <a href="https://github.com/Kludex/zuvloop" target="_blank">https://github.com/Kludex/zuvloop</a>
 
 ---
 
-zuv replaces the asyncio event loop with one whose hot paths are implemented
+zuvloop replaces the asyncio event loop with one whose hot paths are implemented
 natively and driven by [libuv](https://libuv.org). It is a **drop-in
 replacement**: you hand it to `asyncio.run()` and everything you already wrote
 keeps working.
@@ -36,7 +36,7 @@ The key features are:
 ## Installation
 
 ```console
-$ pip install zuv
+$ pip install zuvloop
 ```
 
 ## Example
@@ -44,7 +44,7 @@ $ pip install zuv
 ```python
 import asyncio
 
-import zuv
+import zuvloop
 
 
 async def main() -> None:
@@ -56,14 +56,14 @@ async def main() -> None:
     await writer.wait_closed()
 
 
-zuv.run(main())
+zuvloop.run(main())
 ```
 
-`zuv.run()` is `asyncio.run()` with the loop swapped. You can also hand the
+`zuvloop.run()` is `asyncio.run()` with the loop swapped. You can also hand the
 factory to asyncio yourself:
 
 ```python
-asyncio.run(main(), loop_factory=zuv.new_event_loop)
+asyncio.run(main(), loop_factory=zuvloop.new_event_loop)
 ```
 
 Nothing else in your program changes. That is the whole integration surface, and
@@ -71,7 +71,7 @@ Nothing else in your program changes. That is the whole integration surface, and
 
 ## Why a new loop
 
-uvloop has been the answer for a decade, and it is a good one. zuv differs in
+uvloop has been the answer for a decade, and it is a good one. zuvloop differs in
 three ways that matter if you are choosing between them.
 
 **It is faster.** Not by a lot everywhere, but by a lot in the places where a
@@ -82,7 +82,7 @@ write and a body write. Address literals never reach `getaddrinfo`.
 **It agrees with asyncio.** Its transports are real `asyncio.Transport`
 subclasses, `loop.time()` is `time.monotonic()`, and `get_extra_info("socket")`
 returns a `TransportSocket`. Those sound like details until a library asserts on
-one. [Compatibility](reference/compatibility.md) records where zuv and uvloop
+one. [Compatibility](reference/compatibility.md) records where zuvloop and uvloop
 each diverge from the standard library, with the cases measured rather than
 claimed.
 

@@ -15,7 +15,7 @@ from contextvars import Context
 from functools import partial
 from typing import Any
 
-from . import _zuv
+from . import _zuvloop
 from ._instrumentation import Instrumentation
 
 _ExceptionHandler = Callable[[asyncio.AbstractEventLoop, dict[str, Any]], object]
@@ -23,7 +23,7 @@ _ExceptionHandler = Callable[[asyncio.AbstractEventLoop, dict[str, Any]], object
 
 # The native methods are stricter than typeshed's AbstractEventLoop, which
 # types several of them with TypeVarTuples this class cannot reproduce.
-class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
+class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
     """Lifecycle, task creation, executors and error reporting.
 
     Scheduling primitives (`call_soon`, `call_later`, `time`, the reader and
@@ -209,7 +209,7 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
                 raise RuntimeError("Executor shutdown has been called")
             executor = self._default_executor
             if executor is None:
-                executor = concurrent.futures.ThreadPoolExecutor(thread_name_prefix="zuv")
+                executor = concurrent.futures.ThreadPoolExecutor(thread_name_prefix="zuvloop")
                 self._default_executor = executor
         return asyncio.futures.wrap_future(executor.submit(func, *args), loop=self)
 

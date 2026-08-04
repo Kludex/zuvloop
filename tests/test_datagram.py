@@ -9,7 +9,7 @@ from typing import Any, cast
 import pytest
 
 from conftest import running_loop
-from zuv import _connect, _zuv
+from zuvloop import _connect, _zuvloop
 
 pytestmark = pytest.mark.anyio
 
@@ -166,7 +166,7 @@ async def test_the_protocol_can_be_replaced() -> None:
 
 async def test_write_buffer_limits_are_reported() -> None:
     raw, _protocol = await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
-    transport = cast("_zuv.DatagramTransport", raw)
+    transport = cast("_zuvloop.DatagramTransport", raw)
     try:
         assert transport.get_write_buffer_size() == 0
         transport.set_write_buffer_limits(high=4096, low=1024)

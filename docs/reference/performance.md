@@ -5,7 +5,7 @@ Measured with `benchmarks/run.py`, `benchmarks/uvicorn_bench.py`,
 running macOS 26 and CPython 3.14. Rounds are interleaved across loops and the
 best of each is reported, with the run-to-run spread beside it.
 
-| Benchmark | asyncio | uvloop | zuv | zuv / uvloop |
+| Benchmark | asyncio | uvloop | zuvloop | zuvloop / uvloop |
 | --- | ---: | ---: | ---: | ---: |
 | `call_soon` | 2.69M/s | 4.69M/s | **5.91M/s** | **1.26x** |
 | `call_soon` with arguments | 2.43M/s | 3.87M/s | **6.47M/s** | **1.67x** |
@@ -44,7 +44,7 @@ behind a heap instead of taking a libuv handle each.
 serving one fixed response two ways — as a single `write()`, and as the header
 write plus body write that ASGI and aiohttp actually do:
 
-| response split into two writes | asyncio | uvloop | zuv |
+| response split into two writes | asyncio | uvloop | zuvloop |
 | --- | ---: | ---: | ---: |
 | throughput lost | -36% | -0.1% | **-0.7%** |
 

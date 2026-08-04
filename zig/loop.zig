@@ -1040,7 +1040,7 @@ var slots = [_]c.PyType_Slot{
 };
 
 var spec = c.PyType_Spec{
-    .name = "zuv._zuv.Loop",
+    .name = "zuvloop._zuvloop.Loop",
     .basicsize = @sizeOf(LoopObject),
     .itemsize = 0,
     .flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | c.Py_TPFLAGS_BASETYPE,

@@ -14,10 +14,10 @@ from typing import Any, cast
 
 import pytest
 
-import zuv
+import zuvloop
 from conftest import running_loop
-from zuv._base import _shutdown_executor
-from zuv._connect import ConnectionOperations
+from zuvloop._base import _shutdown_executor
+from zuvloop._connect import ConnectionOperations
 
 pytestmark = pytest.mark.anyio
 
@@ -35,18 +35,18 @@ def test_run_returns_the_coroutine_result() -> None:
         await asyncio.sleep(0)
         return "done"
 
-    assert zuv.run(main()) == "done"
+    assert zuvloop.run(main()) == "done"
 
 
 def test_run_honours_debug_mode() -> None:
     async def main() -> bool:
         return running_loop().get_debug()
 
-    assert zuv.run(main(), debug=True) is True
+    assert zuvloop.run(main(), debug=True) is True
 
 
 def test_failed_transport_open_does_not_corrupt_the_loop() -> None:
-    loop = zuv.new_event_loop()
+    loop = zuvloop.new_event_loop()
     try:
         with pytest.raises(OSError):
             loop._make_transport(-1, 0, asyncio.Protocol(), None, None, None)
@@ -55,7 +55,7 @@ def test_failed_transport_open_does_not_corrupt_the_loop() -> None:
 
 
 def test_failed_transport_open_does_not_retain_the_loop() -> None:
-    loop = zuv.new_event_loop()
+    loop = zuvloop.new_event_loop()
     loop_ref = weakref.ref(loop)
 
     with pytest.raises(OSError):
@@ -70,7 +70,7 @@ def test_failed_transport_open_does_not_retain_the_loop() -> None:
 
 
 def test_failed_transport_construction_does_not_adopt_the_descriptor() -> None:
-    loop = zuv.new_event_loop()
+    loop = zuvloop.new_event_loop()
     left, right = socket.socketpair()
     try:
         with pytest.raises(AttributeError, match="connection_made"):
@@ -93,7 +93,7 @@ async def test_failed_socket_view_construction_does_not_adopt_the_descriptor(
     def fail_to_wrap_socket(_sock: socket.socket) -> None:
         raise RuntimeError("cannot wrap socket")
 
-    monkeypatch.setattr("zuv._connect.trsock.TransportSocket", fail_to_wrap_socket)
+    monkeypatch.setattr("zuvloop._connect.trsock.TransportSocket", fail_to_wrap_socket)
     try:
         with pytest.raises(RuntimeError, match="cannot wrap socket"):
             ConnectionOperations._attach_transport(loop, left, asyncio.Protocol(), None, None)
@@ -130,8 +130,8 @@ async def test_transport_releases_the_inherited_extra_slot(self_cycle: bool) -> 
 
 def test_loop_close_releases_open_transports() -> None:
     gc.collect()
-    before = sum(type(obj) is zuv.Transport for obj in gc.get_objects())
-    loop = zuv.new_event_loop()
+    before = sum(type(obj) is zuvloop.Transport for obj in gc.get_objects())
+    loop = zuvloop.new_event_loop()
     left, right = socket.socketpair()
     transport = loop._make_transport(left.fileno(), 1, asyncio.Protocol(), None, None, None)
     left.detach()
@@ -141,7 +141,7 @@ def test_loop_close_releases_open_transports() -> None:
     del transport, loop
     gc.collect()
 
-    assert sum(type(obj) is zuv.Transport for obj in gc.get_objects()) == before
+    assert sum(type(obj) is zuvloop.Transport for obj in gc.get_objects()) == before
 
 
 def test_live_loop_keeps_an_open_transport_alive() -> None:
@@ -152,7 +152,7 @@ def test_live_loop_keeps_an_open_transport_alive() -> None:
         def data_received(self, data: bytes) -> None:
             self.received += data
 
-    loop = zuv.new_event_loop()
+    loop = zuvloop.new_event_loop()
     left, right = socket.socketpair()
     protocol = Receiver()
     transport = loop._make_transport(left.fileno(), 1, protocol, None, None, None)
@@ -183,7 +183,7 @@ def test_loop_close_rejects_writes_from_buffer_finalizers() -> None:
         def __del__(self) -> None:
             transport_box[0].write(b"reentrant")
 
-    loop = zuv.new_event_loop()
+    loop = zuvloop.new_event_loop()
     left, right = socket.socketpair()
     transport = loop._make_transport(left.fileno(), 1, asyncio.Protocol(), None, None, None)
     left.detach()
@@ -206,7 +206,7 @@ def test_loop_close_rejects_writes_from_buffer_finalizers() -> None:
 
 
 def test_pending_flush_does_not_retain_an_abandoned_loop() -> None:
-    loop = zuv.new_event_loop()
+    loop = zuvloop.new_event_loop()
     left, right = socket.socketpair()
     transport = loop._make_transport(left.fileno(), 1, asyncio.Protocol(), None, None, None)
     left.detach()
@@ -225,7 +225,7 @@ def test_pending_flush_does_not_retain_an_abandoned_loop() -> None:
 
 
 def test_in_flight_write_does_not_retain_an_abandoned_loop() -> None:
-    loop = zuv.new_event_loop()
+    loop = zuvloop.new_event_loop()
     left, right = socket.socketpair()
     left.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
     transport = loop._make_transport(left.fileno(), 1, asyncio.Protocol(), None, None, None)
@@ -248,8 +248,8 @@ def test_in_flight_write_does_not_retain_an_abandoned_loop() -> None:
 
 
 def test_loop_close_releases_pending_dns_requests() -> None:
-    loop = zuv.new_event_loop()
-    futures = [loop._getaddrinfo(f"zuv-pending-{index}.invalid", 80, 0, 0, 0, 0) for index in range(128)]
+    loop = zuvloop.new_event_loop()
+    futures = [loop._getaddrinfo(f"zuvloop-pending-{index}.invalid", 80, 0, 0, 0, 0) for index in range(128)]
     loop_ref = weakref.ref(loop)
     future_refs = [weakref.ref(future) for future in futures]
 
@@ -264,8 +264,8 @@ def test_loop_close_releases_pending_dns_requests() -> None:
 
 
 def test_pending_dns_does_not_retain_an_abandoned_loop() -> None:
-    loop = zuv.new_event_loop()
-    future = loop._getaddrinfo("zuv-abandoned.invalid", 80, 0, 0, 0, 0)
+    loop = zuvloop.new_event_loop()
+    future = loop._getaddrinfo("zuvloop-abandoned.invalid", 80, 0, 0, 0, 0)
     loop_ref = weakref.ref(loop)
     future_ref = weakref.ref(future)
 
@@ -278,7 +278,7 @@ def test_pending_dns_does_not_retain_an_abandoned_loop() -> None:
 
 
 def test_threadsafe_inbox_does_not_retain_an_abandoned_loop() -> None:
-    loop = zuv.new_event_loop()
+    loop = zuvloop.new_event_loop()
     handle = loop.call_soon_threadsafe(lambda: None)
     loop_ref = weakref.ref(loop)
     handle_ref = weakref.ref(handle)
@@ -295,10 +295,10 @@ def test_asyncio_run_accepts_the_loop_factory() -> None:
     async def main() -> str:
         return type(running_loop()).__name__
 
-    assert asyncio.run(main(), loop_factory=zuv.new_event_loop) == "EventLoop"
+    assert asyncio.run(main(), loop_factory=zuvloop.new_event_loop) == "EventLoop"
 
 
-def test_stop_runs_the_rest_of_the_batch(loop: zuv.EventLoop) -> None:
+def test_stop_runs_the_rest_of_the_batch(loop: zuvloop.EventLoop) -> None:
     seen: list[str] = []
     loop.call_soon(seen.append, "first")
     loop.call_soon(loop.stop)
@@ -307,7 +307,7 @@ def test_stop_runs_the_rest_of_the_batch(loop: zuv.EventLoop) -> None:
     assert seen == ["first", "queued before stop ran"]
 
 
-def test_callbacks_scheduled_after_stop_wait_for_the_next_run(loop: zuv.EventLoop) -> None:
+def test_callbacks_scheduled_after_stop_wait_for_the_next_run(loop: zuvloop.EventLoop) -> None:
     seen: list[str] = []
 
     def stop_then_schedule() -> None:
@@ -322,7 +322,7 @@ def test_callbacks_scheduled_after_stop_wait_for_the_next_run(loop: zuv.EventLoo
     assert seen == ["next run"]
 
 
-def test_run_until_complete_returns_a_result(loop: zuv.EventLoop) -> None:
+def test_run_until_complete_returns_a_result(loop: zuvloop.EventLoop) -> None:
     async def main() -> int:
         await asyncio.sleep(0)
         return 7
@@ -330,7 +330,7 @@ def test_run_until_complete_returns_a_result(loop: zuv.EventLoop) -> None:
     assert loop.run_until_complete(main()) == 7
 
 
-def test_run_until_complete_propagates_exceptions(loop: zuv.EventLoop) -> None:
+def test_run_until_complete_propagates_exceptions(loop: zuvloop.EventLoop) -> None:
     async def main() -> None:
         raise ValueError("boom")
 
@@ -338,13 +338,13 @@ def test_run_until_complete_propagates_exceptions(loop: zuv.EventLoop) -> None:
         loop.run_until_complete(main())
 
 
-def test_run_until_complete_accepts_a_future(loop: zuv.EventLoop) -> None:
+def test_run_until_complete_accepts_a_future(loop: zuvloop.EventLoop) -> None:
     future = loop.create_future()
     loop.call_soon(future.set_result, "ready")
     assert loop.run_until_complete(future) == "ready"
 
 
-def test_run_until_complete_rejects_a_loop_stopped_early(loop: zuv.EventLoop) -> None:
+def test_run_until_complete_rejects_a_loop_stopped_early(loop: zuvloop.EventLoop) -> None:
     async def main() -> None:
         await asyncio.sleep(10)
 
@@ -353,7 +353,7 @@ def test_run_until_complete_rejects_a_loop_stopped_early(loop: zuv.EventLoop) ->
         loop.run_until_complete(main())
 
 
-def test_system_exit_escapes_the_loop(loop: zuv.EventLoop) -> None:
+def test_system_exit_escapes_the_loop(loop: zuvloop.EventLoop) -> None:
     def raiser() -> None:
         raise SystemExit(3)
 
@@ -362,7 +362,7 @@ def test_system_exit_escapes_the_loop(loop: zuv.EventLoop) -> None:
         loop.run_forever()
 
 
-def test_system_exit_escapes_run_until_complete(loop: zuv.EventLoop) -> None:
+def test_system_exit_escapes_run_until_complete(loop: zuvloop.EventLoop) -> None:
     async def main() -> None:
         await asyncio.sleep(10)
 
@@ -374,7 +374,7 @@ def test_system_exit_escapes_run_until_complete(loop: zuv.EventLoop) -> None:
         loop.run_until_complete(main())
 
 
-def test_a_running_loop_cannot_be_run_again(loop: zuv.EventLoop) -> None:
+def test_a_running_loop_cannot_be_run_again(loop: zuvloop.EventLoop) -> None:
     errors: list[type[BaseException]] = []
 
     def reenter() -> None:
@@ -391,17 +391,17 @@ def test_a_running_loop_cannot_be_run_again(loop: zuv.EventLoop) -> None:
 
 def test_a_second_loop_cannot_run_inside_a_running_one() -> None:
     async def main() -> None:
-        other = zuv.new_event_loop()
+        other = zuvloop.new_event_loop()
         try:
             with pytest.raises(RuntimeError, match="another loop is running"):
                 other.run_forever()
         finally:
             other.close()
 
-    zuv.run(main())
+    zuvloop.run(main())
 
 
-def test_a_running_loop_cannot_be_closed(loop: zuv.EventLoop) -> None:
+def test_a_running_loop_cannot_be_closed(loop: zuvloop.EventLoop) -> None:
     errors: list[str] = []
 
     def attempt() -> None:
@@ -416,13 +416,13 @@ def test_a_running_loop_cannot_be_closed(loop: zuv.EventLoop) -> None:
     assert errors == ["Cannot close a running event loop"]
 
 
-def test_closing_twice_is_harmless(loop: zuv.EventLoop) -> None:
+def test_closing_twice_is_harmless(loop: zuvloop.EventLoop) -> None:
     loop.close()
     loop.close()
     assert loop.is_closed() is True
 
 
-def test_a_closed_loop_rejects_work(loop: zuv.EventLoop) -> None:
+def test_a_closed_loop_rejects_work(loop: zuvloop.EventLoop) -> None:
     loop.close()
     for call in (
         lambda: loop.call_soon(print),
@@ -441,7 +441,7 @@ def test_a_closed_loop_rejects_work(loop: zuv.EventLoop) -> None:
     coro.close()
 
 
-def test_close_shuts_down_the_default_executor(loop: zuv.EventLoop) -> None:
+def test_close_shuts_down_the_default_executor(loop: zuvloop.EventLoop) -> None:
     async def main() -> None:
         await loop.run_in_executor(None, time.monotonic)
 
@@ -462,14 +462,14 @@ async def test_shutdown_default_executor_joins_threads() -> None:
 
 
 async def test_shutdown_default_executor_without_one_is_a_no_op() -> None:
-    loop = zuv.new_event_loop()
+    loop = zuvloop.new_event_loop()
     try:
         await loop.shutdown_default_executor()
     finally:
         loop.close()
 
 
-def test_shutdown_default_executor_times_out(loop: zuv.EventLoop) -> None:
+def test_shutdown_default_executor_times_out(loop: zuvloop.EventLoop) -> None:
     release = threading.Event()
 
     async def main() -> None:
@@ -546,14 +546,14 @@ async def test_shutdown_asyncgens_reports_failures() -> None:
 
 
 async def test_shutdown_asyncgens_without_generators_is_a_no_op() -> None:
-    loop = zuv.new_event_loop()
+    loop = zuvloop.new_event_loop()
     try:
         await loop.shutdown_asyncgens()
     finally:
         loop.close()
 
 
-def test_asyncgens_scheduled_after_shutdown_warn(loop: zuv.EventLoop) -> None:
+def test_asyncgens_scheduled_after_shutdown_warn(loop: zuvloop.EventLoop) -> None:
     async def generator() -> Any:
         yield 1
 
@@ -571,7 +571,7 @@ def test_a_loop_runs_on_a_worker_thread() -> None:
     results: list[str] = []
 
     def worker() -> None:
-        loop = zuv.new_event_loop()
+        loop = zuvloop.new_event_loop()
         try:
             results.append(loop.run_until_complete(_greet()))
         finally:
@@ -607,7 +607,7 @@ async def test_tasks_are_visible_to_asyncio_introspection() -> None:
         await task
 
 
-def test_an_interrupt_after_the_task_finishes_consumes_its_error(loop: zuv.EventLoop) -> None:
+def test_an_interrupt_after_the_task_finishes_consumes_its_error(loop: zuvloop.EventLoop) -> None:
     def interrupt() -> None:
         raise KeyboardInterrupt
 
@@ -666,7 +666,7 @@ def test_an_async_generator_outliving_its_loop_is_not_rescheduled() -> None:
         assert await anext(agen) == 1
         kept.append(agen)
 
-    loop = zuv.new_event_loop()
+    loop = zuvloop.new_event_loop()
     loop.run_until_complete(main())
     loop.close()
     kept.clear()

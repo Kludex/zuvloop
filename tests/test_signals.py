@@ -9,7 +9,7 @@ import weakref
 
 import pytest
 
-import zuv
+import zuvloop
 from conftest import running_loop
 
 pytestmark = pytest.mark.anyio
@@ -76,7 +76,7 @@ def test_signal_handlers_require_the_main_thread() -> None:
     errors: list[str] = []
 
     def worker() -> None:
-        loop = zuv.new_event_loop()
+        loop = zuvloop.new_event_loop()
         try:
             loop.add_signal_handler(signal.SIGUSR1, print)
         except RuntimeError as exc:
@@ -92,7 +92,7 @@ def test_signal_handlers_require_the_main_thread() -> None:
 
 def test_close_removes_signal_handlers_and_releases_the_loop() -> None:
     original = signal.getsignal(signal.SIGUSR1)
-    loop = zuv.new_event_loop()
+    loop = zuvloop.new_event_loop()
     loop_ref = weakref.ref(loop)
     try:
         loop.add_signal_handler(signal.SIGUSR1, print)
@@ -109,7 +109,7 @@ def test_close_removes_signal_handlers_and_releases_the_loop() -> None:
 
 def test_unclosed_loop_finalization_restores_signal_state() -> None:
     original = signal.getsignal(signal.SIGUSR1)
-    loop = zuv.new_event_loop()
+    loop = zuvloop.new_event_loop()
     loop_ref = weakref.ref(loop)
     try:
         loop.add_signal_handler(signal.SIGUSR1, print)
@@ -128,7 +128,7 @@ def test_unclosed_loop_finalization_restores_signal_state() -> None:
 
 def test_worker_thread_finalization_restores_signal_state_on_main_thread() -> None:
     original = signal.getsignal(signal.SIGUSR1)
-    loop = zuv.new_event_loop()
+    loop = zuvloop.new_event_loop()
     loop.add_signal_handler(signal.SIGUSR1, print)
     loop_ref = weakref.ref(loop)
     owner = [loop]
@@ -156,7 +156,7 @@ def test_worker_thread_finalization_restores_signal_state_on_main_thread() -> No
 
 def test_a_signal_between_loop_runs_is_delivered_on_the_next_run() -> None:
     original = signal.getsignal(signal.SIGUSR1)
-    loop = zuv.new_event_loop()
+    loop = zuvloop.new_event_loop()
     received: list[str] = []
     try:
         loop.add_signal_handler(signal.SIGUSR1, received.append, "delivered")
@@ -174,7 +174,7 @@ def test_a_signal_between_loop_runs_is_delivered_on_the_next_run() -> None:
 
 def test_a_signal_whose_handler_was_removed_before_draining_is_dropped() -> None:
     original = signal.getsignal(signal.SIGUSR1)
-    loop = zuv.new_event_loop()
+    loop = zuvloop.new_event_loop()
     received: list[str] = []
     try:
         loop.add_signal_handler(signal.SIGUSR1, received.append, "delivered")
@@ -192,7 +192,7 @@ def test_a_signal_whose_handler_was_removed_before_draining_is_dropped() -> None
 
 
 def test_finalizing_a_running_loop_leaves_it_running() -> None:
-    loop = zuv.new_event_loop()
+    loop = zuvloop.new_event_loop()
 
     async def finalize() -> None:
         with pytest.warns(ResourceWarning, match="unclosed event loop"):
@@ -208,8 +208,8 @@ def test_finalizing_a_running_loop_leaves_it_running() -> None:
 
 def test_a_loop_without_handlers_does_not_disable_another_loops_signals() -> None:
     original = signal.getsignal(signal.SIGUSR1)
-    owner = zuv.new_event_loop()
-    other = zuv.new_event_loop()
+    owner = zuvloop.new_event_loop()
+    other = zuvloop.new_event_loop()
     received: list[str] = []
     try:
         owner.add_signal_handler(signal.SIGUSR1, received.append, "delivered")
@@ -227,7 +227,7 @@ def test_a_loop_without_handlers_does_not_disable_another_loops_signals() -> Non
         signal.signal(signal.SIGUSR1, original)
 
 
-def test_a_closed_loop_rejects_signal_handlers(loop: zuv.EventLoop) -> None:
+def test_a_closed_loop_rejects_signal_handlers(loop: zuvloop.EventLoop) -> None:
     loop.close()
     with pytest.raises(RuntimeError, match="closed"):
         loop.add_signal_handler(signal.SIGUSR1, print)

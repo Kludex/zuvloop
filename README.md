@@ -1,10 +1,10 @@
-# zuv
+# zuvloop
 
 A [libuv](https://libuv.org) event loop for `asyncio`, written in [Zig](https://ziglang.org).
 
-**Documentation**: <https://zuv.marcelotryle.com>
+**Documentation**: <https://zuvloop.marcelotryle.com>
 
-`zuv` replaces the asyncio event loop with one whose hot paths - callback scheduling, timers,
+`zuvloop` replaces the asyncio event loop with one whose hot paths - callback scheduling, timers,
 descriptor watching, name resolution and the stream data path - are implemented natively and
 driven by libuv. It targets uvloop's performance while shipping type hints, a strict-mypy-clean
 Python surface, and OpenTelemetry instrumentation.
@@ -12,7 +12,7 @@ Python surface, and OpenTelemetry instrumentation.
 ```python
 import asyncio
 
-import zuv
+import zuvloop
 
 
 async def main() -> None:
@@ -24,13 +24,13 @@ async def main() -> None:
     await writer.wait_closed()
 
 
-zuv.run(main())
+zuvloop.run(main())
 ```
 
 Or hand the loop factory to asyncio directly:
 
 ```python
-asyncio.run(main(), loop_factory=zuv.new_event_loop)
+asyncio.run(main(), loop_factory=zuvloop.new_event_loop)
 ```
 
 ## Performance
@@ -39,7 +39,7 @@ asyncio.run(main(), loop_factory=zuv.new_event_loop)
 macOS 26 and CPython 3.14. Rounds are interleaved across loops and the best of each is
 reported, with the run-to-run spread beside it.
 
-| Benchmark | asyncio | uvloop | zuv | zuv / uvloop |
+| Benchmark | asyncio | uvloop | zuvloop | zuvloop / uvloop |
 | --- | ---: | ---: | ---: | ---: |
 | `call_soon` | 2.69M/s | 4.69M/s | **5.91M/s** | **1.26x** |
 | `call_soon` with arguments | 2.43M/s | 3.87M/s | **6.47M/s** | **1.67x** |
@@ -69,7 +69,7 @@ a body write, so a loop that writes each piece as it arrives spends two syscalls
 response. `benchmarks/write_batching.py` measures exactly that, by serving one fixed response
 both ways:
 
-| response split into two writes | asyncio | uvloop | zuv |
+| response split into two writes | asyncio | uvloop | zuvloop |
 | --- | ---: | ---: | ---: |
 | throughput lost | -36% | -0.1% | **-0.7%** |
 
@@ -88,7 +88,7 @@ did before the shortcut existed.
 
 ## Compatibility
 
-zuv is checked against the test suites of the projects that exercise an event loop hardest,
+zuvloop is checked against the test suites of the projects that exercise an event loop hardest,
 by running them unmodified with the loop swapped underneath.
 
 | Suite | Result |
@@ -96,7 +96,7 @@ by running them unmodified with the loop swapped underneath.
 | uvicorn | 1257 passed, no failures |
 | aiohttp | 4473 passed, 36 failed - 33 of which also fail on stock asyncio |
 
-Three aiohttp failures are zuv's alone. Two are the `blockbuster` plugin flagging `os.stat`
+Three aiohttp failures are zuvloop's alone. Two are the `blockbuster` plugin flagging `os.stat`
 inside `create_unix_server` - a call stdlib asyncio makes in the same place, and which the plugin
 exempts by file path rather than by behaviour. The third is a genuine difference, below.
 
@@ -107,7 +107,7 @@ For reference, uvloop cannot complete that suite: it fails fifteen tests in
 
 **Patching `loop.time()` does not move the scheduler.** asyncio runs its timers off `self.time()`,
 so replacing that method fast-forwards the loop - a trick test suites use to expire timeouts
-without waiting. zuv keeps the timer heap in Zig and reads the clock directly, so a patched
+without waiting. zuvloop keeps the timer heap in Zig and reads the clock directly, so a patched
 `time()` changes what `loop.time()` returns and nothing else. Making the scheduler consult Python
 on every timer operation would cost more than the compatibility is worth; a loop that needs a
 controllable clock should schedule against one explicitly.
@@ -129,9 +129,9 @@ controllable clock should schedule against one explicitly.
 | Datagram sends and receives | `zig/datagram.zig` | Called once per datagram |
 | Descriptor watchers | `zig/poller.zig` | One `uv_poll_t` per descriptor |
 | Name resolution | `zig/dns.zig` | Runs on libuv's threadpool, not the executor |
-| Connection and server setup | `src/zuv/_connect.py` | Called once per connection |
-| Lifecycle, executors, error reporting | `src/zuv/_base.py` | Called once per loop |
-| OpenTelemetry emission | `src/zuv/_instrumentation.py` | The only file that imports OTel |
+| Connection and server setup | `src/zuvloop/_connect.py` | Called once per connection |
+| Lifecycle, executors, error reporting | `src/zuvloop/_base.py` | Called once per loop |
+| OpenTelemetry emission | `src/zuvloop/_instrumentation.py` | The only file that imports OTel |
 
 A few decisions worth knowing about:
 
@@ -155,7 +155,7 @@ A few decisions worth knowing about:
 
 ## Instrumentation
 
-`zuv` emits plain [OpenTelemetry](https://opentelemetry.io). Its only runtime dependency is
+`zuvloop` emits plain [OpenTelemetry](https://opentelemetry.io). Its only runtime dependency is
 `opentelemetry-api` - not the SDK, and nothing vendor-specific. Until an application installs a
 provider, OpenTelemetry hands back proxy instruments whose methods do nothing, so an uninstrumented
 program pays nothing.
@@ -164,23 +164,23 @@ The measurement happens in Zig; Python only records it.
 
 | Signal | Kind | Measured by |
 | --- | --- | --- |
-| `zuv.slow_callback` | span, with real start and end timestamps | `uv_hrtime()` around the callback |
-| `zuv.unhandled_exception` | span, with the exception recorded | the loop's error path |
-| `zuv.slow_callbacks`, `zuv.unhandled_exceptions` | counters | as above |
-| `zuv.callback_duration` | histogram | `uv_hrtime()` |
-| `zuv.loop_count`, `events`, `events_waiting`, `idle_time_ns`, `callbacks_run`, `ready`, `timers`, `watchers` | gauges | native counters plus `uv_metrics_info()`, sampled on a dedicated `uv_timer_t` |
+| `zuvloop.slow_callback` | span, with real start and end timestamps | `uv_hrtime()` around the callback |
+| `zuvloop.unhandled_exception` | span, with the exception recorded | the loop's error path |
+| `zuvloop.slow_callbacks`, `zuvloop.unhandled_exceptions` | counters | as above |
+| `zuvloop.callback_duration` | histogram | `uv_hrtime()` |
+| `zuvloop.loop_count`, `events`, `events_waiting`, `idle_time_ns`, `callbacks_run`, `ready`, `timers`, `watchers` | gauges | native counters plus `uv_metrics_info()`, sampled on a dedicated `uv_timer_t` |
 
 Anything that speaks OpenTelemetry collects it. `logfire.configure()` is one such thing:
 
 ```python
 import logfire
-import zuv
+import zuvloop
 
-logfire.configure()  # installs the OTel providers; zuv needs no logfire import
+logfire.configure()  # installs the OTel providers; zuvloop needs no logfire import
 
 
 async def main() -> None:
-    zuv.instrument()  # start the periodic loop gauges
+    zuvloop.instrument()  # start the periodic loop gauges
     ...
 ```
 
@@ -193,7 +193,7 @@ Gauges are deliberately synchronous rather than observable: the values are live 
 observable instrument's callback would run on the exporter's collection thread while the loop
 thread is mutating them. Pushing from the loop's own timer is what makes reading them safe.
 
-Because `zuv` schedules real `asyncio.Task` objects rather than its own, the 3.14 introspection
+Because `zuvloop` schedules real `asyncio.Task` objects rather than its own, the 3.14 introspection
 APIs work unchanged - `asyncio.all_tasks()`, `asyncio.current_task()`, `asyncio.capture_call_graph()`
 and `asyncio.print_call_graph()` are all covered by the test suite. The same applies to the
 out-of-process tooling, which reads those task objects straight out of process memory:
@@ -204,7 +204,7 @@ $ python -m asyncio pstree <pid>
 ```
 
 Those two need the platform's usual debugging privileges (on macOS, `sudo`) - a restriction that
-applies to any event loop, `zuv` or not.
+applies to any event loop, `zuvloop` or not.
 
 ## Not implemented yet
 

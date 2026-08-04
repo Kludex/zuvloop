@@ -142,7 +142,7 @@ async def test_a_non_string_argument_is_rejected() -> None:
 
 async def test_a_child_that_cannot_be_spawned_is_reported() -> None:
     with pytest.raises(FileNotFoundError):
-        await asyncio.create_subprocess_exec("/nonexistent-program-zuv", stdout=PIPE)
+        await asyncio.create_subprocess_exec("/nonexistent-program-zuvloop", stdout=PIPE)
 
 
 async def test_several_children_run_concurrently() -> None:

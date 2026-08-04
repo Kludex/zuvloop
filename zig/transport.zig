@@ -1144,7 +1144,7 @@ var slots = [_]c.PyType_Slot{
 };
 
 var spec = c.PyType_Spec{
-    .name = "zuv._zuv.Transport",
+    .name = "zuvloop._zuvloop.Transport",
     .basicsize = 0,
     .itemsize = 0,
     // asyncio's transports are ordinary objects that accept attributes, and
@@ -1187,7 +1187,7 @@ pub fn register(module: *py.Object) py.Error!void {
     const base = py.importFrom("asyncio.transports", "Transport") orelse return py.Error.Python;
     defer py.decref(base);
     if (@as(*c.PyTypeObject, @ptrCast(base)).tp_basicsize != @offsetOf(Transport, "loop")) {
-        return py.errRuntime("asyncio.Transport instance layout is not the one zuv was built against");
+        return py.errRuntime("asyncio.Transport instance layout is not the one zuvloop was built against");
     }
     const bases = c.PyTuple_Pack(1, base) orelse return py.Error.Python;
     defer py.decref(bases);
