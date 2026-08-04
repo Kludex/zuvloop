@@ -417,6 +417,16 @@ fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     py.decref(self);
 }
 
+/// Releases the temporary reference that keeps an initialized libuv handle's
+/// embedded Python object alive while an unsuccessful open is closed.
+fn onOpenFailed(handle: ?*uv.Handle) callconv(.c) void {
+    const self: *Transport = @ptrCast(@alignCast(uv.getData(handle.?)));
+    const st = self.loopState();
+    st.gilEnter();
+    defer st.gilExit();
+    py.decref(self);
+}
+
 fn shutdownAndClose(self: *Transport) void {
     if (self.flags & OPEN == 0) return;
     self.flags &= ~OPEN;
@@ -663,6 +673,8 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
     self.high_water = default_high_water;
     self.low_water = default_high_water / 4;
     self.kind = kind;
+    py.incref(self_obj);
+    self.loop = self_obj;
 
     const init_status = if (kind == KIND_TCP)
         uv.uv_tcp_init_ex(st.uvloop, @ptrCast(self.stream()), 0)
@@ -677,14 +689,15 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
     else
         uv.uv_pipe_open(@ptrCast(self.stream()), fd);
     if (open_status < 0) {
-        uv.uv_close(uv.asHandle(self.stream()), null);
+        // uv_close is asynchronous, and the handle's storage is embedded in
+        // `obj`. Keep that storage alive until libuv has finished with it.
+        py.incref(obj);
+        uv.uv_close(uv.asHandle(self.stream()), onOpenFailed);
         self.flags &= ~OPEN;
         return py.errUv(open_status);
     }
     if (kind == KIND_TCP) _ = uv.uv_tcp_nodelay(@ptrCast(self.stream()), 1);
 
-    py.incref(self_obj);
-    self.loop = self_obj;
     if (!py.isNone(args[4].?)) {
         py.incref(args[4].?);
         self.extra = args[4];

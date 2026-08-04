@@ -29,6 +29,15 @@ def test_run_honours_debug_mode() -> None:
     assert zuv.run(main(), debug=True) is True
 
 
+def test_failed_transport_open_does_not_corrupt_the_loop() -> None:
+    loop = zuv.new_event_loop()
+    try:
+        with pytest.raises(OSError):
+            loop._make_transport(-1, 0, asyncio.Protocol(), None, None, None)
+    finally:
+        loop.close()
+
+
 def test_asyncio_run_accepts_the_loop_factory() -> None:
     async def main() -> str:
         return type(running_loop()).__name__
