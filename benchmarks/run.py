@@ -213,12 +213,17 @@ def main() -> int:
     for name in args.only or list(BENCHMARKS):
         benchmark, unit = BENCHMARKS[name]
         print(name)
-        results: dict[str, float] = {}
-        for label, factory in factories.items():
-            samples = [run_on(factory, benchmark) for _ in range(args.repeat)]
-            results[label] = max(samples)
-            spread = statistics.pstdev(samples) / results[label] if len(samples) > 1 else 0.0
-            print(f"  {label:<8}{humanise(results[label], unit)}  (+/- {spread:.1%})")
+        # Interleave the rounds. Running every sample for one loop back to back
+        # lets thermal drift and background load bias whichever went first.
+        samples: dict[str, list[float]] = {label: [] for label in factories}
+        for _ in range(args.repeat):
+            for label, factory in factories.items():
+                samples[label].append(run_on(factory, benchmark))
+
+        results = {label: max(values) for label, values in samples.items()}
+        for label, value in results.items():
+            spread = statistics.pstdev(samples[label]) / value if len(samples[label]) > 1 else 0.0
+            print(f"  {label:<8}{humanise(value, unit)}  (+/- {spread:.1%})")
         print(f"  {'':<8}{'zuv / ' + baseline:>15}  {results['zuv'] / results[baseline]:.2f}x\n")
     return 0
 

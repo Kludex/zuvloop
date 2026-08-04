@@ -28,7 +28,14 @@ pub const KIND_TCP: c_int = 0;
 pub const KIND_PIPE: c_int = 1;
 
 const default_high_water: usize = 64 * 1024;
-pub const read_buffer_size: usize = 256 * 1024;
+/// Reads land in a `bytes` object sized to what the peer has been sending.
+///
+/// A fixed size cannot serve both shapes of traffic: a large buffer wastes an
+/// allocation on every small request, while a small one caps bulk transfer by
+/// forcing a syscall per chunk. The size follows the traffic instead, doubling
+/// whenever a read fills the buffer and easing back when it does not.
+const read_size_min: usize = 16 * 1024;
+const read_size_max: usize = 256 * 1024;
 const inline_bufs = 16;
 
 var str_connection_made: ?*py.Object = null;
@@ -61,6 +68,7 @@ pub const Transport = extern struct {
     read_bytes: ?*py.Object,
     socket_view: ?*py.Object,
     context: ?*py.Object,
+    read_size: usize,
     cb_connection_lost: ?*py.Object,
     cb_data_received: ?*py.Object,
     cb_eof_received: ?*py.Object,
@@ -253,14 +261,14 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
 
     // Read straight into a bytes object: libuv fills the final buffer, so the
     // protocol gets its data without a second copy.
-    const target = c.PyBytes_FromStringAndSize(null, read_buffer_size) orelse {
+    const target = c.PyBytes_FromStringAndSize(null, @intCast(self.read_size)) orelse {
         c.PyErr_Clear();
         buf.* = .{ .base = @ptrFromInt(@alignOf(u8)), .len = 0 };
         return;
     };
     py.xdecref(self.read_bytes);
     self.read_bytes = target;
-    buf.* = .{ .base = @ptrCast(c.PyBytes_AsString(target)), .len = read_buffer_size };
+    buf.* = .{ .base = @ptrCast(c.PyBytes_AsString(target)), .len = self.read_size };
 }
 
 fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) void {
@@ -283,6 +291,7 @@ fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) vo
             callInContext(self, self.cb_buffer_updated, n);
             return;
         }
+        adjustReadSize(self, @intCast(nread));
         var data = self.read_bytes orelse return;
         self.read_bytes = null;
         defer py.decref(data);
@@ -308,6 +317,15 @@ fn takeUvError(status: c_int) ?*py.Object {
         error.Python => {},
     }
     return c.PyErr_GetRaisedException();
+}
+
+/// A full buffer means the peer had more to give, so read bigger next time.
+fn adjustReadSize(self: *Transport, nread: usize) void {
+    if (nread >= self.read_size) {
+        self.read_size = @min(self.read_size * 2, read_size_max);
+    } else if (nread * 4 <= self.read_size) {
+        self.read_size = @max(self.read_size / 2, read_size_min);
+    }
 }
 
 fn handleEof(self: *Transport) void {
@@ -762,6 +780,7 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
     self.high_water = default_high_water;
     self.low_water = default_high_water / 4;
     self.kind = kind;
+    self.read_size = read_size_min;
     self.context = c.PyContext_CopyCurrent();
     if (self.context == null) return py.Error.Python;
 
