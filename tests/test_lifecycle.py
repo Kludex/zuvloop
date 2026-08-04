@@ -274,7 +274,12 @@ def test_shutdown_default_executor_times_out(loop: zuv.EventLoop) -> None:
     loop.run_until_complete(asyncio.sleep(0.05))
     with pytest.warns(RuntimeWarning, match="did not finish joining"):
         loop.run_until_complete(loop.shutdown_default_executor(0.01))
+
+    # The abandoned thread outlives the loop; releasing it only once the loop is
+    # closed is what the timeout path leaves behind in practice.
+    loop.close()
     release.set()
+    time.sleep(0.2)
 
 
 async def test_shutdown_asyncgens_closes_generators() -> None:

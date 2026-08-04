@@ -256,4 +256,7 @@ def _shutdown_executor(loop: LoopBase, future: asyncio.Future[None], executor: c
     try:
         executor.shutdown(wait=True)
     finally:
-        loop.call_soon_threadsafe(asyncio.futures._set_result_unless_cancelled, future, None)  # type: ignore[attr-defined]
+        # shutdown_default_executor() abandons this thread when it times out, so
+        # the loop can be long closed by the time the executor finishes.
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(asyncio.futures._set_result_unless_cancelled, future, None)  # type: ignore[attr-defined]
