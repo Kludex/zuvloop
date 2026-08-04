@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: mlugg/setup-zig@v1
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
 
@@ -62,4 +62,3 @@ jobs:
       # link fails here rather than on the deploy that Cloudflare runs.
       - name: Build docs
         run: ./scripts/docs
-
