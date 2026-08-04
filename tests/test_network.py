@@ -39,6 +39,16 @@ class Echo(asyncio.Protocol):
         self.closed.set_result(exc)
 
 
+class Sink(asyncio.Protocol):
+    """Server protocol that only reads, so it never writes on the shared loop."""
+
+    def __init__(self) -> None:
+        self.received = bytearray()
+
+    def data_received(self, data: bytes) -> None:
+        self.received += data
+
+
 class Collector(asyncio.Protocol):
     """Client protocol that resolves once the peer closes."""
 
@@ -414,6 +424,80 @@ async def test_flow_control_pauses_the_protocol() -> None:
         transport.abort()
         assert client.done is not None
         await client.done
+
+
+async def test_a_drain_returns_when_the_high_water_mark_is_zero() -> None:
+    """anyio writes this way: no buffer allowed at all, then wait for the drain.
+
+    A write the socket accepts outright must not report itself as backed up, or
+    the pause never lifts - there is no completion callback coming to lift it.
+    """
+    server, port, _ = await start_echo()
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        writer.transport.set_write_buffer_limits(0)
+        writer.write(b"drain me")
+        await asyncio.wait_for(writer.drain(), 2)
+        assert await reader.readexactly(8) == b"drain me"
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        server.close()
+        await server.wait_closed()
+
+
+async def test_a_write_from_pause_writing_is_still_sent() -> None:
+    """Flushing runs protocol code, which may write again while the flush is in
+    progress. Those writes have to be picked up rather than left behind."""
+    loop = running_loop()
+    sinks: list[Sink] = []
+
+    def sink_factory() -> Sink:
+        sink = Sink()
+        sinks.append(sink)
+        return sink
+
+    # The peer only reads. A peer that answered would write on this same loop,
+    # and any write revives the flush list - which would hide the very thing
+    # this test is here to catch.
+    server = await loop.create_server(sink_factory, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+
+    class WritesWhenPaused(Collector):
+        def __init__(self) -> None:
+            super().__init__()
+            self.paused = False
+
+        def pause_writing(self) -> None:
+            self.paused = True
+            assert self.transport is not None
+            self.transport.write(b"written while paused")
+
+    async def until_marker_arrives() -> None:
+        # It lands mid-stream, since the write that filled the buffer is still
+        # going out behind it.
+        while b"written while paused" not in sinks[0].received:
+            await asyncio.sleep(0.01)
+
+    transport, client = await loop.create_connection(WritesWhenPaused, "127.0.0.1", port)
+    try:
+        transport.set_write_buffer_limits(high=1024, low=256)
+
+        # One write, so the only thing that sends it is the end-of-turn flush.
+        # The socket cannot take it all, which pauses the protocol from inside
+        # that flush - and the write it makes then has nothing left to send it
+        # unless the flush notices the batch refilled.
+        transport.write(b"x" * (4 << 20))
+        await asyncio.sleep(0)
+        assert client.paused
+
+        await asyncio.wait_for(until_marker_arrives(), 5)
+    finally:
+        transport.abort()
+        assert client.done is not None
+        await client.done
+        server.close()
+        await server.wait_closed()
 
 
 async def test_write_buffer_limits_validate_their_arguments() -> None:
