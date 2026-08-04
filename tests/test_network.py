@@ -268,6 +268,31 @@ async def test_write_eof_is_seen_as_eof_by_the_peer() -> None:
     assert seen == [True]
 
 
+async def test_write_eof_waits_for_buffered_writes() -> None:
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+    right.setblocking(False)
+    payload = b"x" * (4 << 20)
+
+    transport, protocol = await loop.connect_accepted_socket(Collector, left)
+    try:
+        transport.write(payload)
+        assert transport.get_write_buffer_size() > 0
+        transport.write_eof()
+
+        received = bytearray()
+        while chunk := await loop.sock_recv(right, 65536):
+            received += chunk
+        assert received == payload
+    finally:
+        transport.close()
+        right.close()
+
+    assert protocol.done is not None
+    await protocol.done
+
+
 async def test_writes_after_close_are_rejected() -> None:
     server, port, _ = await start_echo()
     loop = running_loop()

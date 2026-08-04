@@ -403,7 +403,13 @@ fn onWritten(req: ?*uv.Write, status: c_int) callconv(.c) void {
         return;
     }
     maybeResumeProtocol(self);
-    if (self.write_buffer_size == 0 and self.flags & CLOSING != 0) shutdownAndClose(self);
+    if (self.write_buffer_size == 0) {
+        if (self.flags & CLOSING != 0) {
+            shutdownAndClose(self);
+        } else if (self.flags & EOF_WRITTEN != 0) {
+            shutdownWrite(self);
+        }
+    }
 }
 
 /// Takes ownership of `views`, releasing them once libuv reports completion.
@@ -487,6 +493,13 @@ fn maybeResumeProtocol(self: *Transport) void {
     if (self.write_buffer_size > self.low_water) return;
     self.flags &= ~PROTOCOL_PAUSED;
     callProtocol(self, self.cb_resume_writing, null);
+}
+
+fn shutdownWrite(self: *Transport) void {
+    var fd: uv.OsFd = -1;
+    if (uv.uv_fileno(uv.asHandle(self.stream()), &fd) == 0) {
+        _ = std.c.shutdown(fd, std.c.SHUT.WR);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -705,12 +718,9 @@ fn writeEof(self_obj: *py.Object) py.Error!*py.Object {
     const self = asTransport(self_obj);
     if (self.flags & (CONN_LOST | EOF_WRITTEN | CLOSING) != 0) return py.noneRef();
     self.flags |= EOF_WRITTEN;
-    // libuv's shutdown request would need to outlive this call; closing the
-    // write side directly matches what asyncio's transports do.
-    var fd: uv.OsFd = -1;
-    if (uv.uv_fileno(uv.asHandle(self.stream()), &fd) == 0) {
-        _ = std.c.shutdown(fd, std.c.SHUT.WR);
-    }
+    // A half-close must follow all writes that were accepted before this call.
+    // The final write callback performs it when libuv still owns queued data.
+    if (self.write_buffer_size == 0) shutdownWrite(self);
     return py.noneRef();
 }
 
