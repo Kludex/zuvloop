@@ -58,7 +58,7 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
                         self._defer_close(
                             partial(_finish_deferred_signal_cleanup, tuple(self._signal_handlers), wakeup_fd)
                         )
-                    except BaseException:
+                    except BaseException:  # pragma: no cover - CPython pending-call queue exhaustion
                         try:
                             _warn(
                                 f"could not close signal-owning event loop {self!r} from the main thread",

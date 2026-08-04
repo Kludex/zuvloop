@@ -92,6 +92,17 @@ async def test_server_sockets_are_protected_views() -> None:
     assert exposed.fileno() == -1
 
 
+async def test_server_close_tolerates_an_externally_closed_owned_socket() -> None:
+    loop = running_loop()
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    server = await loop.create_server(Echo, sock=sock, start_serving=False)
+
+    sock.close()
+    server.close()
+    await server.wait_closed()
+
+
 async def test_streams_round_trip() -> None:
     server, port, _ = await start_echo()
     async with server:
