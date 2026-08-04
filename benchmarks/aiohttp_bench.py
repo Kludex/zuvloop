@@ -16,7 +16,6 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
 
 from aiohttp import ClientSession, web
 
@@ -137,7 +136,10 @@ def main() -> int:
     server_samples: dict[str, list[float]] = {name: [] for name in factories}
     client_samples: dict[str, list[float]] = {name: [] for name in factories}
 
-    print(f"python {sys.version.split()[0]}  libuv {zuv.libuv_version()}  oha -c {args.connections} -z {args.duration}\n")
+    print(
+        f"python {sys.version.split()[0]}  libuv {zuv.libuv_version()} "
+        f" oha -c {args.connections} -z {args.duration}\n"
+    )
 
     for index in range(args.rounds):
         # Server under test, external load generator.
