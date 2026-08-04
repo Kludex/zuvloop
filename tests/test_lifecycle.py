@@ -13,6 +13,7 @@ import pytest
 
 import zuv
 from conftest import running_loop
+from zuv._base import _shutdown_executor
 
 pytestmark = pytest.mark.anyio
 
@@ -295,6 +296,28 @@ def test_shutdown_default_executor_times_out(loop: zuv.EventLoop) -> None:
     loop.close()
     release.set()
     time.sleep(0.2)
+
+
+def test_executor_shutdown_tolerates_close_racing_with_notification() -> None:
+    class ClosingLoop:
+        closed = False
+
+        def call_soon_threadsafe(self, *args: Any) -> None:
+            self.closed = True
+            raise RuntimeError("Event loop is closed")
+
+        def is_closed(self) -> bool:
+            return self.closed
+
+    class FinishedExecutor:
+        def shutdown(self, *, wait: bool) -> None:
+            assert wait
+
+    fake_loop: Any = ClosingLoop()
+    fake_future: Any = object()
+    fake_executor: Any = FinishedExecutor()
+
+    _shutdown_executor(fake_loop, fake_future, fake_executor)
 
 
 async def test_shutdown_asyncgens_closes_generators() -> None:
