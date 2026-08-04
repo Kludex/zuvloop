@@ -24,7 +24,21 @@ pub const Ready = struct {
 
     /// Takes ownership of `item`.
     pub fn push(self: *Ready, item: *py.Object) error{OutOfMemory}!void {
-        if (self.len == self.items.len) try self.grow();
+        try self.ensureUnusedCapacity(1);
+        self.pushAssumeCapacity(item);
+    }
+
+    pub fn ensureUnusedCapacity(self: *Ready, additional: usize) error{OutOfMemory}!void {
+        if (additional <= self.items.len - self.len) return;
+        var new_cap = if (self.items.len == 0) 64 else self.items.len;
+        const needed = self.len + additional;
+        while (new_cap < needed) new_cap *= 2;
+        try self.grow(new_cap);
+    }
+
+    /// Takes ownership of `item`; capacity must have been reserved first.
+    pub fn pushAssumeCapacity(self: *Ready, item: *py.Object) void {
+        std.debug.assert(self.len < self.items.len);
         self.items[(self.head + self.len) & (self.items.len - 1)] = item;
         self.len += 1;
     }
@@ -37,8 +51,7 @@ pub const Ready = struct {
         return item;
     }
 
-    fn grow(self: *Ready) error{OutOfMemory}!void {
-        const new_cap = if (self.items.len == 0) 64 else self.items.len * 2;
+    fn grow(self: *Ready, new_cap: usize) error{OutOfMemory}!void {
         const new_items = try alloc.alloc(?*py.Object, new_cap);
         var i: usize = 0;
         while (i < self.len) : (i += 1) {

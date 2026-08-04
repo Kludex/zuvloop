@@ -41,6 +41,21 @@ def test_failed_transport_open_does_not_corrupt_the_loop() -> None:
         loop.close()
 
 
+def test_failed_transport_construction_does_not_adopt_the_descriptor() -> None:
+    loop = zuv.new_event_loop()
+    left, right = socket.socketpair()
+    try:
+        with pytest.raises(AttributeError, match="connection_made"):
+            loop._make_transport(left.fileno(), 1, object(), None, None, None)  # type: ignore[arg-type]
+        loop.close()
+        left.sendall(b"still owned")
+        assert right.recv(11) == b"still owned"
+    finally:
+        left.close()
+        right.close()
+        loop.close()
+
+
 def test_loop_close_releases_open_transports() -> None:
     gc.collect()
     before = sum(type(obj) is zuv.Transport for obj in gc.get_objects())

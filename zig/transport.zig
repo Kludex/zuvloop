@@ -690,6 +690,38 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
     py.incref(self_obj);
     self.loop = self_obj;
 
+    // Everything after descriptor adoption must be infallible: otherwise the
+    // Python socket would still believe it owns a descriptor now owned by
+    // libuv. Prepare callbacks, handles and queue capacity first.
+    bindProtocol(self, args[2].?);
+    const connection_made = c.PyObject_GetAttr(args[2].?, str_connection_made) orelse return py.Error.Python;
+    defer py.decref(connection_made);
+    const start = c.PyObject_GetAttr(obj, str_start_reading) orelse return py.Error.Python;
+    defer py.decref(start);
+
+    const connection_handle = try handlemod.create(
+        handlemod.handle_type.?,
+        self_obj,
+        connection_made,
+        &.{obj},
+        null,
+    );
+    errdefer py.decref(connection_handle);
+    const start_handle = try handlemod.create(handlemod.handle_type.?, self_obj, start, &.{}, null);
+    errdefer py.decref(start_handle);
+    const waiter_handle = if (!py.isNone(args[3].?))
+        try handlemod.create(
+            handlemod.handle_type.?,
+            self_obj,
+            set_result_unless_cancelled.?,
+            &.{ args[3], py.none() },
+            null,
+        )
+    else
+        null;
+    errdefer if (waiter_handle) |h| py.decref(h);
+    st.ready.ensureUnusedCapacity(if (waiter_handle == null) 2 else 3) catch return py.errNoMemory();
+
     const init_status = if (kind == KIND_TCP)
         uv.uv_tcp_init_ex(st.uvloop, @ptrCast(self.stream()), 0)
     else
@@ -720,29 +752,13 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
         py.incref(args[5].?);
         self.server = args[5];
     }
-    bindProtocol(self, args[2].?);
     // Kept alive until the close callback fires.
     py.incref(obj);
 
-    const connection_made = c.PyObject_GetAttr(args[2].?, str_connection_made) orelse return py.Error.Python;
-    defer py.decref(connection_made);
-    scheduleCall(self, connection_made, obj);
-
-    const start = c.PyObject_GetAttr(obj, str_start_reading) orelse return py.Error.Python;
-    defer py.decref(start);
-    scheduleCall(self, start, null);
-
-    if (!py.isNone(args[3].?)) {
-        const h = try handlemod.create(
-            handlemod.handle_type.?,
-            self_obj,
-            set_result_unless_cancelled.?,
-            &.{ args[3], py.none() },
-            null,
-        );
-        st.ready.push(@ptrCast(h)) catch py.decref(h);
-        loopmod.startIdle(st);
-    }
+    st.ready.pushAssumeCapacity(@ptrCast(connection_handle));
+    st.ready.pushAssumeCapacity(@ptrCast(start_handle));
+    if (waiter_handle) |h| st.ready.pushAssumeCapacity(@ptrCast(h));
+    loopmod.startIdle(st);
     return obj;
 }
 
