@@ -43,9 +43,19 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
 
     def __del__(self, _warn: Callable[..., object] = warnings.warn) -> None:
         if not self.is_closed():
-            _warn(f"unclosed event loop {self!r}", ResourceWarning, source=self)
+            try:
+                _warn(f"unclosed event loop {self!r}", ResourceWarning, source=self)
+            except BaseException:
+                # Exceptions escaping a finalizer are only reported as
+                # unraisable; warning filters must not prevent cleanup.
+                pass
             if not self.is_running():
-                self.close()
+                try:
+                    self.close()
+                except BaseException:
+                    # A partially initialized or externally damaged loop may
+                    # not have a fully usable self-pipe during finalization.
+                    pass
 
     # -- lifecycle ---------------------------------------------------------
 
