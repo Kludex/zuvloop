@@ -278,12 +278,18 @@ class ConnectionOperations(SocketOperations):
                 server._ssl_shutdown_timeout,
                 server,
             )
-        except OSError as exc:
-            # SSLError and TimeoutError are both OSError subclasses, so this
-            # covers every way a handshake can fail without swallowing
-            # cancellation of the accepting task.
-            self.call_exception_handler({"message": "Error completing a TLS handshake", "exception": exc})
-            server._detach()
+        except BaseException as exc:
+            # Before descriptor adoption, the socket and server count are
+            # still ours to release. After adoption, _wrap_socket closes the
+            # transport and its close callback detaches from the server.
+            if conn.fileno() != -1:
+                conn.close()
+                server._detach()
+            if isinstance(exc, OSError):
+                # SSLError and TimeoutError are both OSError subclasses.
+                self.call_exception_handler({"message": "Error completing a TLS handshake", "exception": exc})
+                return
+            raise
 
     # -- transport construction -------------------------------------------
 

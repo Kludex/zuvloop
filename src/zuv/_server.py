@@ -76,7 +76,12 @@ class Server(asyncio.AbstractServer):
                 return
             conn.setblocking(False)
             self._active += 1
-            self._loop._accept_connection(conn, self._protocol_factory, self)
+            try:
+                self._loop._accept_connection(conn, self._protocol_factory, self)
+            except BaseException:
+                conn.close()
+                self._detach()
+                raise
 
     def _detach(self) -> None:
         self._active -= 1

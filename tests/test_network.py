@@ -444,6 +444,37 @@ async def test_server_wait_closed_waits_for_clients() -> None:
     await asyncio.wait_for(closed, 2)
 
 
+@pytest.mark.parametrize("tls", [False, True])
+async def test_server_factory_failure_does_not_prevent_wait_closed(
+    tls: bool, server_context: ssl.SSLContext
+) -> None:
+    loop = running_loop()
+    errors: list[BaseException | None] = []
+    loop.set_exception_handler(lambda _loop, context: errors.append(context.get("exception")))
+
+    def broken_factory() -> asyncio.Protocol:
+        raise RuntimeError("broken protocol factory")
+
+    server = await loop.create_server(
+        broken_factory,
+        "127.0.0.1",
+        0,
+        ssl=server_context if tls else None,
+    )
+    client = socket.socket()
+    client.setblocking(False)
+    try:
+        await loop.sock_connect(client, server.sockets[0].getsockname())
+        await asyncio.sleep(0.05)
+    finally:
+        client.close()
+        server.close()
+
+    await asyncio.wait_for(server.wait_closed(), 2)
+    assert errors
+    assert isinstance(errors[0], RuntimeError)
+
+
 async def test_serve_forever_runs_until_cancelled() -> None:
     server, port, _ = await start_echo()
     loop = running_loop()
