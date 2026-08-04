@@ -50,6 +50,7 @@ pub const State = struct {
     uvloop: *uv.Loop,
     idle: *uv.Idle,
     timer: *uv.Timer,
+    sampler: *uv.Timer,
     waker: *uv.Async,
     block: []u8,
 
@@ -62,6 +63,7 @@ pub const State = struct {
     tstate: ?*c.PyThreadState = null,
     gil_depth: c_int = 1,
     fatal: ?*py.Object = null,
+    metrics_cb: ?*py.Object = null,
 
     running: bool = false,
     closed: bool = false,
@@ -69,6 +71,7 @@ pub const State = struct {
     debug: bool = false,
     idle_active: bool = false,
     timer_active: bool = false,
+    sampler_active: bool = false,
 
     thread_id: c_ulong = 0,
     slow_callback_duration: f64 = 0.1,
@@ -185,6 +188,9 @@ pub inline fn startIdle(st: *State) void {
     }
 }
 
+/// Runs exactly the callbacks queued on entry. asyncio guarantees everything
+/// already scheduled runs even if one of them calls `stop()`, so the batch is
+/// never cut short.
 fn runReady(self: *LoopObject) void {
     const st = self.state();
     st.iterations += 1;
@@ -202,7 +208,6 @@ fn runReady(self: *LoopObject) void {
             handlemod.run(h);
         }
         py.decref(obj);
-        if (st.stopping) break;
     }
 }
 
@@ -496,7 +501,10 @@ fn setSlowCallbackDuration(self_obj: ?*py.Object, value: ?*py.Object, _: ?*anyop
 
 /// Loop counters plus libuv's own, for the instrumentation layer.
 fn metrics(self_obj: *py.Object) py.Error!*py.Object {
-    const st = asLoop(self_obj).state();
+    return buildMetrics(asLoop(self_obj).state()) orelse py.Error.Python;
+}
+
+fn buildMetrics(st: *State) ?*py.Object {
     var info: uv.Metrics = std.mem.zeroes(uv.Metrics);
     var idle_ns: u64 = 0;
     if (!st.closed) {
@@ -521,7 +529,54 @@ fn metrics(self_obj: *py.Object) py.Error!*py.Object {
         @as(c.Py_ssize_t, @intCast(st.timers.len)),
         "watchers",
         @as(c.Py_ssize_t, @intCast(st.pollers.count())),
-    ) orelse py.Error.Python;
+    );
+}
+
+fn onSampler(timer: ?*uv.Timer) callconv(.c) void {
+    const self: *LoopObject = @ptrCast(@alignCast(uv.getData(timer.?)));
+    const st = self.state();
+    st.gilEnter();
+    defer st.gilExit();
+    const callback = st.metrics_cb orelse return;
+    const snapshot = buildMetrics(st) orelse {
+        py.writeUnraisable(@ptrCast(self));
+        return;
+    };
+    defer py.decref(snapshot);
+    const result = c.PyObject_CallOneArg(callback, snapshot);
+    if (result) |r| py.decref(r) else py.writeUnraisable(@ptrCast(self));
+}
+
+/// `_start_metrics(interval_seconds, callback)`: samples on a libuv timer, so
+/// instrumentation never enters the callback queue.
+fn startMetrics(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py.Object {
+    try py.expectArgs(args, 2, "_start_metrics");
+    const self = asLoop(self_obj);
+    const st = self.state();
+    try checkClosed(st);
+    const interval = try py.asF64(args[0].?);
+    if (!(interval > 0)) return py.errValue("the sampling interval must be positive");
+
+    py.clear(&st.metrics_cb);
+    py.incref(args[1].?);
+    st.metrics_cb = args[1];
+
+    const ms: u64 = @intFromFloat(@ceil(interval * 1000.0));
+    try py.errUvIfNeg(uv.uv_timer_start(st.sampler, onSampler, ms, ms));
+    // The sampler must not be what keeps the loop alive.
+    uv.uv_unref(uv.asHandle(st.sampler));
+    st.sampler_active = true;
+    return py.noneRef();
+}
+
+fn stopMetrics(self_obj: *py.Object) py.Error!*py.Object {
+    const st = asLoop(self_obj).state();
+    if (st.sampler_active) {
+        _ = uv.uv_timer_stop(st.sampler);
+        st.sampler_active = false;
+    }
+    py.clear(&st.metrics_cb);
+    return py.noneRef();
 }
 
 fn timerHandleCancelled(self_obj: *py.Object, _: *py.Object) py.Error!*py.Object {
@@ -540,6 +595,7 @@ fn closeLoop(self_obj: *py.Object) py.Error!*py.Object {
     st.timers.deinit();
     drainInbox(st);
     py.clear(&st.fatal);
+    py.clear(&st.metrics_cb);
     pollermod.closeAll(st);
 
     if (st.idle_active) {
@@ -588,7 +644,7 @@ fn newLoop(tp: ?*c.PyTypeObject, _: ?*py.Object, _: ?*py.Object) callconv(.c) ?*
     const idle_size = uv.uv_handle_size(.idle);
     const timer_size = uv.uv_handle_size(.timer);
     const async_size = uv.uv_handle_size(.@"async");
-    const words = alloc.alloc(u64, (loop_size + idle_size + timer_size + async_size + 7) / 8) catch {
+    const words = alloc.alloc(u64, (loop_size + idle_size + 2 * timer_size + async_size + 7) / 8) catch {
         py.decref(obj);
         _ = c.PyErr_NoMemory();
         return null;
@@ -605,7 +661,8 @@ fn newLoop(tp: ?*c.PyTypeObject, _: ?*py.Object, _: ?*py.Object) callconv(.c) ?*
         .uvloop = @ptrCast(block.ptr),
         .idle = @ptrCast(block.ptr + loop_size),
         .timer = @ptrCast(block.ptr + loop_size + idle_size),
-        .waker = @ptrCast(block.ptr + loop_size + idle_size + timer_size),
+        .sampler = @ptrCast(block.ptr + loop_size + idle_size + timer_size),
+        .waker = @ptrCast(block.ptr + loop_size + idle_size + 2 * timer_size),
         .block = block,
     };
     self.st = st;
@@ -613,6 +670,7 @@ fn newLoop(tp: ?*c.PyTypeObject, _: ?*py.Object, _: ?*py.Object) callconv(.c) ?*
     if (uv.uv_loop_init(st.uvloop) < 0 or
         uv.uv_idle_init(st.uvloop, st.idle) < 0 or
         uv.uv_timer_init(st.uvloop, st.timer) < 0 or
+        uv.uv_timer_init(st.uvloop, st.sampler) < 0 or
         uv.uv_async_init(st.uvloop, st.waker, onWake) < 0)
     {
         py.decref(obj);
@@ -622,6 +680,7 @@ fn newLoop(tp: ?*c.PyTypeObject, _: ?*py.Object, _: ?*py.Object) callconv(.c) ?*
     _ = uv.uv_loop_configure(st.uvloop, .metrics_idle_time);
     uv.setData(st.idle, obj);
     uv.setData(st.timer, obj);
+    uv.setData(st.sampler, obj);
     uv.setData(st.waker, obj);
 
     return obj;
@@ -638,6 +697,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
             st.timers.deinit();
             drainInbox(st);
             py.clear(&st.fatal);
+            py.clear(&st.metrics_cb);
             pollermod.closeAll(st);
             closeAllHandles(st);
         }
@@ -654,6 +714,8 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
     const self = asLoop(obj.?);
     if (self.st) |st| {
         var r = py.visit(st.fatal, visitproc, arg);
+        if (r != 0) return r;
+        r = py.visit(st.metrics_cb, visitproc, arg);
         if (r != 0) return r;
         var i: usize = 0;
         while (i < st.ready.len) : (i += 1) {
@@ -677,6 +739,7 @@ fn clear_(obj: ?*py.Object) callconv(.c) c_int {
         st.ready.deinit();
         st.timers.deinit();
         py.clear(&st.fatal);
+        py.clear(&st.metrics_cb);
     }
     return 0;
 }
@@ -695,6 +758,8 @@ var methods = [_]c.PyMethodDef{
     py.methodO("set_debug", setDebug, "Set the debug mode flag."),
     py.methodO("_timer_handle_cancelled", timerHandleCancelled, "Compatibility no-op."),
     py.methodNoArgs("_metrics", metrics, "Return a snapshot of loop and libuv counters."),
+    py.method("_start_metrics", startMetrics, "Sample loop counters on a native timer."),
+    py.methodNoArgs("_stop_metrics", stopMetrics, "Stop sampling loop counters."),
     py.method("add_reader", pollermod.addReader, "Call a callback whenever a descriptor is readable."),
     py.method("add_writer", pollermod.addWriter, "Call a callback whenever a descriptor is writable."),
     py.methodO("remove_reader", pollermod.removeReader, "Stop watching a descriptor for readability."),

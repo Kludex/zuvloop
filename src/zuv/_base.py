@@ -216,7 +216,7 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):
         self._ssock, self._csock = socket.socketpair()
         self._ssock.setblocking(False)
         self._csock.setblocking(False)
-        self.add_reader(self._ssock.fileno(), self._drain_self_pipe)
+        self.add_reader(self._ssock.fileno(), self._drain_self_pipe, self._ssock)
 
     def _teardown_self_pipe(self) -> None:
         if self._ssock is None or self._csock is None:
@@ -229,22 +229,19 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):
     def _attach_wakeup_fd(self) -> None:
         # Only the main thread may own the wakeup fd, and only it runs Python
         # signal handlers - so a loop on any other thread simply skips this.
-        if threading.current_thread() is threading.main_thread():
-            assert self._csock is not None
+        if self._csock is not None and threading.current_thread() is threading.main_thread():
             signal.set_wakeup_fd(self._csock.fileno())
 
     def _detach_wakeup_fd(self) -> None:
         if threading.current_thread() is threading.main_thread():
             signal.set_wakeup_fd(-1)
 
-    def _drain_self_pipe(self) -> None:
-        assert self._ssock is not None
-        while True:
-            try:
-                if not self._ssock.recv(4096):
-                    break
-            except (BlockingIOError, InterruptedError):
-                break
+    def _drain_self_pipe(self, sock: socket.socket) -> None:
+        try:
+            while True:
+                sock.recv(4096)
+        except (BlockingIOError, InterruptedError):
+            pass
 
 
 def _stop_when_done(future: asyncio.Future[Any]) -> None:

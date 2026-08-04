@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import functools
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import logfire_api as logfire
-
-if TYPE_CHECKING:
-    from ._loop import EventLoop
 
 _NAMESPACE = "zuv"
 
@@ -81,8 +78,7 @@ _GAUGES = {
 }
 
 
-def sample_metrics(loop: EventLoop) -> dict[str, int]:
-    snapshot = loop._metrics()
+def publish_metrics(snapshot: dict[str, int]) -> None:
+    """Receive a snapshot from the loop's native sampler and record it."""
     for name, value in snapshot.items():
         _gauge(name, _GAUGES[name]).set(value)
-    return snapshot

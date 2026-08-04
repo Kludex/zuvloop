@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Coroutine
 from typing import Any, TypeVar
 
-from ._instrumentation import sample_metrics
+from ._instrumentation import publish_metrics
 from ._loop import EventLoop
 
 _T = TypeVar("_T")
@@ -22,19 +22,18 @@ def run(main: Coroutine[Any, Any, _T], *, debug: bool | None = None) -> _T:
 
 
 class MetricsReporter:
-    """Samples loop counters into logfire gauges on a fixed interval."""
+    """Publishes the loop's counters to logfire.
+
+    Sampling runs on a dedicated libuv timer inside the extension, so it never
+    enters the callback queue; Python is handed a finished snapshot.
+    """
 
     def __init__(self, loop: EventLoop, interval: float) -> None:
         self._loop = loop
-        self._interval = interval
-        self._timer = loop.call_later(interval, self._tick)
-
-    def _tick(self) -> None:
-        sample_metrics(self._loop)
-        self._timer = self._loop.call_later(self._interval, self._tick)
+        loop._start_metrics(interval, publish_metrics)
 
     def cancel(self) -> None:
-        self._timer.cancel()
+        self._loop._stop_metrics()
 
 
 def instrument(loop: EventLoop | None = None, *, interval: float = 10.0) -> MetricsReporter:

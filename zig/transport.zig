@@ -751,4 +751,6 @@ pub fn register(module: *py.Object) py.Error!void {
 
     transport_type = @ptrCast(c.PyType_FromModuleAndSpec(module, &spec, null) orelse return py.Error.Python);
     if (c.PyModule_AddObjectRef(module, "Transport", @ptrCast(transport_type)) < 0) return py.Error.Python;
+    if (c.PyModule_AddIntConstant(module, "KIND_TCP", KIND_TCP) < 0) return py.Error.Python;
+    if (c.PyModule_AddIntConstant(module, "KIND_PIPE", KIND_PIPE) < 0) return py.Error.Python;
 }
