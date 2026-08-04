@@ -52,6 +52,7 @@ pub const State = struct {
     timer: *uv.Timer,
     sampler: *uv.Timer,
     waker: *uv.Async,
+    flusher: *uv.Prepare,
     block: []u8,
 
     ready: collections.Ready = .empty,
@@ -60,6 +61,7 @@ pub const State = struct {
     pollers: pollermod.Map = .empty,
     scratch: ?[*]u8 = null,
     dns_requests: ?*anyopaque = null,
+    flush_head: ?*transportmod.Transport = null,
 
     tstate: ?*c.PyThreadState = null,
     gil_depth: c_int = 1,
@@ -73,6 +75,7 @@ pub const State = struct {
     idle_active: bool = false,
     timer_active: bool = false,
     sampler_active: bool = false,
+    flusher_active: bool = false,
 
     /// 0 = synchronous ownership, 1 = reaper running with a live LoopObject,
     /// 2 = reaper running after LoopObject deallocation, 3 = reaper finished.
@@ -178,6 +181,66 @@ fn onWake(waker: ?*uv.Async) callconv(.c) void {
         st.ready.push(@as(*py.Object, @ptrCast(h))) catch py.decref(h);
     }
     startIdle(st);
+}
+
+/// Sends everything written since the last turn, as one vectored write per
+/// transport.
+///
+/// libuv computes the poll timeout after running prepare handles and before
+/// running check handles, so this has to be a prepare: from a check, a loop with
+/// nothing else to do would block for I/O while still holding data the peer is
+/// waiting for. Running here, every accepted write reaches the socket before the
+/// loop can sleep, whether it came from a task or from a read callback.
+fn onFlush(prepare: ?*uv.Prepare) callconv(.c) void {
+    const self: *LoopObject = @ptrCast(@alignCast(uv.getData(prepare.?)));
+    const st = self.state();
+    st.gilEnter();
+    defer st.gilExit();
+    drainFlushList(st);
+    _ = uv.uv_prepare_stop(st.flusher);
+    st.flusher_active = false;
+}
+
+/// Releases pending writes without sending them. A closing loop cannot deliver
+/// them, and the transports holding them are about to be closed.
+fn dropFlushList(st: *State) void {
+    var node = st.flush_head;
+    st.flush_head = null;
+    while (node) |transport| {
+        node = transport.flush_next;
+        transport.flush_next = null;
+        transport.flags &= ~transportmod.FLUSH_QUEUED;
+        transportmod.discardPending(transport);
+        py.decref(transport);
+    }
+}
+
+fn drainFlushList(st: *State) void {
+    var node = st.flush_head;
+    st.flush_head = null;
+    while (node) |transport| {
+        node = transport.flush_next;
+        transport.flush_next = null;
+        transport.flags &= ~transportmod.FLUSH_QUEUED;
+        transportmod.flushPending(transport);
+        py.decref(transport);
+    }
+}
+
+/// Registers a transport as holding unsent writes. The reference keeps it alive
+/// until the flush runs, so a protocol that writes and drops the transport in
+/// the same turn still gets its data out.
+pub fn scheduleFlush(st: *State, transport: *transportmod.Transport) void {
+    if (transport.flags & transportmod.FLUSH_QUEUED != 0) return;
+    transport.flags |= transportmod.FLUSH_QUEUED;
+    py.incref(transport);
+    transport.flush_next = st.flush_head;
+    st.flush_head = transport;
+    if (!st.flusher_active) {
+        _ = uv.uv_prepare_start(st.flusher, onFlush);
+        uv.uv_unref(uv.asHandle(st.flusher));
+        st.flusher_active = true;
+    }
 }
 
 fn onCloseFreeState(handle: ?*uv.Handle) callconv(.c) void {
@@ -615,6 +678,7 @@ fn closeLoop(self_obj: *py.Object) py.Error!*py.Object {
     st.ready.deinit();
     st.timers.deinit();
     drainInbox(st);
+    dropFlushList(st);
     py.clear(&st.fatal);
     py.clear(&st.metrics_cb);
     pollermod.closeAll(st);
@@ -626,6 +690,10 @@ fn closeLoop(self_obj: *py.Object) py.Error!*py.Object {
     if (st.timer_active) {
         _ = uv.uv_timer_stop(st.timer);
         st.timer_active = false;
+    }
+    if (st.flusher_active) {
+        _ = uv.uv_prepare_stop(st.flusher);
+        st.flusher_active = false;
     }
     closeAllHandles(st);
     return py.noneRef();
@@ -762,7 +830,8 @@ fn newLoop(tp: ?*c.PyTypeObject, _: ?*py.Object, _: ?*py.Object) callconv(.c) ?*
     const idle_size = uv.uv_handle_size(.idle);
     const timer_size = uv.uv_handle_size(.timer);
     const async_size = uv.uv_handle_size(.async);
-    const words = alloc.alloc(u64, (loop_size + idle_size + 2 * timer_size + async_size + 7) / 8) catch {
+    const prepare_size = uv.uv_handle_size(.prepare);
+    const words = alloc.alloc(u64, (loop_size + idle_size + 2 * timer_size + async_size + prepare_size + 7) / 8) catch {
         py.decref(obj);
         _ = c.PyErr_NoMemory();
         return null;
@@ -781,6 +850,7 @@ fn newLoop(tp: ?*c.PyTypeObject, _: ?*py.Object, _: ?*py.Object) callconv(.c) ?*
         .timer = @ptrCast(block.ptr + loop_size + idle_size),
         .sampler = @ptrCast(block.ptr + loop_size + idle_size + timer_size),
         .waker = @ptrCast(block.ptr + loop_size + idle_size + 2 * timer_size),
+        .flusher = @ptrCast(block.ptr + loop_size + idle_size + 2 * timer_size + async_size),
         .block = block,
     };
 
@@ -798,7 +868,8 @@ fn newLoop(tp: ?*c.PyTypeObject, _: ?*py.Object, _: ?*py.Object) callconv(.c) ?*
     if (uv.uv_idle_init(st.uvloop, st.idle) < 0 or
         uv.uv_timer_init(st.uvloop, st.timer) < 0 or
         uv.uv_timer_init(st.uvloop, st.sampler) < 0 or
-        uv.uv_async_init(st.uvloop, st.waker, onWake) < 0)
+        uv.uv_async_init(st.uvloop, st.waker, onWake) < 0 or
+        uv.uv_prepare_init(st.uvloop, st.flusher) < 0)
     {
         py.decref(obj);
         c.PyErr_SetString(@ptrCast(c.PyExc_RuntimeError), "failed to initialise the libuv loop");
@@ -809,6 +880,7 @@ fn newLoop(tp: ?*c.PyTypeObject, _: ?*py.Object, _: ?*py.Object) callconv(.c) ?*
     uv.setData(st.timer, obj);
     uv.setData(st.sampler, obj);
     uv.setData(st.waker, obj);
+    uv.setData(st.flusher, obj);
 
     return obj;
 }

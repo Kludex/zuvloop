@@ -191,6 +191,75 @@ async def test_transport_is_an_asyncio_transport() -> None:
         await protocol.done
 
 
+async def test_consecutive_writes_are_sent_together() -> None:
+    server, port, protocols = await start_echo()
+    loop = running_loop()
+    async with server:
+        transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
+
+        transport.write(b"head ")
+        transport.write(b"body")
+        # Both are accounted for while they wait, and go out as one write.
+        assert transport.get_write_buffer_size() == 9
+
+        await asyncio.sleep(0.05)
+        assert transport.get_write_buffer_size() == 0
+        assert bytes(protocols[0].received) == b"head body"
+
+        transport.close()
+        assert protocol.done is not None
+        await protocol.done
+
+
+async def test_a_write_batch_larger_than_the_buffer_still_arrives_in_order() -> None:
+    server, port, protocols = await start_echo()
+    loop = running_loop()
+    chunks = [bytes([index % 251]) * 8 for index in range(10)]
+    async with server:
+        transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
+        for chunk in chunks:
+            transport.write(chunk)
+
+        await asyncio.sleep(0.05)
+        assert bytes(protocols[0].received) == b"".join(chunks)
+
+        transport.close()
+        assert protocol.done is not None
+        await protocol.done
+
+
+async def test_unsent_writes_count_towards_the_high_water_mark() -> None:
+    server, port, _ = await start_echo()
+    loop = running_loop()
+    async with server:
+        transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
+        transport.set_write_buffer_limits(high=4, low=2)
+
+        transport.write(b"over the mark")
+        assert transport.get_write_buffer_size() == 13
+
+        await asyncio.sleep(0.05)
+        assert transport.get_write_buffer_size() == 0
+
+        transport.close()
+        assert protocol.done is not None
+        await protocol.done
+
+
+async def test_abort_drops_writes_that_have_not_been_sent() -> None:
+    server, port, protocols = await start_echo()
+    loop = running_loop()
+    async with server:
+        transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
+        transport.write(b"never sent")
+        transport.abort()
+
+        assert protocol.done is not None
+        await protocol.done
+        await asyncio.sleep(0.05)
+        assert bytes(protocols[0].received) == b""
+
+
 async def test_transport_reports_closing_state() -> None:
     server, port, _ = await start_echo()
     loop = running_loop()

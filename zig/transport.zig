@@ -23,6 +23,7 @@ const EOF_WRITTEN: u32 = 1 << 3;
 const BUFFERED: u32 = 1 << 4;
 const PROTOCOL_PAUSED: u32 = 1 << 5;
 const OPEN: u32 = 1 << 6;
+pub const FLUSH_QUEUED: u32 = 1 << 7;
 
 pub const KIND_TCP: c_int = 0;
 pub const KIND_PIPE: c_int = 1;
@@ -43,6 +44,16 @@ const read_size_max: usize = 256 * 1024;
 /// than to allocate a large object for and shrink.
 pub const copy_threshold: usize = 64 * 1024;
 const inline_bufs = 16;
+
+/// Writes issued within one loop iteration are held here and sent together.
+///
+/// A protocol sends a response in pieces - a header block and a body, which is
+/// what ASGI and aiohttp both do - and writing each piece as it arrives costs a
+/// syscall per piece. Holding them until the iteration ends turns the whole
+/// response into one vectored write. Four slots covers the shapes that occur in
+/// practice; a protocol that writes more simply flushes when the batch fills,
+/// which is no worse than writing each one immediately.
+const pending_max = 4;
 
 var str_connection_made: ?*py.Object = null;
 var str_connection_lost: ?*py.Object = null;
@@ -92,6 +103,14 @@ pub const Transport = extern struct {
     flags: u32,
     kind: c_int,
     view: c.Py_buffer,
+
+    /// Writes accepted this iteration but not yet handed to libuv. `flush_next`
+    /// threads the transport onto the loop's flush list; see `pending_max`.
+    pending_bufs: [pending_max]uv.Buf,
+    pending_views: [pending_max]c.Py_buffer,
+    pending_count: usize,
+    pending_size: usize,
+    flush_next: ?*Transport,
 
     inline fn stream(self: *Transport) *uv.Stream {
         return @ptrCast(@as([*]u8, @ptrCast(self)) + handle_offset);
@@ -481,8 +500,66 @@ fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!vo
     try queueWrite(self, pending, views);
 }
 
+/// Hands everything accepted this iteration to libuv as one vectored write.
+///
+/// Called from the loop's check handle, and directly by anything that must not
+/// leave data sitting unwritten - closing, half-closing, or reporting the queue
+/// depth to the protocol.
+pub fn flushPending(self: *Transport) void {
+    const count = self.pending_count;
+    if (count == 0) return;
+    self.pending_count = 0;
+    self.pending_size = 0;
+    writeBufs(self, self.pending_bufs[0..count], self.pending_views[0..count]) catch {
+        // Nothing above us can act on a write failure - asyncio reports it
+        // through the protocol - and the views are already released.
+        const exc = c.PyErr_GetRaisedException();
+        forceClose(self, exc);
+    };
+}
+
+/// Drops writes that will never reach the socket, releasing what they pinned.
+pub fn discardPending(self: *Transport) void {
+    const count = self.pending_count;
+    self.pending_count = 0;
+    self.pending_size = 0;
+    releaseViews(self.pending_views[0..count]);
+}
+
+fn appendPending(self: *Transport, bufs: []const uv.Buf, views: []const c.Py_buffer) void {
+    for (bufs, views) |b, v| {
+        if (self.pending_count == pending_max) flushPending(self);
+        self.pending_bufs[self.pending_count] = b;
+        self.pending_views[self.pending_count] = v;
+        self.pending_count += 1;
+        self.pending_size += b.len;
+    }
+    loopmod.scheduleFlush(self.loopState(), self);
+    maybePauseProtocol(self);
+}
+
+/// Accepts a write, deferring the syscall to the end of the iteration.
+/// Takes ownership of `views` on every path.
+fn submitWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!void {
+    if (self.flags & CONN_LOST != 0) {
+        releaseViews(views);
+        return;
+    }
+    if (self.flags & (CLOSING | EOF_WRITTEN) != 0) {
+        releaseViews(views);
+        return py.errRuntime("Cannot call write() after write_eof() or close()");
+    }
+    appendPending(self, bufs, views);
+}
+
+/// What `write()` has accepted and not yet handed back to the socket, whether
+/// it is sitting in the pending batch or in libuv's queue.
+inline fn bufferedBytes(self: *Transport) usize {
+    return self.write_buffer_size + self.pending_size;
+}
+
 fn maybePauseProtocol(self: *Transport) void {
-    if (self.write_buffer_size <= self.high_water) return;
+    if (bufferedBytes(self) <= self.high_water) return;
     if (self.flags & PROTOCOL_PAUSED != 0) return;
     self.flags |= PROTOCOL_PAUSED;
     callProtocol(self, self.cb_pause_writing, null);
@@ -490,7 +567,7 @@ fn maybePauseProtocol(self: *Transport) void {
 
 fn maybeResumeProtocol(self: *Transport) void {
     if (self.flags & PROTOCOL_PAUSED == 0) return;
-    if (self.write_buffer_size > self.low_water) return;
+    if (bufferedBytes(self) > self.low_water) return;
     self.flags &= ~PROTOCOL_PAUSED;
     callProtocol(self, self.cb_resume_writing, null);
 }
@@ -568,6 +645,7 @@ pub fn closeFromLoop(handle: *uv.Handle) void {
 
 fn closeTransport(self: *Transport) void {
     if (self.flags & CLOSING != 0) return;
+    flushPending(self);
     self.flags |= CLOSING;
     if (self.flags & READING != 0) {
         _ = uv.uv_read_stop(self.stream());
@@ -577,6 +655,7 @@ fn closeTransport(self: *Transport) void {
 }
 
 fn forceClose(self: *Transport, exc: ?*py.Object) void {
+    discardPending(self);
     if (exc) |e| {
         py.clear(&self.conn_lost_exc);
         self.conn_lost_exc = e;
@@ -677,7 +756,7 @@ fn write(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
         return py.noneRef();
     }
     var bufs = [_]uv.Buf{.{ .base = @ptrCast(views[0].buf), .len = @intCast(views[0].len) }};
-    try writeBufs(self, &bufs, &views);
+    try submitWrite(self, &bufs, &views);
     return py.noneRef();
 }
 
@@ -710,13 +789,14 @@ fn writelines(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
         }
         bufs[filled] = .{ .base = @ptrCast(views[filled].buf), .len = @intCast(views[filled].len) };
     }
-    try writeBufs(self, bufs, views);
+    try submitWrite(self, bufs, views);
     return py.noneRef();
 }
 
 fn writeEof(self_obj: *py.Object) py.Error!*py.Object {
     const self = asTransport(self_obj);
     if (self.flags & (CONN_LOST | EOF_WRITTEN | CLOSING) != 0) return py.noneRef();
+    flushPending(self);
     self.flags |= EOF_WRITTEN;
     // A half-close must follow all writes that were accepted before this call.
     // The final write callback performs it when libuv still owns queued data.
@@ -730,7 +810,7 @@ fn canWriteEof(self_obj: *py.Object) py.Error!*py.Object {
 }
 
 fn getWriteBufferSize(self_obj: *py.Object) py.Error!*py.Object {
-    return py.int(asTransport(self_obj).write_buffer_size) orelse py.Error.Python;
+    return py.int(bufferedBytes(asTransport(self_obj))) orelse py.Error.Python;
 }
 
 fn getWriteBufferLimits(self_obj: *py.Object) py.Error!*py.Object {
@@ -944,6 +1024,10 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
         const r = py.visit(slot, visitproc, arg);
         if (r != 0) return r;
     }
+    for (self.pending_views[0..self.pending_count]) |view| {
+        const r = py.visit(@ptrCast(view.obj), visitproc, arg);
+        if (r != 0) return r;
+    }
     const managed = c.PyObject_VisitManagedDict(obj, visitproc, arg);
     if (managed != 0) return managed;
     return py.visit(@ptrCast(py.typeOf(obj.?)), visitproc, arg);
@@ -951,6 +1035,7 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
 
 fn clear_(obj: ?*py.Object) callconv(.c) c_int {
     const self = asTransport(obj.?);
+    discardPending(self);
     c.PyObject_ClearManagedDict(obj);
     py.clear(&self.base_extra);
     py.clear(&self.protocol);
