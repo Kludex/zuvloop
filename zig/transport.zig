@@ -132,6 +132,10 @@ var handle_offset: usize = 0;
 /// Retaining views rather than copying is what makes a large `write()` free:
 /// the exporter stays alive (and, for a bytearray, locked against resizing)
 /// until libuv reports the write complete.
+///
+/// The request does not take another Python reference to `transport`. The
+/// loop-owned handle reference remains alive until `onClosed`, and libuv runs
+/// every outstanding request callback before that close callback.
 const WriteReq = struct {
     transport: *Transport,
     size: usize,
@@ -418,7 +422,6 @@ fn onWritten(req: ?*uv.Write, status: c_int) callconv(.c) void {
     self.write_buffer_size -= @min(wr.size, self.write_buffer_size);
     wr.release();
     alloc.free(@as([*]u8, @ptrCast(wr))[0..wr.total]);
-    py.decref(self);
 
     if (status < 0) {
         forceClose(self, takeUvError(status));
@@ -455,10 +458,8 @@ fn queueWrite(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) py.E
     @memcpy(wr.bufs()[0..bufs.len], bufs);
     uv.setData(wr.req(), wr);
 
-    py.incref(self);
     const status = uv.uv_write(wr.req(), self.stream(), wr.bufs(), @intCast(bufs.len), onWritten);
     if (status < 0) {
-        py.decref(self);
         wr.release();
         alloc.free(raw);
         return py.errUv(status);
