@@ -197,8 +197,13 @@ fn onFlush(prepare: ?*uv.Prepare) callconv(.c) void {
     st.gilEnter();
     defer st.gilExit();
     drainFlushList(st);
-    _ = uv.uv_prepare_stop(st.flusher);
-    st.flusher_active = false;
+    // Flushing runs protocol code - `pause_writing` above all - which is free to
+    // write again, so the list can refill while it is being drained. Stopping
+    // then would strand those writes with nothing left to send them.
+    if (st.flush_head == null) {
+        _ = uv.uv_prepare_stop(st.flusher);
+        st.flusher_active = false;
+    }
 }
 
 /// Releases pending writes without sending them. A closing loop cannot deliver

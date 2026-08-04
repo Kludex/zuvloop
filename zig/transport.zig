@@ -515,7 +515,11 @@ pub fn flushPending(self: *Transport) void {
         // through the protocol - and the views are already released.
         const exc = c.PyErr_GetRaisedException();
         forceClose(self, exc);
+        return;
     };
+    // The socket may have taken the whole batch, in which case there is no write
+    // callback coming to lift a pause this transport is still under.
+    maybeResumeProtocol(self);
 }
 
 /// Drops writes that will never reach the socket, releasing what they pinned.
@@ -535,7 +539,6 @@ fn appendPending(self: *Transport, bufs: []const uv.Buf, views: []const c.Py_buf
         self.pending_size += b.len;
     }
     loopmod.scheduleFlush(self.loopState(), self);
-    maybePauseProtocol(self);
 }
 
 /// Accepts a write, deferring the syscall to the end of the iteration.
