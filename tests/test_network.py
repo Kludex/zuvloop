@@ -560,6 +560,31 @@ async def test_unix_sockets_round_trip() -> None:
         assert not path.exists()
 
 
+async def test_unix_server_cleanup_preserves_a_replacement_path() -> None:
+    loop = running_loop()
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "zuv.sock"
+        server = await loop.create_unix_server(Echo, path)
+        path.unlink()
+        path.write_text("replacement")
+
+        server.close()
+        await server.wait_closed()
+
+        assert path.read_text() == "replacement"
+
+
+async def test_unix_server_cleanup_tolerates_a_missing_path() -> None:
+    loop = running_loop()
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "zuv.sock"
+        server = await loop.create_unix_server(Echo, path)
+        path.unlink()
+
+        server.close()
+        await server.wait_closed()
+
+
 async def test_unix_server_rejects_conflicting_arguments() -> None:
     loop = running_loop()
     with socket.socket(socket.AF_UNIX) as sock:

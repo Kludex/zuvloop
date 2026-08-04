@@ -211,8 +211,14 @@ class ConnectionOperations(SocketOperations):
             _check_socket(sock, socket.SOCK_STREAM, family=socket.AF_UNIX)
             sock.setblocking(False)
         server = Server(self, [sock], protocol_factory, ssl, backlog, ssl_handshake_timeout, ssl_shutdown_timeout)
-        if cleanup_socket and path is not None:
-            server._cleanup_path = str(path)
+        if cleanup_socket and path is not None and not path.startswith("\0"):
+            try:
+                bound = os.stat(path)
+            except FileNotFoundError:
+                pass
+            else:
+                server._cleanup_path = path
+                server._cleanup_identity = (bound.st_dev, bound.st_ino)
         if start_serving:
             await server.start_serving()
         return server

@@ -39,6 +39,7 @@ class Server(asyncio.AbstractServer):
         self._serving = False
         self._waiters: list[asyncio.Future[None]] = []
         self._cleanup_path: str | None = None
+        self._cleanup_identity: tuple[int, int] | None = None
 
     @property
     def sockets(self) -> tuple[socket.socket, ...]:
@@ -97,9 +98,17 @@ class Server(asyncio.AbstractServer):
         for sock in sockets:
             self._loop.remove_reader(sock.fileno())
             sock.close()
-        if self._cleanup_path is not None:
-            os.unlink(self._cleanup_path)
-            self._cleanup_path = None
+        cleanup_path = self._cleanup_path
+        cleanup_identity = self._cleanup_identity
+        self._cleanup_path = None
+        self._cleanup_identity = None
+        if cleanup_path is not None and cleanup_identity is not None:
+            try:
+                current = os.stat(cleanup_path)
+                if (current.st_dev, current.st_ino) == cleanup_identity:
+                    os.unlink(cleanup_path)
+            except FileNotFoundError:
+                pass
         if self._active == 0:
             self._wakeup()
 
