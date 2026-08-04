@@ -61,6 +61,7 @@ pub const State = struct {
     pollers: pollermod.Map = .empty,
     scratch: ?[*]u8 = null,
     dns_requests: ?*anyopaque = null,
+    transport_head: ?*transportmod.Transport = null,
     flush_head: ?*transportmod.Transport = null,
 
     tstate: ?*c.PyThreadState = null,
@@ -948,6 +949,12 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
             r = py.visit(@ptrCast(pending), visitproc, arg);
             if (r != 0) return r;
             transport = pending.flush_next;
+        }
+        transport = st.transport_head;
+        while (transport) |owned| {
+            r = py.visit(@ptrCast(owned), visitproc, arg);
+            if (r != 0) return r;
+            transport = owned.owner_next;
         }
         r = pollermod.traverse(st, visitproc, arg);
         if (r != 0) return r;

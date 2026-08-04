@@ -133,6 +133,38 @@ def test_loop_close_releases_open_transports() -> None:
     assert sum(type(obj) is zuv.Transport for obj in gc.get_objects()) == before
 
 
+def test_live_loop_keeps_an_open_transport_alive() -> None:
+    class Receiver(asyncio.Protocol):
+        def __init__(self) -> None:
+            self.received = bytearray()
+
+        def data_received(self, data: bytes) -> None:
+            self.received += data
+
+    loop = zuv.new_event_loop()
+    left, right = socket.socketpair()
+    protocol = Receiver()
+    transport = loop._make_transport(left.fileno(), 1, protocol, None, None, None)
+    left.detach()
+    loop.run_until_complete(asyncio.sleep(0))
+    transport_ref = weakref.ref(transport)
+
+    del transport
+    gc.collect()
+
+    assert transport_ref() is not None
+    right.sendall(b"still watched")
+    loop.run_until_complete(asyncio.sleep(0.01))
+    assert protocol.received == b"still watched"
+
+    live_transport = transport_ref()
+    assert live_transport is not None
+    live_transport.close()
+    right.close()
+    loop.run_until_complete(asyncio.sleep(0))
+    loop.close()
+
+
 def test_loop_close_rejects_writes_from_buffer_finalizers() -> None:
     transport_box: list[asyncio.Transport] = []
 
