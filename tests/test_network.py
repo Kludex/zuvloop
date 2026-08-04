@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import os
 import socket
 import ssl
@@ -732,6 +733,13 @@ async def test_unix_server_closes_its_listener_when_the_cleanup_stat_fails() -> 
         # notice, which would report it against whatever runs next.
         with pytest.raises(ConnectionRefusedError):
             await asyncio.open_unix_connection(str(path))
+
+
+async def test_unix_server_rejects_an_unusable_path_before_opening_a_socket() -> None:
+    loop = running_loop()
+    with pytest.raises(TypeError):
+        await loop.create_unix_server(Echo, object())  # type: ignore[arg-type]
+    gc.collect()
 
 
 async def test_unix_server_rejects_conflicting_arguments() -> None:
