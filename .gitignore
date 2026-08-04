@@ -1,0 +1,12 @@
+.zig-cache/
+zig-out/
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
