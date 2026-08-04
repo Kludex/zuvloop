@@ -768,6 +768,7 @@ async def test_wait_closed_tolerates_a_cancelled_waiter() -> None:
     waiting.cancel()
     with pytest.raises(asyncio.CancelledError):
         await waiting
+    assert server._waiters == []
     writer.close()
     await writer.wait_closed()
     await server.wait_closed()

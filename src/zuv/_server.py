@@ -137,7 +137,13 @@ class Server(asyncio.AbstractServer):
             return
         waiter = self._loop.create_future()
         self._waiters.append(waiter)
-        await waiter
+        try:
+            await waiter
+        finally:
+            try:
+                self._waiters.remove(waiter)
+            except ValueError:
+                pass
 
     async def serve_forever(self) -> None:
         self._start_serving()
