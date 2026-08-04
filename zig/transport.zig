@@ -25,9 +25,14 @@ const PROTOCOL_PAUSED: u32 = 1 << 5;
 const OPEN: u32 = 1 << 6;
 pub const FLUSH_QUEUED: u32 = 1 << 7;
 const HANDLE_REF: u32 = 1 << 8;
+/// The tracked object is a pipe this transport owns, so closing it is the
+/// transport's job. A socket view is only detached - libuv owns its descriptor.
+const PIPE_OWNED: u32 = 1 << 9;
 
 pub const KIND_TCP: c_int = 0;
 pub const KIND_PIPE: c_int = 1;
+/// A pipe whose descriptor is write-only, so no read is ever started on it.
+pub const KIND_PIPE_WRITE: c_int = 2;
 
 const default_high_water: usize = 64 * 1024;
 /// Reads land in a `bytes` object sized to what the peer has been sending.
@@ -66,6 +71,7 @@ var str_pause_writing: ?*py.Object = null;
 var str_resume_writing: ?*py.Object = null;
 var str_detach: ?*py.Object = null;
 var str_sock_detach: ?*py.Object = null;
+var str_pipe_close: ?*py.Object = null;
 var str_high: ?*py.Object = null;
 var str_low: ?*py.Object = null;
 var str_start_reading: ?*py.Object = null;
@@ -604,7 +610,8 @@ fn shutdownWrite(self: *Transport) void {
 fn releaseSocketView(self: *Transport) void {
     const view = self.socket_view orelse return;
     self.socket_view = null;
-    const result = c.PyObject_CallMethodNoArgs(view, str_sock_detach);
+    const method = if (self.flags & PIPE_OWNED != 0) str_pipe_close else str_sock_detach;
+    const result = c.PyObject_CallMethodNoArgs(view, method);
     if (result) |r| py.decref(r) else c.PyErr_Clear();
     py.decref(view);
 }
@@ -726,6 +733,18 @@ fn abort(self_obj: *py.Object) py.Error!*py.Object {
 
 fn getProtocol(self_obj: *py.Object) py.Error!*py.Object {
     return py.newref(asTransport(self_obj).protocol orelse py.none()).?;
+}
+
+/// `_adopt_pipe(pipe)`: the pipe this transport was handed. asyncio makes the
+/// transport its owner, so it is closed when the transport is - unlike a socket
+/// view, whose descriptor belongs to libuv and is only detached.
+fn adoptPipe(self_obj: *py.Object, pipe: *py.Object) py.Error!*py.Object {
+    const self = asTransport(self_obj);
+    py.clear(&self.socket_view);
+    py.incref(pipe);
+    self.socket_view = pipe;
+    self.flags |= PIPE_OWNED;
+    return py.noneRef();
 }
 
 /// `_adopt_socket_view(sock)`: the socket object mirroring libuv's descriptor.
@@ -930,8 +949,9 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
     bindProtocol(self, args[2].?);
     const connection_made = c.PyObject_GetAttr(args[2].?, str_connection_made) orelse return py.Error.Python;
     defer py.decref(connection_made);
-    const start = c.PyObject_GetAttr(obj, str_start_reading) orelse return py.Error.Python;
-    defer py.decref(start);
+    const reads = kind != KIND_PIPE_WRITE;
+    const start = if (reads) c.PyObject_GetAttr(obj, str_start_reading) orelse return py.Error.Python else null;
+    defer if (start) |s| py.decref(s);
 
     const connection_handle = try handlemod.create(
         handlemod.handle_type.?,
@@ -941,8 +961,11 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
         null,
     );
     errdefer py.decref(connection_handle);
-    const start_handle = try handlemod.create(handlemod.handle_type.?, self_obj, start, &.{}, null);
-    errdefer py.decref(start_handle);
+    const start_handle = if (start) |s|
+        try handlemod.create(handlemod.handle_type.?, self_obj, s, &.{}, null)
+    else
+        null;
+    errdefer if (start_handle) |h| py.decref(h);
     const waiter_handle = if (!py.isNone(args[3].?))
         try handlemod.create(
             handlemod.handle_type.?,
@@ -954,7 +977,10 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
     else
         null;
     errdefer if (waiter_handle) |h| py.decref(h);
-    st.ready.ensureUnusedCapacity(if (waiter_handle == null) 2 else 3) catch return py.errNoMemory();
+    var queued: usize = 1;
+    if (start_handle != null) queued += 1;
+    if (waiter_handle != null) queued += 1;
+    st.ready.ensureUnusedCapacity(queued) catch return py.errNoMemory();
 
     const init_status = if (kind == KIND_TCP)
         uv.uv_tcp_init_ex(st.uvloop, @ptrCast(self.stream()), 0)
@@ -998,7 +1024,7 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
     st.transport_head = self;
 
     st.ready.pushAssumeCapacity(@ptrCast(connection_handle));
-    st.ready.pushAssumeCapacity(@ptrCast(start_handle));
+    if (start_handle) |h| st.ready.pushAssumeCapacity(@ptrCast(h));
     if (waiter_handle) |h| st.ready.pushAssumeCapacity(@ptrCast(h));
     loopmod.startIdle(st);
     return obj;
@@ -1092,6 +1118,7 @@ var methods = [_]c.PyMethodDef{
     py.methodNoArgs("get_protocol", getProtocol, "Return the current protocol."),
     py.methodO("set_protocol", setProtocol, "Replace the current protocol."),
     py.methodO("_adopt_socket_view", adoptSocketView, "Track the socket object mirroring libuv's descriptor."),
+    py.methodO("_adopt_pipe", adoptPipe, "Take ownership of the pipe object backing this transport."),
     py.methodNoArgs("is_reading", isReading, "Return True while reads are delivered."),
     py.methodNoArgs("pause_reading", pauseReading, "Stop delivering reads."),
     py.methodNoArgs("resume_reading", resumeReading, "Resume delivering reads."),
@@ -1140,6 +1167,7 @@ pub fn register(module: *py.Object) py.Error!void {
     str_resume_writing = py.intern("resume_writing") orelse return py.Error.Python;
     str_detach = py.intern("_detach") orelse return py.Error.Python;
     str_sock_detach = py.intern("detach") orelse return py.Error.Python;
+    str_pipe_close = py.intern("close") orelse return py.Error.Python;
     str_high = py.intern("high") orelse return py.Error.Python;
     str_low = py.intern("low") orelse return py.Error.Python;
     str_start_reading = py.intern("_start_reading") orelse return py.Error.Python;
@@ -1168,4 +1196,5 @@ pub fn register(module: *py.Object) py.Error!void {
     if (c.PyModule_AddObjectRef(module, "Transport", @ptrCast(transport_type)) < 0) return py.Error.Python;
     if (c.PyModule_AddIntConstant(module, "KIND_TCP", KIND_TCP) < 0) return py.Error.Python;
     if (c.PyModule_AddIntConstant(module, "KIND_PIPE", KIND_PIPE) < 0) return py.Error.Python;
+    if (c.PyModule_AddIntConstant(module, "KIND_PIPE_WRITE", KIND_PIPE_WRITE) < 0) return py.Error.Python;
 }

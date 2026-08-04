@@ -4,6 +4,7 @@ import asyncio
 import os
 import socket
 import ssl as ssl_module
+import stat
 from asyncio import sslproto, trsock
 from collections.abc import Callable, Sequence
 from typing import Any, cast
@@ -557,11 +558,43 @@ class ConnectionOperations(SocketOperations):
     async def subprocess_shell(self, *args: Any, **kwargs: Any) -> tuple[asyncio.SubprocessTransport, Any]:
         raise NotImplementedError("zuv does not implement subprocesses yet")
 
-    async def connect_read_pipe(self, *args: Any, **kwargs: Any) -> tuple[asyncio.ReadTransport, Any]:
-        raise NotImplementedError("zuv does not implement pipe transports yet")
+    async def connect_read_pipe(
+        self, protocol_factory: Callable[[], asyncio.BaseProtocol], pipe: Any
+    ) -> tuple[asyncio.ReadTransport, Any]:
+        return await self._connect_pipe(protocol_factory, pipe, _zuv.KIND_PIPE)
 
-    async def connect_write_pipe(self, *args: Any, **kwargs: Any) -> tuple[asyncio.WriteTransport, Any]:
-        raise NotImplementedError("zuv does not implement pipe transports yet")
+    async def connect_write_pipe(
+        self, protocol_factory: Callable[[], asyncio.BaseProtocol], pipe: Any
+    ) -> tuple[asyncio.WriteTransport, Any]:
+        return await self._connect_pipe(protocol_factory, pipe, _zuv.KIND_PIPE_WRITE)
+
+    async def _connect_pipe(
+        self, protocol_factory: Callable[[], asyncio.BaseProtocol], pipe: Any, kind: int
+    ) -> tuple[_zuv.Transport, Any]:
+        fd = pipe.fileno()
+        mode = os.fstat(fd).st_mode
+        if not (stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode) or stat.S_ISCHR(mode)):
+            raise ValueError("Pipe transport is only for pipes, sockets and character devices")
+        os.set_blocking(fd, False)
+
+        protocol = protocol_factory()
+        waiter = self.create_future()
+        extra = {"pipe": pipe}
+        # The transport owns the descriptor from here; `pipe` keeps a duplicate
+        # so that closing the transport closes exactly one of them.
+        duplicate = os.dup(fd)
+        try:
+            transport = self._make_transport(duplicate, kind, protocol, waiter, extra, None)
+        except BaseException:
+            os.close(duplicate)
+            raise
+        transport._adopt_pipe(pipe)
+        try:
+            await waiter
+        except BaseException:
+            transport.close()
+            raise
+        return transport, protocol
 
 
 def _check_ssl_args(ssl: _SSLArg, server_hostname: str | None, host: str | None) -> str | None:
