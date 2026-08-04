@@ -45,10 +45,10 @@ reported, with the run-to-run spread beside it.
 | bulk stream | 7.9 GiB/s | 9.1 GiB/s | **9.8 GiB/s** | **1.08x** |
 | loop iterations (`sleep(0)`) | 72.2k/s | 79.6k/s | 79.8k/s | 1.00x |
 | echo round trips, 1 KiB | 47.2k/s | 57.2k/s | **60.0k/s** | **1.05x** |
-| uvicorn, plaintext | 54.1k req/s | 68.4k req/s | 66.8k req/s | 0.98x |
-| uvicorn, 10 KiB body | 51.7k req/s | 67.6k req/s | 64.1k req/s | 0.95x |
-| aiohttp server | 47.7k req/s | 59.8k req/s | 56.3k req/s | 0.94x |
-| aiohttp client | 13.0k req/s | 15.6k req/s | 15.1k req/s | 0.97x |
+| uvicorn, plaintext | 52.2k req/s | 70.1k req/s | 63.2k req/s | 0.90x |
+| uvicorn, 10 KiB body | 50.7k req/s | 68.4k req/s | 63.2k req/s | 0.92x |
+| aiohttp server | 48.8k req/s | 60.2k req/s | 57.8k req/s | 0.96x |
+| aiohttp client | 12.5k req/s | 16.1k req/s | 15.0k req/s | 0.93x |
 | `getaddrinfo`, numeric host | 27.8k/s | 1.50M/s | 897k/s | 0.59x |
 
 Scheduling and timers are where the design differs most: arguments live inside the handle
@@ -61,8 +61,11 @@ and allocating a large object to shrink it again costs more than the copy. Above
 fills the final object directly and nothing is copied. The threshold the transport is judged
 against follows the traffic, doubling whenever a read fills the buffer.
 
-**uvloop is still slightly ahead on real HTTP serving** - 2 to 6% across uvicorn and aiohttp,
-against a run-to-run spread of about 1%. zuv is 17 to 24% faster than stock asyncio there.
+**uvloop is still ahead on real HTTP serving** - 4 to 10% across uvicorn and aiohttp, against a
+run-to-run spread of 1 to 3%. zuv is 18 to 25% faster than stock asyncio there. The HTTP rows
+depend as much on the server's parser as on the loop, so `uvicorn` is measured with `httptools`
+and the benchmark prints which parser it found; the same numbers on uvicorn's pure-Python
+fallback are a third as large for every loop, and say nothing about the loop at all.
 The remaining gap is on the write side, not the read side. `getaddrinfo` is the other gap:
 uvloop parses address literals itself, while zuv hands them to libc with `AI_NUMERICHOST`,
 which is slower but cannot disagree with `socket.getaddrinfo`. It is still 32x asyncio.
