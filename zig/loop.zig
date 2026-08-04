@@ -58,6 +58,7 @@ pub const State = struct {
     timers: collections.Timers = .empty,
     inbox: Inbox = .{},
     pollers: pollermod.Map = .empty,
+    scratch: ?[*]u8 = null,
     dns_requests: ?*anyopaque = null,
 
     tstate: ?*c.PyThreadState = null,
@@ -177,6 +178,15 @@ fn onCloseFreeState(handle: ?*uv.Handle) callconv(.c) void {
 
 // ---------------------------------------------------------------------------
 // scheduling internals
+
+/// Landing buffer for reads small enough that copying beats allocating a
+/// right-sized object up front. Grown once, reused for the loop's lifetime.
+pub fn scratchBuffer(st: *State) ?[*]u8 {
+    if (st.scratch) |b| return b;
+    const buf = alloc.alloc(u8, transportmod.copy_threshold) catch return null;
+    st.scratch = buf.ptr;
+    return buf.ptr;
+}
 
 pub inline fn startIdle(st: *State) void {
     if (!st.idle_active and st.ready.len != 0) {

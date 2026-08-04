@@ -36,6 +36,12 @@ const default_high_water: usize = 64 * 1024;
 /// whenever a read fills the buffer and easing back when it does not.
 const read_size_min: usize = 16 * 1024;
 const read_size_max: usize = 256 * 1024;
+
+/// Below this, a read is copied out of a shared buffer into an exactly sized
+/// `bytes`; above it, libuv fills the final object directly. Small requests -
+/// an HTTP header block is a couple of hundred bytes - are far cheaper to copy
+/// than to allocate a large object for and shrink.
+pub const copy_threshold: usize = 64 * 1024;
 const inline_bufs = 16;
 
 var str_connection_made: ?*py.Object = null;
@@ -259,20 +265,26 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
         return;
     }
 
-    // Read straight into a bytes object: libuv fills the final buffer, so the
-    // protocol gets its data without a second copy.
+    py.clear(&self.read_bytes);
+    if (self.read_size <= copy_threshold) {
+        // Small traffic: read into the shared buffer and allocate exactly what
+        // arrived. A null read_bytes marks this path for onRead.
+        if (loopmod.scratchBuffer(st)) |scratch| {
+            buf.* = .{ .base = scratch, .len = self.read_size };
+            return;
+        }
+    }
+    // Bulk traffic: libuv fills the final object, so nothing is copied.
     const target = c.PyBytes_FromStringAndSize(null, @intCast(self.read_size)) orelse {
         c.PyErr_Clear();
         buf.* = .{ .base = @ptrFromInt(@alignOf(u8)), .len = 0 };
         return;
     };
-    py.xdecref(self.read_bytes);
     self.read_bytes = target;
     buf.* = .{ .base = @ptrCast(c.PyBytes_AsString(target)), .len = self.read_size };
 }
 
 fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) void {
-    _ = buf;
     const self: *Transport = @ptrCast(@alignCast(uv.getData(stream.?)));
     const st = self.loopState();
     st.gilEnter();
@@ -292,13 +304,22 @@ fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) vo
             return;
         }
         adjustReadSize(self, @intCast(nread));
-        var data = self.read_bytes orelse return;
-        self.read_bytes = null;
+        const data = blk: {
+            if (self.read_bytes) |owned| {
+                self.read_bytes = null;
+                var resized = owned;
+                if (c._PyBytes_Resize(@ptrCast(&resized), @intCast(nread)) < 0) {
+                    c.PyErr_Clear();
+                    return;
+                }
+                break :blk resized;
+            }
+            break :blk py.bytes(buf.base[0..@intCast(nread)]) orelse {
+                c.PyErr_Clear();
+                return;
+            };
+        };
         defer py.decref(data);
-        if (c._PyBytes_Resize(@ptrCast(&data), @intCast(nread)) < 0) {
-            c.PyErr_Clear();
-            return;
-        }
         callInContext(self, self.cb_data_received, data);
         return;
     }
