@@ -552,6 +552,30 @@ async def test_server_factory_failure_does_not_prevent_wait_closed(
     assert isinstance(errors[0], RuntimeError)
 
 
+async def test_failure_after_transport_adoption_detaches_server_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    loop = running_loop()
+    errors: list[BaseException | None] = []
+    loop.set_exception_handler(lambda _loop, context: errors.append(context.get("exception")))
+
+    def fail_to_track(_server: Server, _transport: asyncio.Transport) -> None:
+        raise RuntimeError("cannot track transport")
+
+    monkeypatch.setattr(Server, "_attach", fail_to_track)
+    server = await loop.create_server(Echo, "127.0.0.1", 0)
+    client = socket.socket()
+    client.setblocking(False)
+    try:
+        await loop.sock_connect(client, server.sockets[0].getsockname())
+        await asyncio.sleep(0.05)
+    finally:
+        client.close()
+        server.close()
+
+    await asyncio.wait_for(server.wait_closed(), 2)
+    assert server._active == 0
+    assert any(isinstance(error, RuntimeError) for error in errors)
+
+
 async def test_serve_forever_runs_until_cancelled() -> None:
     server, port, _ = await start_echo()
     loop = running_loop()

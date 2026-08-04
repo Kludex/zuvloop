@@ -81,8 +81,12 @@ class Server(asyncio.AbstractServer):
             try:
                 self._loop._accept_connection(conn, self._protocol_factory, self)
             except BaseException:
-                conn.close()
-                self._detach()
+                # Before transport adoption, the accepted socket and active
+                # count are still ours. Afterwards the native close callback
+                # owns both, including failure cleanup.
+                if conn.fileno() != -1:
+                    conn.close()
+                    self._detach()
                 raise
 
     def _attach(self, transport: asyncio.Transport) -> None:
