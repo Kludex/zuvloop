@@ -66,7 +66,11 @@ run-to-run spread of 1 to 3%. zuv is 18 to 25% faster than stock asyncio there. 
 depend as much on the server's parser as on the loop, so `uvicorn` is measured with `httptools`
 and the benchmark prints which parser it found; the same numbers on uvicorn's pure-Python
 fallback are a third as large for every loop, and say nothing about the loop at all.
-The remaining gap is on the write side, not the read side. `getaddrinfo` is the other gap:
+The gap is one thing, and `benchmarks/write_batching.py` isolates it: a response sent as a single
+`write()` puts zuv slightly ahead of uvloop, and splitting the same response into two - a header
+write and a body write, which is what ASGI and aiohttp both do - drops it to 0.94x. uvloop
+coalesces consecutive writes into one vectored syscall; zuv issues each one as it arrives, so
+every response costs it an extra `write(2)`. `getaddrinfo` is the other gap:
 uvloop parses address literals itself, while zuv hands them to libc with `AI_NUMERICHOST`,
 which is slower but cannot disagree with `socket.getaddrinfo`. It is still 32x asyncio.
 
