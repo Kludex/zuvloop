@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
 import json
 import socket
 import statistics
@@ -114,8 +115,13 @@ def main() -> int:
     factories = loop_factories()
     samples: dict[str, dict[str, list[float]]] = {name: {k: [] for k in factories} for name in BODY_SIZES}
 
+    # Which parser uvicorn picked decides most of the throughput, so it belongs
+    # in the header: without httptools the numbers are a third of what they
+    # should be, uniformly across loops, and nothing else says so.
+    parser_name = "httptools" if importlib.util.find_spec("httptools") else "h11 (install httptools)"
     print(
-        f"python {sys.version.split()[0]}  libuv {zuv.libuv_version()}  oha -c {args.connections} -z {args.duration}\n"
+        f"python {sys.version.split()[0]}  libuv {zuv.libuv_version()}  uvicorn {uvicorn.__version__}"
+        f"  {parser_name}  oha -c {args.connections} -z {args.duration}\n"
     )
     for round_index in range(args.rounds):
         for body_name, size in BODY_SIZES.items():
