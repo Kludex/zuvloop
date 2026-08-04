@@ -39,17 +39,17 @@ reported, with the run-to-run spread beside it.
 
 | Benchmark | asyncio | uvloop | zuv | zuv / uvloop |
 | --- | ---: | ---: | ---: | ---: |
-| `call_soon` | 2.76M/s | 4.73M/s | **6.04M/s** | **1.28x** |
-| `call_soon` with arguments | 2.40M/s | 3.66M/s | **6.14M/s** | **1.68x** |
-| timer schedule + cancel | 1.52M/s | 2.52M/s | **9.73M/s** | **3.85x** |
-| bulk stream | 8.3 GiB/s | 8.7 GiB/s | **10.5 GiB/s** | **1.22x** |
-| loop iterations (`sleep(0)`) | 74.8k/s | 80.4k/s | 80.1k/s | 1.00x |
-| echo round trips, 1 KiB | 41.3k/s | 57.3k/s | **59.2k/s** | **1.03x** |
-| uvicorn, plaintext | 50.5k req/s | 67.0k req/s | **71.8k req/s** | **1.07x** |
-| uvicorn, 10 KiB body | 48.2k req/s | 65.1k req/s | **68.6k req/s** | **1.05x** |
-| aiohttp server | 47.5k req/s | 58.7k req/s | **60.2k req/s** | **1.03x** |
-| aiohttp client | 12.7k req/s | 15.6k req/s | **16.1k req/s** | **1.03x** |
-| `getaddrinfo`, numeric host | 29.2k/s | 1.53M/s | 898k/s | 0.59x |
+| `call_soon` | 2.69M/s | 4.69M/s | **5.91M/s** | **1.26x** |
+| `call_soon` with arguments | 2.43M/s | 3.87M/s | **6.47M/s** | **1.67x** |
+| timer schedule + cancel | 1.58M/s | 2.62M/s | **9.55M/s** | **3.64x** |
+| bulk stream | 8.4 GiB/s | 8.5 GiB/s | **10.2 GiB/s** | **1.20x** |
+| loop iterations (`sleep(0)`) | 73.2k/s | 78.2k/s | 78.2k/s | 1.00x |
+| echo round trips, 1 KiB | 39.0k/s | 56.8k/s | **58.5k/s** | **1.03x** |
+| uvicorn, plaintext | 55.3k req/s | 71.9k req/s | **75.9k req/s** | **1.06x** |
+| uvicorn, 10 KiB body | 52.6k req/s | 68.7k req/s | **73.6k req/s** | **1.07x** |
+| aiohttp server | 49.0k req/s | 59.8k req/s | **60.6k req/s** | **1.01x** |
+| aiohttp client | 13.2k req/s | 16.2k req/s | **16.9k req/s** | **1.04x** |
+| `getaddrinfo`, numeric host | 28.5k/s | 1.57M/s | **1.90M/s** | **1.21x** |
 
 Scheduling and timers are where the design differs most: arguments live inside the handle
 rather than in a tuple, and timers share one `uv_timer_t` behind a heap instead of taking a
@@ -75,9 +75,14 @@ The HTTP rows depend as much on the server's parser as on the loop, so `uvicorn`
 `httptools` and the benchmark prints which parser it found; the same numbers on uvicorn's
 pure-Python fallback are a third as large for every loop, and say nothing about the loop at all.
 
-`getaddrinfo` is the one benchmark uvloop still wins:
-uvloop parses address literals itself, while zuv hands them to libc with `AI_NUMERICHOST`,
-which is slower but cannot disagree with `socket.getaddrinfo`. It is still 32x asyncio.
+Address literals are answered without entering libc. `getaddrinfo` costs around half a
+microsecond even under `AI_NUMERICHOST`, where it has nothing to look up but still builds a chain,
+takes the resolver's locks and has to be freed; `inet_pton` is an order of magnitude cheaper.
+Everything the shortcut cannot answer identically is refused and falls back to libc - a scoped
+address, whose zone only libc can resolve, a legacy form like `127.1` that `inet_pton` rejects,
+an unspecified socket type, or any flag that could change the answer. Across 2430 combinations of
+host, port, family, type and flags, this agrees with `socket.getaddrinfo` on exactly the cases it
+did before the shortcut existed.
 
 ## Compatibility
 
