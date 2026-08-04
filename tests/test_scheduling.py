@@ -250,3 +250,18 @@ async def test_repr_describes_the_loop() -> None:
 
 async def test_libuv_version_is_reported() -> None:
     assert zuv.libuv_version().count(".") == 2
+
+
+async def test_handles_are_weak_referenceable() -> None:
+    """asyncio's handles support weak references, so these must too."""
+    import weakref
+
+    loop = running_loop()
+    handle = loop.call_soon(print)
+    timer = loop.call_later(30, print)
+    try:
+        assert weakref.ref(handle)() is handle
+        assert weakref.ref(timer)() is timer
+    finally:
+        handle.cancel()
+        timer.cancel()

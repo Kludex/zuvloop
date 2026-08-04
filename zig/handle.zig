@@ -117,6 +117,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     const self: *Handle = @ptrCast(@alignCast(obj.?));
     const tp = py.typeOf(obj.?);
     c.PyObject_GC_UnTrack(obj);
+    c.PyObject_ClearWeakRefs(obj);
     clearArgs(self);
     py.clear(&self.loop);
     py.clear(&self.callback);
@@ -234,7 +235,9 @@ fn slots(methods: [*]c.PyMethodDef) [8]c.PyType_Slot {
 var handle_slots = slots(&handle_methods);
 var timer_slots = slots(&timer_methods);
 
-const flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | c.Py_TPFLAGS_IMMUTABLETYPE | c.Py_TPFLAGS_DISALLOW_INSTANTIATION;
+// asyncio's handles are weak-referenceable, so these must be too.
+const flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | c.Py_TPFLAGS_MANAGED_WEAKREF |
+    c.Py_TPFLAGS_IMMUTABLETYPE | c.Py_TPFLAGS_DISALLOW_INSTANTIATION;
 
 var handle_spec = c.PyType_Spec{
     .name = "zuv._zuv.Handle",

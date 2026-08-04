@@ -686,3 +686,16 @@ async def test_tls_defaults_the_server_hostname_to_the_host(
         transport, _protocol = await loop.create_connection(Collector, "localhost", port, ssl=client_context)
         transport.close()
         await asyncio.sleep(0.05)
+
+
+async def test_transports_are_weak_referenceable() -> None:
+    import weakref
+
+    server, port, _ = await start_echo()
+    loop = asyncio.get_running_loop()
+    async with server:
+        transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
+        assert weakref.ref(transport)() is transport
+        transport.close()
+        assert protocol.done is not None
+        await protocol.done

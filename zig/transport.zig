@@ -772,6 +772,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     const self = asTransport(obj.?);
     const tp = py.typeOf(obj.?);
     c.PyObject_GC_UnTrack(obj);
+    c.PyObject_ClearWeakRefs(obj);
     if (self.view.obj != null) c.PyBuffer_Release(&self.view);
     py.clear(&self.read_bytes);
     py.clear(&self.loop);
@@ -866,7 +867,8 @@ var spec = c.PyType_Spec{
     .name = "zuv._zuv.Transport",
     .basicsize = 0,
     .itemsize = 0,
-    .flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | c.Py_TPFLAGS_IMMUTABLETYPE | c.Py_TPFLAGS_DISALLOW_INSTANTIATION,
+    .flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | c.Py_TPFLAGS_MANAGED_WEAKREF |
+        c.Py_TPFLAGS_IMMUTABLETYPE | c.Py_TPFLAGS_DISALLOW_INSTANTIATION,
     .slots = &slots,
 };
 
