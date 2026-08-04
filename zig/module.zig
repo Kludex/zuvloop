@@ -26,6 +26,9 @@ fn exec(module: ?*py.Object) callconv(.c) c_int {
 var slots = [_]c.PyModuleDef_Slot{
     .{ .slot = c.Py_mod_exec, .value = @ptrCast(@constCast(&exec)) },
     .{ .slot = c.Py_mod_multiple_interpreters, .value = c.Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED },
+    // Process-global type caches and GIL-based loop transitions are not safe
+    // to run concurrently. CPython 3.14t therefore loads zuv with its
+    // compatibility GIL instead of treating the extension as free-thread-safe.
     .{ .slot = c.Py_mod_gil, .value = c.Py_MOD_GIL_USED },
     .{ .slot = 0, .value = null },
 };

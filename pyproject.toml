@@ -40,7 +40,6 @@ docs = ["zensical"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zuv"]
-artifacts = ["src/zuv/*.so"]
 
 [tool.hatch.build.targets.wheel.hooks.custom]
 path = "hatch_build.py"
@@ -77,7 +76,12 @@ disallow_subclassing_any = false
 addopts = "--strict-config --strict-markers"
 testpaths = ["tests"]
 xfail_strict = true
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # The extension is intentionally loaded with CPython's compatibility GIL
+    # on 3.14t until its process-global state is synchronized.
+    "ignore:The global interpreter lock:RuntimeWarning",
+]
 
 [tool.coverage.run]
 source_pkgs = ["zuv"]

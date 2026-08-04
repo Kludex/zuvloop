@@ -12,11 +12,14 @@ alone is enough.
 
 | | |
 | --- | --- |
-| Python | 3.14 or newer |
+| Python | CPython 3.14 or free-threaded 3.14t |
 | Platform | Linux, macOS |
 
 Windows is not supported. The loop is built on libuv's Unix backend, and the
 socket setup is written against POSIX semantics.
+
+On free-threaded CPython, zuv enables the compatibility GIL when imported. The
+extension does not yet claim that its process-global state is safe without it.
 
 libuv is vendored and compiled into the extension. There is nothing to install
 separately, and no system libuv is used even if one is present.

@@ -33,9 +33,9 @@ pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!vo
     if (family == AF_UNIX) {
         var path: [*c]const u8 = undefined;
         var len: c.Py_ssize_t = 0;
-        if (c.PyUnicode_Check(address) != 0) {
+        if (py.isUnicode(address)) {
             path = c.PyUnicode_AsUTF8AndSize(address, &len) orelse return py.Error.Python;
-        } else if (c.PyBytes_Check(address) != 0) {
+        } else if (py.isBytes(address)) {
             path = c.PyBytes_AsString(address);
             len = c.PyBytes_Size(address);
         } else {
@@ -48,7 +48,7 @@ pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!vo
         return;
     }
 
-    if (c.PyTuple_Check(address) == 0) return py.errType("address must be a tuple");
+    if (!py.isTuple(address)) return py.errType("address must be a tuple");
     const size = c.PyTuple_Size(address);
     if (size < 2) return py.errType("address tuple must be (host, port)");
 

@@ -4,10 +4,13 @@ import asyncio
 import concurrent.futures
 import gc
 import socket
+import sys
+import sysconfig
 import threading
 import time
 import weakref
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast
 
 import pytest
 
@@ -17,6 +20,14 @@ from zuv._base import _shutdown_executor
 from zuv._connect import ConnectionOperations
 
 pytestmark = pytest.mark.anyio
+
+
+def test_free_threaded_build_uses_compatibility_gil() -> None:  # pragma: no cover - interpreter-specific
+    if not sysconfig.get_config_var("Py_GIL_DISABLED"):
+        pytest.skip("requires free-threaded CPython")
+
+    is_gil_enabled = cast("Callable[[], bool]", getattr(sys, "_is_gil_enabled"))
+    assert is_gil_enabled()
 
 
 def test_run_returns_the_coroutine_result() -> None:

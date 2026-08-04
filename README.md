@@ -114,7 +114,8 @@ controllable clock should schedule against one explicitly.
 
 ## Requirements
 
-- Python 3.14 or newer
+- CPython 3.14, with either the regular or free-threaded (`3.14t`) build. The
+  extension uses the compatibility GIL when loaded by free-threaded CPython.
 - Linux or macOS
 - [Zig](https://ziglang.org/download/) 0.16 to build from source
 

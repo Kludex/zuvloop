@@ -118,12 +118,12 @@ fn copyZ(dst: []u8, value: *py.Object, what: [:0]const u8) py.Error!?[*:0]const 
     if (py.isNone(value)) return null;
     var len: c.Py_ssize_t = 0;
     var src: [*c]const u8 = undefined;
-    if (c.PyUnicode_Check(value) != 0) {
+    if (py.isUnicode(value)) {
         src = c.PyUnicode_AsUTF8AndSize(value, &len) orelse return py.Error.Python;
-    } else if (c.PyBytes_Check(value) != 0) {
+    } else if (py.isBytes(value)) {
         src = c.PyBytes_AsString(value);
         len = c.PyBytes_Size(value);
-    } else if (c.PyLong_Check(value) != 0) {
+    } else if (py.isLong(value)) {
         const n = try py.asCInt(value);
         const rendered = std.fmt.bufPrint(dst[0 .. dst.len - 1], "{d}", .{n}) catch return py.errValue("value out of range");
         dst[rendered.len] = 0;

@@ -91,4 +91,5 @@ the loop emits OpenTelemetry without you importing an SDK.
 
 ## Requirements
 
-Python 3.14+, on Linux or macOS.
+CPython 3.14 or its free-threaded 3.14t build, on Linux or macOS. The extension
+uses the compatibility GIL on 3.14t.

@@ -7,26 +7,31 @@ const uv = @import("uv.zig");
 pub const Object = c.PyObject;
 pub const Ref = *Object;
 
+// CPython's free-threaded refcount macros expand to private inline helpers.
+// Calling the public functions there avoids unresolved private symbols in the
+// extension while retaining the cheaper inline path on the regular 3.14 ABI.
+const inline_refcount = @hasDecl(c, "Py_INCREF") and !@hasDecl(c, "Py_GIL_DISABLED") and c.PY_VERSION_HEX >= 0x030E0000;
+
 pub inline fn incref(o: anytype) void {
-    c.Py_INCREF(@ptrCast(o));
+    if (comptime inline_refcount) c.Py_INCREF(@ptrCast(o)) else c.Py_IncRef(@ptrCast(o));
 }
 
 pub inline fn decref(o: anytype) void {
-    c.Py_DECREF(@ptrCast(o));
+    if (comptime inline_refcount) c.Py_DECREF(@ptrCast(o)) else c.Py_DecRef(@ptrCast(o));
 }
 
 pub inline fn xdecref(o: ?*Object) void {
-    if (o) |p| c.Py_DECREF(p);
+    if (o) |p| decref(p);
 }
 
 pub inline fn clear(slot: *?*Object) void {
     const old = slot.*;
     slot.* = null;
-    if (old) |p| c.Py_DECREF(p);
+    xdecref(old);
 }
 
 pub inline fn newref(o: ?*Object) ?*Object {
-    if (o) |p| c.Py_INCREF(p);
+    if (o) |p| incref(p);
     return o;
 }
 
@@ -52,6 +57,31 @@ pub inline fn boolRef(v: bool) *Object {
 
 pub inline fn typeOf(o: *Object) *c.PyTypeObject {
     return @ptrCast(o.ob_type);
+}
+
+inline fn typeHasFeature(o: *Object, feature: c_ulong) bool {
+    const typ = typeOf(o);
+    const flags = if (comptime @hasDecl(c, "Py_GIL_DISABLED"))
+        c.PyType_GetFlags(typ)
+    else
+        typ.tp_flags;
+    return flags & feature != 0;
+}
+
+pub inline fn isLong(o: *Object) bool {
+    return typeHasFeature(o, c.Py_TPFLAGS_LONG_SUBCLASS);
+}
+
+pub inline fn isTuple(o: *Object) bool {
+    return typeHasFeature(o, c.Py_TPFLAGS_TUPLE_SUBCLASS);
+}
+
+pub inline fn isBytes(o: *Object) bool {
+    return typeHasFeature(o, c.Py_TPFLAGS_BYTES_SUBCLASS);
+}
+
+pub inline fn isUnicode(o: *Object) bool {
+    return typeHasFeature(o, c.Py_TPFLAGS_UNICODE_SUBCLASS);
 }
 
 pub fn attr(o: *Object, name: [*:0]const u8) ?*Object {
