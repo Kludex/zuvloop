@@ -10,7 +10,7 @@ icon: lucide/rotate-cw
 
 ---
 
-**Source Code**: <a href="https://github.com/Kludex/zuv" target="_blank">https://github.com/Kludex/zuv</a>
+**Source Code**: <a href="https://github.com/Kludex/zuvloop" target="_blank">https://github.com/Kludex/zuvloop</a>
 
 ---
 

@@ -27,8 +27,8 @@ Building from source needs [Zig](https://ziglang.org/download/) 0.16 on your
 `PATH`:
 
 ```console
-$ git clone https://github.com/Kludex/zuv
-$ cd zuv
+$ git clone https://github.com/Kludex/zuvloop
+$ cd zuvloop
 $ uv sync
 ```
 

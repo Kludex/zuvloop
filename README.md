@@ -2,7 +2,7 @@
 
 A [libuv](https://libuv.org) event loop for `asyncio`, written in [Zig](https://ziglang.org).
 
-**Documentation**: <https://zuv.marcelotryle.com>
+**Documentation**: <https://zuvloop.marcelotryle.com>
 
 `zuv` replaces the asyncio event loop with one whose hot paths - callback scheduling, timers,
 descriptor watching, name resolution and the stream data path - are implemented natively and
