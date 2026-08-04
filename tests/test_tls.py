@@ -123,3 +123,25 @@ async def test_server_side_tls_needs_a_context() -> None:
     loop = asyncio.get_running_loop()
     with pytest.raises(ValueError, match="needs an SSLContext"):
         await loop.create_server(asyncio.Protocol, "127.0.0.1", 0, ssl=True)
+
+
+async def test_start_tls_closes_the_transport_when_the_handshake_fails(client_context: ssl.SSLContext) -> None:
+    """The echo server replies with the ClientHello, which is not a ServerHello."""
+    loop = asyncio.get_running_loop()
+
+    class Echo(asyncio.Protocol):
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            self.transport = transport
+
+        def data_received(self, data: bytes) -> None:
+            self.transport.write(data)  # type: ignore[attr-defined]
+
+    server = await loop.create_server(Echo, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    async with server:
+        protocol = asyncio.Protocol()
+        transport, _ = await loop.create_connection(lambda: protocol, "127.0.0.1", port)
+        with pytest.raises(OSError):
+            await loop.start_tls(transport, protocol, client_context, server_hostname="localhost")
+        assert transport.is_closing()
+        await asyncio.sleep(0.05)

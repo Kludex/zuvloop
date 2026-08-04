@@ -259,3 +259,20 @@ async def test_sendfile_is_not_implemented() -> None:
             await loop.sock_sendfile(sock, None)
     with pytest.raises(NotImplementedError):
         await loop.sendfile(None, None)  # type: ignore[arg-type]
+
+
+async def test_a_partially_drained_descriptor_reports_ready_again() -> None:
+    """Reading one byte at a time leaves the descriptor readable between wakeups."""
+    loop = asyncio.get_running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    try:
+        pending = loop.create_task(loop.sock_recv_into(right, bytearray(1)))
+        await asyncio.sleep(0.02)
+        await loop.sock_sendall(left, b"many bytes waiting")
+        assert await pending == 1
+        assert await loop.sock_recv(right, 32) == b"any bytes waiting"
+    finally:
+        left.close()
+        right.close()

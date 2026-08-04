@@ -69,7 +69,7 @@ class Server(asyncio.AbstractServer):
                 conn, _addr = sock.accept()
             except (BlockingIOError, InterruptedError):
                 return
-            except OSError as exc:
+            except OSError as exc:  # pragma: no cover - needs descriptor exhaustion
                 self._loop.call_exception_handler(
                     {"message": "Error accepting a connection", "exception": exc, "socket": sock}
                 )

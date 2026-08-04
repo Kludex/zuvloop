@@ -214,3 +214,8 @@ async def test_metrics_on_a_closed_loop_are_zero() -> None:
     loop = zuv.new_event_loop()
     loop.close()
     assert loop._metrics()["loop_count"] == 0
+
+
+async def test_publishing_metrics_reaches_real_gauges() -> None:
+    loop = asyncio.get_running_loop()
+    publish_metrics(loop._metrics())

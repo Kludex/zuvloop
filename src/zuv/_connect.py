@@ -126,7 +126,7 @@ class ConnectionOperations(SocketOperations):
         local_addr: tuple[str, int] | None,
     ) -> socket.socket:
         infos = await self.getaddrinfo(host, port, family=family, type=socket.SOCK_STREAM, proto=proto, flags=flags)
-        if not infos:
+        if not infos:  # pragma: no cover - libuv reports an error rather than an empty list
             raise OSError(f"getaddrinfo({host!r}, {port!r}) returned no addresses")
         errors: list[OSError] = []
         for af, kind, pr, _canon, address in infos:
@@ -278,9 +278,10 @@ class ConnectionOperations(SocketOperations):
                 server._ssl_shutdown_timeout,
                 server,
             )
-        except (SystemExit, KeyboardInterrupt):
-            raise
-        except BaseException as exc:
+        except OSError as exc:
+            # SSLError and TimeoutError are both OSError subclasses, so this
+            # covers every way a handshake can fail without swallowing
+            # cancellation of the accepting task.
             self.call_exception_handler({"message": "Error completing a TLS handshake", "exception": exc})
             server._detach()
 
@@ -301,12 +302,11 @@ class ConnectionOperations(SocketOperations):
             "proto": sock.proto,
         }
         kind = _zuv.KIND_PIPE if sock.family == socket.AF_UNIX else _zuv.KIND_TCP
-        fd = sock.detach()
-        try:
-            return self._make_transport(fd, kind, protocol, waiter, extra, server)
-        except BaseException:
-            os.close(fd)
-            raise
+        # Detach only once libuv owns the descriptor, so a failure leaves the
+        # socket object responsible for closing it.
+        transport = self._make_transport(sock.fileno(), kind, protocol, waiter, extra, server)
+        sock.detach()
+        return transport
 
     async def _wrap_socket(
         self,

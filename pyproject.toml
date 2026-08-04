@@ -72,7 +72,8 @@ xfail_strict = true
 filterwarnings = ["error"]
 
 [tool.coverage.run]
-source_pkgs = ["zuv", "tests"]
+source_pkgs = ["zuv"]
+source = ["tests"]
 branch = true
 
 [tool.coverage.paths]

@@ -10,9 +10,6 @@ import pytest
 
 import zuv
 
-CERTS = Path(__file__).parent / "certs"
-
-
 @pytest.fixture
 def anyio_backend() -> tuple[str, dict[str, object]]:
     return "asyncio", {"loop_factory": zuv.new_event_loop}
@@ -29,19 +26,18 @@ def loop() -> Iterator[zuv.EventLoop]:
 
 
 @pytest.fixture(scope="session")
-def certificate() -> tuple[Path, Path]:
-    cert, key = CERTS / "localhost.pem", CERTS / "localhost.key"
-    if not cert.exists():
-        CERTS.mkdir(exist_ok=True)
-        subprocess.run(
-            [
-                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "3650",
-                "-keyout", str(key), "-out", str(cert),
-                "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
-            ],
-            check=True,
-            capture_output=True,
-        )
+def certificate(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
+    directory = tmp_path_factory.mktemp("certs")
+    cert, key = directory / "localhost.pem", directory / "localhost.key"
+    subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "3650",
+            "-keyout", str(key), "-out", str(cert),
+            "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        ],
+        check=True,
+        capture_output=True,
+    )
     return cert, key
 
 

@@ -35,8 +35,6 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):
         self._executor_shutdown_called = False
         self._asyncgens: weakref.WeakSet[Any] = weakref.WeakSet()
         self._asyncgens_shutdown_called = False
-        self._ssock: socket.socket | None = None
-        self._csock: socket.socket | None = None
         self._signal_handlers: dict[int, tuple[Callable[..., object], tuple[Any, ...], Context]] = {}
         self._instrumentation = Instrumentation()
         self._setup_self_pipe()
@@ -219,17 +217,14 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):
         self.add_reader(self._ssock.fileno(), self._drain_self_pipe, self._ssock)
 
     def _teardown_self_pipe(self) -> None:
-        if self._ssock is None or self._csock is None:
-            return
         self.remove_reader(self._ssock.fileno())
         self._ssock.close()
         self._csock.close()
-        self._ssock = self._csock = None
 
     def _attach_wakeup_fd(self) -> None:
         # Only the main thread may own the wakeup fd, and only it runs Python
         # signal handlers - so a loop on any other thread simply skips this.
-        if self._csock is not None and threading.current_thread() is threading.main_thread():
+        if threading.current_thread() is threading.main_thread():
             signal.set_wakeup_fd(self._csock.fileno())
 
     def _detach_wakeup_fd(self) -> None:

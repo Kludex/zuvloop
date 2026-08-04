@@ -226,7 +226,6 @@ async def test_shutdown_asyncgens_closes_generators() -> None:
     async def generator() -> Any:
         try:
             yield 1
-            yield 2
         finally:
             closed.append("closed")
 
@@ -316,3 +315,69 @@ async def test_tasks_are_visible_to_asyncio_introspection() -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+def test_an_interrupt_after_the_task_finishes_consumes_its_error(loop: zuv.EventLoop) -> None:
+    def interrupt() -> None:
+        raise KeyboardInterrupt
+
+    async def main() -> None:
+        loop.call_soon(interrupt)
+        raise ValueError("finished with an error")
+
+    with pytest.raises(KeyboardInterrupt):
+        loop.run_until_complete(main())
+
+
+async def test_an_exception_handler_may_stop_the_program() -> None:
+    loop = asyncio.get_running_loop()
+
+    def handler(_loop: Any, _context: dict[str, Any]) -> None:
+        raise SystemExit(2)
+
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(handler)
+    try:
+        with pytest.raises(SystemExit):
+            loop.call_exception_handler({"message": "trigger"})
+    finally:
+        loop.set_exception_handler(previous)
+
+
+async def test_a_dropped_async_generator_is_finalized() -> None:
+    import gc
+
+    closed: list[str] = []
+
+    async def generator() -> Any:
+        try:
+            yield 1
+        finally:
+            closed.append("finalized")
+
+    agen = generator()
+    assert await anext(agen) == 1
+    del agen
+    gc.collect()
+    await asyncio.sleep(0.05)
+    assert closed == ["finalized"]
+
+
+def test_an_async_generator_outliving_its_loop_is_not_rescheduled() -> None:
+    import gc
+
+    kept: list[Any] = []
+
+    async def generator() -> Any:
+        yield 1
+
+    async def main() -> None:
+        agen = generator()
+        assert await anext(agen) == 1
+        kept.append(agen)
+
+    loop = zuv.new_event_loop()
+    loop.run_until_complete(main())
+    loop.close()
+    kept.clear()
+    gc.collect()

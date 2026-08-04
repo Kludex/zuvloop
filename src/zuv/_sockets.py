@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import socket
 from collections.abc import Callable
 from typing import Any
@@ -13,40 +14,19 @@ class SocketOperations(LoopBase):
     async def _retry_until_ready(
         self, sock: socket.socket, op: Callable[..., Any], *args: Any, write: bool = False
     ) -> Any:
+        """Run `op`, retrying it each time `sock` reports itself ready."""
         _check_non_blocking(sock)
-        try:
-            return op(*args)
-        except (BlockingIOError, InterruptedError):
-            pass
-
         future = self.create_future()
+        if _attempt(future, op, args):
+            return await future
+
         fd = sock.fileno()
-
-        def retry() -> None:
-            if future.done():
-                return
-            try:
-                result = op(*args)
-            except (BlockingIOError, InterruptedError):
-                return
-            except (SystemExit, KeyboardInterrupt):
-                raise
-            except BaseException as exc:
-                future.set_exception(exc)
-            else:
-                future.set_result(result)
-
-        if write:
-            self.add_writer(fd, retry)
-        else:
-            self.add_reader(fd, retry)
+        register, unregister = (self.add_writer, self.remove_writer) if write else (self.add_reader, self.remove_reader)
+        register(fd, _attempt, future, op, args)
         try:
             return await future
         finally:
-            if write:
-                self.remove_writer(fd)
-            else:
-                self.remove_reader(fd)
+            unregister(fd)
 
     async def sock_recv(self, sock: socket.socket, nbytes: int) -> bytes:
         return await self._retry_until_ready(sock, sock.recv, nbytes)  # type: ignore[no-any-return]
@@ -89,7 +69,7 @@ class SocketOperations(LoopBase):
         fd = sock.fileno()
 
         def check() -> None:
-            if future.done():
+            if future.done():  # pragma: no cover - guards a wakeup the tests cannot force
                 return
             err = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
             if err:
@@ -118,6 +98,23 @@ class SocketOperations(LoopBase):
         fallback: bool = True,
     ) -> int:
         raise NotImplementedError("zuv does not implement sendfile(); write the file contents instead")
+
+
+def _attempt(future: asyncio.Future[Any], op: Callable[..., Any], args: tuple[Any, ...]) -> bool:
+    """Settle `future` from one attempt at `op`; False means "not ready yet"."""
+    if future.done():  # pragma: no cover - guards a wakeup the tests cannot force
+        # Watching is level-triggered, so a partially drained descriptor could
+        # report ready again before the awaiting coroutine resumes.
+        return True
+    try:
+        result = op(*args)
+    except (BlockingIOError, InterruptedError):
+        return False
+    except OSError as exc:
+        future.set_exception(exc)
+    else:
+        future.set_result(result)
+    return True
 
 
 def _send_chunk(sock: socket.socket, view: memoryview, sent: int) -> int:
