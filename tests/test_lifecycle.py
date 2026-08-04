@@ -133,6 +133,35 @@ def test_loop_close_releases_open_transports() -> None:
     assert sum(type(obj) is zuv.Transport for obj in gc.get_objects()) == before
 
 
+def test_loop_close_rejects_writes_from_buffer_finalizers() -> None:
+    transport_box: list[asyncio.Transport] = []
+
+    class ReentrantBuffer(bytearray):
+        def __del__(self) -> None:
+            transport_box[0].write(b"reentrant")
+
+    loop = zuv.new_event_loop()
+    left, right = socket.socketpair()
+    transport = loop._make_transport(left.fileno(), 1, asyncio.Protocol(), None, None, None)
+    left.detach()
+    loop.run_until_complete(asyncio.sleep(0))
+    transport_box.append(transport)
+    payload = ReentrantBuffer(b"pending")
+    transport.write(payload)
+    del payload
+
+    loop.close()
+    transport_box.clear()
+    loop_ref = weakref.ref(loop)
+    transport_ref = weakref.ref(transport)
+    del transport, loop
+    gc.collect()
+    right.close()
+
+    assert loop_ref() is None
+    assert transport_ref() is None
+
+
 def test_loop_close_releases_pending_dns_requests() -> None:
     loop = zuv.new_event_loop()
     futures = [loop._getaddrinfo(f"zuv-pending-{index}.invalid", 80, 0, 0, 0, 0) for index in range(128)]

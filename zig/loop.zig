@@ -236,6 +236,13 @@ fn drainFlushList(st: *State) void {
 /// until the flush runs, so a protocol that writes and drops the transport in
 /// the same turn still gets its data out.
 pub fn scheduleFlush(st: *State, transport: *transportmod.Transport) void {
+    if (st.closed) {
+        // Releasing an earlier batch during close can run arbitrary Python
+        // code. A write from that code has nowhere to go and must not recreate
+        // the list that close just detached.
+        transportmod.discardPending(transport);
+        return;
+    }
     if (transport.flags & transportmod.FLUSH_QUEUED != 0) return;
     transport.flags |= transportmod.FLUSH_QUEUED;
     py.incref(transport);
