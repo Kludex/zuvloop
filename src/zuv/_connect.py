@@ -5,7 +5,8 @@ import os
 import socket
 import ssl as ssl_module
 import stat
-from asyncio import sslproto, trsock
+import subprocess
+from asyncio import sslproto, trsock, unix_events
 from collections.abc import Callable, Sequence
 from typing import Any, cast
 
@@ -552,11 +553,90 @@ class ConnectionOperations(SocketOperations):
         transport._adopt_socket_view(view)
         return transport
 
-    async def subprocess_exec(self, *args: Any, **kwargs: Any) -> tuple[asyncio.SubprocessTransport, Any]:
-        raise NotImplementedError("zuv does not implement subprocesses yet")
+    async def subprocess_shell(
+        self,
+        protocol_factory: Callable[[], asyncio.BaseProtocol],
+        cmd: str | bytes,
+        *,
+        stdin: Any = subprocess.PIPE,
+        stdout: Any = subprocess.PIPE,
+        stderr: Any = subprocess.PIPE,
+        universal_newlines: bool = False,
+        shell: bool = True,
+        bufsize: int = 0,
+        encoding: str | None = None,
+        errors: str | None = None,
+        text: bool | None = None,
+        **kwargs: Any,
+    ) -> tuple[asyncio.SubprocessTransport, Any]:
+        if not isinstance(cmd, (bytes, str)):
+            raise ValueError("cmd must be a string")
+        _check_subprocess_text(universal_newlines, shell, bufsize, encoding, errors, text, expect_shell=True)
+        protocol = protocol_factory()
+        transport = await self._make_subprocess_transport(protocol, cmd, True, stdin, stdout, stderr, bufsize, **kwargs)
+        return transport, protocol
 
-    async def subprocess_shell(self, *args: Any, **kwargs: Any) -> tuple[asyncio.SubprocessTransport, Any]:
-        raise NotImplementedError("zuv does not implement subprocesses yet")
+    async def subprocess_exec(
+        self,
+        protocol_factory: Callable[[], asyncio.BaseProtocol],
+        program: Any,
+        *args: Any,
+        stdin: Any = subprocess.PIPE,
+        stdout: Any = subprocess.PIPE,
+        stderr: Any = subprocess.PIPE,
+        universal_newlines: bool = False,
+        shell: bool = False,
+        bufsize: int = 0,
+        encoding: str | None = None,
+        errors: str | None = None,
+        text: bool | None = None,
+        **kwargs: Any,
+    ) -> tuple[asyncio.SubprocessTransport, Any]:
+        _check_subprocess_text(universal_newlines, shell, bufsize, encoding, errors, text, expect_shell=False)
+        popen_args = (program, *args)
+        for arg in popen_args:
+            if not isinstance(arg, (str, bytes)):
+                raise TypeError(f"program arguments must be a bytes or text string, not {type(arg).__name__}")
+        protocol = protocol_factory()
+        transport = await self._make_subprocess_transport(
+            protocol, popen_args, False, stdin, stdout, stderr, bufsize, **kwargs
+        )
+        return transport, protocol
+
+    async def _make_subprocess_transport(
+        self,
+        protocol: asyncio.BaseProtocol,
+        args: Any,
+        shell: bool,
+        stdin: Any,
+        stdout: Any,
+        stderr: Any,
+        bufsize: int,
+        extra: Any = None,
+        **kwargs: Any,
+    ) -> asyncio.SubprocessTransport:
+        # asyncio's own transport drives the process; it needs `connect_read_pipe`
+        # and `connect_write_pipe` from the loop, and those are native here. A
+        # process is spawned once, so the readable implementation is worth more
+        # than owning the fork.
+        waiter = self.create_future()
+        transport = unix_events._UnixSubprocessTransport(  # type: ignore[attr-defined]  # private
+            self, protocol, args, shell, stdin, stdout, stderr, bufsize, waiter=waiter, extra=extra, **kwargs
+        )
+        self._child_watcher.add_child_handler(transport.get_pid(), self._child_exited, transport)
+        try:
+            await waiter
+        except SystemExit, KeyboardInterrupt:  # pragma: no cover - not raised by a spawn
+            raise
+        except BaseException:
+            transport.close()
+            await transport._wait()
+            raise
+        return cast("asyncio.SubprocessTransport", transport)
+
+    def _child_exited(self, pid: int, returncode: int, transport: Any) -> None:
+        # Reported from the watcher's thread on platforms without pidfd.
+        self.call_soon_threadsafe(transport._process_exited, returncode)
 
     async def connect_read_pipe(
         self, protocol_factory: Callable[[], asyncio.BaseProtocol], pipe: Any
@@ -642,3 +722,28 @@ def _set_result_unless_done(future: asyncio.Future[None]) -> None:
     """Resolves the setup waiter, unless cancellation got there first."""
     if not future.done():
         future.set_result(None)
+
+
+def _check_subprocess_text(
+    universal_newlines: bool,
+    shell: bool,
+    bufsize: int,
+    encoding: str | None,
+    errors: str | None,
+    text: bool | None,
+    *,
+    expect_shell: bool,
+) -> None:
+    """Rejects the text-mode arguments a subprocess transport cannot honour."""
+    if universal_newlines:
+        raise ValueError("universal_newlines must be False")
+    if shell is not expect_shell:
+        raise ValueError(f"shell must be {expect_shell}")
+    if bufsize != 0:
+        raise ValueError("bufsize must be 0")
+    if text:
+        raise ValueError("text must be False")
+    if encoding is not None:
+        raise ValueError("encoding must be None")
+    if errors is not None:
+        raise ValueError("errors must be None")

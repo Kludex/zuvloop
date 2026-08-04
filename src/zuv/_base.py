@@ -9,7 +9,7 @@ import sys
 import threading
 import warnings
 import weakref
-from asyncio import events as _events
+from asyncio import events as _events, unix_events
 from collections.abc import Callable, Coroutine
 from contextvars import Context
 from functools import partial
@@ -40,6 +40,14 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         self._asyncgens_shutdown_called = False
         self._signal_handlers: dict[int, tuple[Callable[..., object], tuple[Any, ...], Context]] = {}
         self._wakeup_fd_attached = False
+        # pidfd where the kernel has it, a thread per child otherwise. The
+        # pidfd watcher watches through the loop, so it needs the private reader
+        # names asyncio's own loop exposes.
+        self._child_watcher: Any = (
+            unix_events._PidfdChildWatcher()  # type: ignore[attr-defined]  # private, and not in typeshed
+            if unix_events.can_use_pidfd()  # type: ignore[attr-defined]
+            else unix_events._ThreadedChildWatcher()  # type: ignore[attr-defined]
+        )
         self._instrumentation = Instrumentation()
         self._setup_self_pipe()
 
@@ -290,6 +298,13 @@ class LoopBase(_zuv.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         ):
             signal.set_wakeup_fd(-1)
             self._wakeup_fd_attached = False
+
+    def _add_reader(self, fd: int, callback: Callable[..., object], *args: object) -> None:
+        """asyncio's own name for `add_reader`; its child watcher uses it."""
+        self.add_reader(fd, callback, *args)
+
+    def _remove_reader(self, fd: int) -> bool:
+        return self.remove_reader(fd)
 
     def _drain_self_pipe(self, sock: socket.socket) -> None:
         """Read the wakeup bytes; each one is a signal number to dispatch.
