@@ -115,9 +115,13 @@ def _open_stream(index: int, request: Any, child_fds: list[int]) -> tuple[int, i
         return os.open(os.devnull, os.O_RDONLY if index == 0 else os.O_WRONLY), None
     if request == subprocess.PIPE:
         read_fd, write_fd = os.pipe()
-        os.set_inheritable(read_fd, True)
-        os.set_inheritable(write_fd, True)
-        return (read_fd, write_fd) if index == 0 else (write_fd, read_fd)
+        # Only the child's end may be inheritable. If our end leaked into the
+        # child (as it would on Linux, where uv_spawn leaves inheritable
+        # descriptors open), the child would hold a writer on its own stdin
+        # pipe and never see EOF.
+        child_fd, our_fd = (read_fd, write_fd) if index == 0 else (write_fd, read_fd)
+        os.set_inheritable(child_fd, True)
+        return child_fd, our_fd
     if request == subprocess.STDOUT:
         # Whatever stdout resolved to, which is a pipe back to us whenever one
         # was asked for - never our own stdout unless the child inherited it.
