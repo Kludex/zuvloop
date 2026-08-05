@@ -1306,3 +1306,35 @@ async def test_the_asyncio_server_hook_unregisters_and_closes() -> None:
     loop._stop_serving(sock)
 
     assert sock.fileno() == -1
+
+
+async def test_a_raising_read_callback_closes_the_connection() -> None:
+    """asyncio treats it as fatal; carrying on hands the protocol another chunk
+    after it has already said it cannot cope, and the exception it raised is
+    what `connection_lost` is for."""
+    loop = running_loop()
+    loop.set_exception_handler(lambda _loop, _context: None)
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    calls = 0
+    lost: asyncio.Future[BaseException | None] = loop.create_future()
+
+    class Boom(asyncio.Protocol):
+        def data_received(self, data: bytes) -> None:
+            nonlocal calls
+            calls += 1
+            raise ZeroDivisionError("boom")
+
+        def connection_lost(self, exc: BaseException | None) -> None:
+            lost.set_result(exc)
+
+    try:
+        transport, _protocol = await loop.connect_accepted_socket(Boom, left)
+        right.send(b"first")
+        assert isinstance(await asyncio.wait_for(lost, 2), ZeroDivisionError)
+        assert transport.is_closing() is True
+        assert calls == 1
+    finally:
+        loop.set_exception_handler(None)
+        right.close()

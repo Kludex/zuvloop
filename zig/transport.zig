@@ -237,9 +237,20 @@ fn callInContext(self: *Transport, callback: ?*py.Object, arg: ?*py.Object) void
         }
     }
     const result = if (arg) |a| c.PyObject_CallOneArg(cb, a) else c.PyObject_CallNoArgs(cb);
-    if (result) |r| py.decref(r) else reportError(self, "Error in protocol callback");
+    // Taken before leaving the context, which can raise one of its own.
+    const failure = if (result) |r| blk: {
+        py.decref(r);
+        break :blk null;
+    } else c.PyErr_GetRaisedException();
     if (context) |ctx| {
         if (c.PyContext_Exit(ctx) < 0) py.writeUnraisable(@ptrCast(self));
+    }
+    // A read callback that raises is fatal to the connection, as it is for
+    // asyncio: reporting it and carrying on would hand the same protocol the
+    // next chunk after it has already said it cannot cope.
+    if (failure) |exc| {
+        loopmod.callExceptionHandler(loopmod.asLoop(self.loop.?), "Fatal error: protocol callback failed", exc, @ptrCast(self));
+        forceClose(self, exc);
     }
 }
 
