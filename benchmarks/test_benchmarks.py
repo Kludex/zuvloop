@@ -1,9 +1,16 @@
 """Benchmarks, measured by CodSpeed on every commit.
 
-Each one is parametrised by event loop, so a run records both what changed since
-the last commit and how zuvloop stands against asyncio and uvloop. `pytest-codspeed`
-does not run coroutines, so every benchmark is driven through `run_until_complete`
-on a loop the fixture owns; loop construction stays outside the measurement.
+Each one is parametrised by event loop, so a run records what changed since the
+last commit. `pytest-codspeed` does not run coroutines, so every benchmark is
+driven through `run_until_complete` on a loop the fixture owns; loop construction
+stays outside the measurement.
+
+Do not compare the loops by the `Time (best)` column. `pytest-codspeed` 5.0.3
+divides by `iter_per_round` twice - once building the stats and again rendering
+the table - and picks that divisor per row from the row's own warmup, so a ratio
+between two rows is scaled by a number that has nothing to do with either. It
+reported this loop as 0.86x uvloop on `echo_roundtrips` when interleaved
+measurement puts it at 1.09x. `compare.py` is the harness for that question.
 
 The HTTP benchmarks are not here. They need a server process and an external load
 generator, which is not something a benchmark harness can measure in-process -
