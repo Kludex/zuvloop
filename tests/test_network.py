@@ -1306,3 +1306,18 @@ async def test_the_asyncio_server_hook_unregisters_and_closes() -> None:
     loop._stop_serving(sock)
 
     assert sock.fileno() == -1
+
+
+@pytest.mark.parametrize("keep_alive", [None, False, True])
+async def test_create_server_honours_keep_alive(keep_alive: bool | None) -> None:
+    """asyncio sets SO_KEEPALIVE on each bound socket; this used to be a TypeError."""
+    loop = running_loop()
+    server = await loop.create_server(Echo, "127.0.0.1", 0, keep_alive=keep_alive)
+    try:
+        raw = socket.socket(fileno=os.dup(server.sockets[0].fileno()))
+        with raw:
+            enabled = raw.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE)
+        assert bool(enabled) is bool(keep_alive)
+    finally:
+        server.close()
+        await server.wait_closed()
