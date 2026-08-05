@@ -45,8 +45,31 @@ jobs:
           uv run coverage run -m pytest
           uv run coverage report
 
-      - name: Benchmark
-        run: uv run python benchmarks/run.py --repeat 1 --only call_soon timers echo_1kb process_spawn process_pipe
+
+  benchmarks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --python 3.14 --group dev --group bench
+
+      # Walltime, not simulation: an event loop spends its time in syscalls and
+      # polling, which instruction counting does not model.
+      - uses: CodSpeedHQ/action@v5
+        with:
+          mode: walltime
+          token: ${{ secrets.CODSPEED_TOKEN }}
+          run: uv run --no-sync pytest benchmarks/ --codspeed
 
   docs:
     runs-on: ubuntu-latest

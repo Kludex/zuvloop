@@ -35,7 +35,7 @@ dev = [
     "pytest>=8.3",
     "ruff>=0.8",
 ]
-bench = ["aiohttp", "httptools", "uvicorn", "uvloop>=0.21"]
+bench = ["aiohttp", "httptools", "pytest-codspeed>=5", "uvicorn", "uvloop>=0.21"]
 docs = ["zensical"]
 
 [tool.hatch.build.targets.wheel]

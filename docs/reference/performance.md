@@ -1,9 +1,13 @@
 # Performance
 
-Measured with `benchmarks/run.py`, `benchmarks/uvicorn_bench.py`,
-`benchmarks/aiohttp_bench.py` and `benchmarks/write_batching.py`, on an M3 Max
-running macOS 26 and CPython 3.14. Rounds are interleaved across loops and the
-best of each is reported, with the run-to-run spread beside it.
+Measured on an M3 Max running macOS 26 and CPython 3.14.
+
+[CodSpeed](https://codspeed.io) runs `benchmarks/test_benchmarks.py` on every
+commit, so a regression is caught where it is introduced rather than whenever
+someone next thinks to measure. Each benchmark is parametrised by event loop, so
+the same run records both the change and the comparison. The HTTP rows below
+come from the standalone scripts, which need a server process and an external
+load generator.
 
 | Benchmark | asyncio | uvloop | zuvloop | zuvloop / uvloop |
 | --- | ---: | ---: | ---: | ---: |
@@ -61,7 +65,7 @@ nanoseconds each.
 ## Running them
 
 ```console
-$ uv run --group bench python benchmarks/run.py
+$ uv run --group bench pytest benchmarks/ --codspeed
 $ uv run --group bench python benchmarks/uvicorn_bench.py
 $ uv run --group bench python benchmarks/aiohttp_bench.py
 $ uv run --group bench python benchmarks/write_batching.py

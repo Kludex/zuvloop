@@ -35,7 +35,7 @@ asyncio.run(main(), loop_factory=zuvloop.new_event_loop)
 
 ## Performance
 
-`benchmarks/run.py`, `benchmarks/uvicorn_bench.py` and `benchmarks/aiohttp_bench.py`, on an M3 Max running
+`benchmarks/`, on an M3 Max running
 macOS 26 and CPython 3.14. Rounds are interleaved across loops and the best of each is
 reported, with the run-to-run spread beside it.
 
