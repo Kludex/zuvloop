@@ -1,0 +1,18 @@
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # A release has to be a week old before it is proposed. Actions are pinned by
+    # major tag, so a bad release lands here as a green CI run against a broken
+    # toolchain rather than as an obvious failure.
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: ""
