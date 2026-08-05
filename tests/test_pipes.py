@@ -191,7 +191,7 @@ async def test_a_cancelled_pipe_setup_closes_the_transport() -> None:
     writer_file.close()
 
 
-@pytest.mark.anyio(None)  # type: ignore[misc]
+@pytest.mark.anyio(None)
 def test_a_write_from_a_stopped_loop_reaches_the_pipe(loop: zuvloop.EventLoop) -> None:
     """Writes batch across a callback, but a stopped loop has no turn left to flush.
 
@@ -201,12 +201,46 @@ def test_a_write_from_a_stopped_loop_reaches_the_pipe(loop: zuvloop.EventLoop) -
     read_fd, write_fd = os.pipe()
     os.set_blocking(read_fd, False)
     reader_file, writer_file = open(read_fd, "rb", 0), open(write_fd, "wb", 0)
-    transport, _protocol = loop.run_until_complete(
-        loop.connect_write_pipe(asyncio.BaseProtocol, writer_file)
-    )
+    transport, _protocol = loop.run_until_complete(loop.connect_write_pipe(asyncio.BaseProtocol, writer_file))
     try:
         transport.write(b"before the next turn")
         assert os.read(read_fd, 64) == b"before the next turn"
     finally:
         transport.close()
         reader_file.close()
+
+
+async def test_a_write_pipe_notices_the_reader_going_away() -> None:
+    loop = running_loop()
+    reader_file, writer_file = await make_pipe()
+    lost = loop.create_future()
+
+    class Writer(asyncio.BaseProtocol):
+        def connection_lost(self, exc: BaseException | None) -> None:
+            lost.set_result(exc)
+
+    transport, _writer = await loop.connect_write_pipe(Writer, writer_file)
+    try:
+        reader_file.close()
+        assert await asyncio.wait_for(lost, 2) is None
+    finally:
+        transport.close()
+
+
+async def test_an_undelivered_write_ends_the_write_pipe_with_a_broken_pipe() -> None:
+    loop = running_loop()
+    reader_file, writer_file = await make_pipe()
+    lost = loop.create_future()
+
+    class Writer(asyncio.BaseProtocol):
+        def connection_lost(self, exc: BaseException | None) -> None:
+            lost.set_result(exc)
+
+    transport, _writer = await loop.connect_write_pipe(Writer, writer_file)
+    try:
+        # More than the pipe can hold, so the tail is still queued at the hangup.
+        transport.write(os.urandom(4 << 20))
+        reader_file.close()
+        assert isinstance(await asyncio.wait_for(lost, 2), BrokenPipeError)
+    finally:
+        transport.close()

@@ -278,3 +278,35 @@ async def test_a_partially_drained_descriptor_reports_ready_again() -> None:
     finally:
         left.close()
         right.close()
+
+
+async def test_a_cancelled_read_leaves_the_next_one_watching() -> None:
+    """Cleanup runs a turn late, by which point the descriptor has a new owner.
+
+    Only one watcher exists per direction, so unregistering blindly would strand
+    the operation that replaced it - CPython's `test_sock_client_racing` covers
+    the same ground.
+    """
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    try:
+        first = asyncio.ensure_future(loop.sock_recv(left, 16))
+        await asyncio.sleep(0)
+        # Supersedes the first registration: the descriptor holds one reader.
+        second = asyncio.ensure_future(loop.sock_recv(left, 16))
+        await asyncio.sleep(0)
+
+        right.sendall(b"delivered")
+        assert await asyncio.wait_for(second, 2) == b"delivered"
+
+        # The first now unwinds onto a descriptor it no longer owns.
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+        right.sendall(b"and again")
+        assert await asyncio.wait_for(loop.sock_recv(left, 16), 2) == b"and again"
+    finally:
+        left.close()
+        right.close()

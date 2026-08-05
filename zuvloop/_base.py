@@ -305,7 +305,7 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         self.remove_reader(sock.fileno())
         sock.close()
 
-    def call_soon_threadsafe(
+    def call_soon_threadsafe(  # type: ignore[override]  # widens the native handle to asyncio's
         self, callback: Callable[..., object], *args: object, context: Context | None = None
     ) -> asyncio.Handle:
         """Schedule from another thread, behind the lock `cancel()` has to honour.
@@ -317,7 +317,9 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         which deadlocks; wrapping keeps the wait on a lock that releases the GIL.
         """
         self._check_closed()
-        handle = _events._ThreadSafeHandle(callback, args, self, context)
+        # Private, and absent from typeshed; the behaviour it carries is the point.
+        factory: Callable[..., asyncio.Handle] = _events._ThreadSafeHandle  # type: ignore[attr-defined]
+        handle = factory(callback, args, self, context)
         super().call_soon_threadsafe(handle._run)
         return handle
 

@@ -1252,3 +1252,54 @@ async def test_an_empty_host_binds_every_interface() -> None:
     finally:
         server.close()
         await server.wait_closed()
+
+
+async def test_a_refused_local_addr_names_the_address() -> None:
+    """asyncio puts the address in the message; the bare errno text does not."""
+    loop = running_loop()
+    taken = socket.socket()
+    taken.bind(("127.0.0.1", 0))
+    taken.listen(1)
+    local = taken.getsockname()
+    try:
+        with pytest.raises(OSError) as caught:
+            await loop.create_connection(Echo, *local, local_addr=local)
+        assert repr(local) in str(caught.value)
+    finally:
+        taken.close()
+
+
+async def test_an_ssl_handshake_timeout_without_ssl_is_rejected() -> None:
+    loop = running_loop()
+    left, right = socket.socketpair()
+    try:
+        with pytest.raises(ValueError, match="ssl_handshake_timeout is only meaningful with ssl"):
+            await loop.connect_accepted_socket(Echo, left, ssl_handshake_timeout=5.0)
+    finally:
+        left.close()
+        right.close()
+
+
+async def test_an_ssl_shutdown_timeout_without_ssl_is_rejected() -> None:
+    loop = running_loop()
+    left, right = socket.socketpair()
+    try:
+        with pytest.raises(ValueError, match="ssl_shutdown_timeout is only meaningful with ssl"):
+            await loop.connect_accepted_socket(Echo, left, ssl_shutdown_timeout=5.0)
+    finally:
+        left.close()
+        right.close()
+
+
+async def test_the_asyncio_server_hook_unregisters_and_closes() -> None:
+    """`_stop_serving` is what `asyncio.base_events.Server.close` reaches for."""
+    loop = running_loop()
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+    sock.setblocking(False)
+    loop.add_reader(sock.fileno(), lambda: None)
+
+    loop._stop_serving(sock)
+
+    assert sock.fileno() == -1

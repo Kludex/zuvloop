@@ -211,7 +211,9 @@ async def test_stderr_can_be_merged_into_stdout() -> None:
     )
     stdout, stderr = await process.communicate()
     assert stderr is None
-    assert b"out" in stdout
+    # Both streams have to reach the child's own pipe: merging into the parent's
+    # stdout would leave only "out" here, and print "err" to the terminal.
+    assert stdout == b"outerr"
 
 
 async def test_an_unsupported_popen_argument_is_rejected() -> None:
@@ -223,6 +225,11 @@ async def test_signalling_an_exited_child_is_a_no_op() -> None:
     loop = running_loop()
     transport, _protocol = await loop.subprocess_exec(asyncio.SubprocessProtocol, "/bin/echo", stdout=PIPE)
     try:
+        # An unread pipe keeps the transport from finishing, which is the window
+        # the no-op exists for: a child already reaped, still held by asyncio.
+        stdout = transport.get_pipe_transport(1)
+        assert isinstance(stdout, asyncio.ReadTransport)
+        stdout.pause_reading()
 
         async def until_exited() -> None:
             while transport.get_returncode() is None:

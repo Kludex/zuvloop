@@ -678,11 +678,50 @@ class ConnectionOperations(SocketOperations):
             raise
         transport._adopt_pipe(pipe)
         try:
+            # A socket write pipe learns of the hangup by reading; `uv_pipe_open`
+            # clears the readable flag on an `O_WRONLY` FIFO, so that one needs a
+            # poll of its own. Character devices report no hangup at all.
+            if kind == _zuvloop.KIND_PIPE_WRITE and stat.S_ISFIFO(mode):
+                watch = _HangupWatch(self, pipe, fd, transport)
+                transport._adopt_pipe(watch)
+                watch.arm()
             await waiter
         except BaseException:
             transport.close()
             raise
         return transport, protocol
+
+
+class _HangupWatch:
+    """Reports the peer closing the read end of a write pipe.
+
+    The poll goes on the descriptor the transport kept rather than the duplicate
+    libuv adopted, so the two never contend for one watcher. The transport adopts
+    this object in place of the pipe, which puts `close()` on every teardown path
+    the transport already has - dropping the poll before the pipe it watches.
+    """
+
+    __slots__ = ("_fd", "_loop", "_pipe", "_transport")
+
+    def __init__(self, loop: ConnectionOperations, pipe: Any, fd: int, transport: _zuvloop.Transport) -> None:
+        self._loop = loop
+        self._pipe = pipe
+        self._fd = fd
+        self._transport = transport
+
+    def arm(self) -> None:
+        self._loop.add_reader(self._fd, self._hangup)
+
+    def close(self) -> None:
+        self._loop.remove_reader(self._fd)
+        self._pipe.close()
+
+    def _hangup(self) -> None:
+        # Dropping the watch here, rather than leaving it to close(), also marks
+        # this callback cancelled should the loop already have it queued.
+        self._loop.remove_reader(self._fd)
+        buffered = self._transport.get_write_buffer_size()
+        self._transport._force_close(BrokenPipeError() if buffered else None)
 
 
 def _check_ssl_timeouts(ssl: _SSLArg, handshake: float | None, shutdown: float | None) -> None:
