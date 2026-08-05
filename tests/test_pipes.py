@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+import zuvloop
 from conftest import running_loop
 
 pytestmark = pytest.mark.anyio
@@ -188,3 +189,24 @@ async def test_a_cancelled_pipe_setup_closes_the_transport() -> None:
     await asyncio.sleep(0.05)
     assert reader_file.closed
     writer_file.close()
+
+
+@pytest.mark.anyio(None)  # type: ignore[misc]
+def test_a_write_from_a_stopped_loop_reaches_the_pipe(loop: zuvloop.EventLoop) -> None:
+    """Writes batch across a callback, but a stopped loop has no turn left to flush.
+
+    CPython's `test_bidirectional_pty` writes here and then blocks reading the
+    peer, which never returns if the batch is still waiting on an iteration.
+    """
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(read_fd, False)
+    reader_file, writer_file = open(read_fd, "rb", 0), open(write_fd, "wb", 0)
+    transport, _protocol = loop.run_until_complete(
+        loop.connect_write_pipe(asyncio.BaseProtocol, writer_file)
+    )
+    try:
+        transport.write(b"before the next turn")
+        assert os.read(read_fd, 64) == b"before the next turn"
+    finally:
+        transport.close()
+        reader_file.close()

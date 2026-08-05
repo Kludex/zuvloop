@@ -572,6 +572,10 @@ fn submitWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!
         return py.errRuntime("Cannot call write() after write_eof() or close()");
     }
     appendPending(self, bufs, views);
+    // Batching pays off only for consecutive writes from one callback, and a
+    // caller outside the loop may block reading the peer before the flush could
+    // ever run, so writes from a stopped loop go straight out.
+    if (!self.loopState().running) flushPending(self);
 }
 
 /// What `write()` has accepted and not yet handed back to the socket, whether

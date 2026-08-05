@@ -558,6 +558,10 @@ fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
     st.running = false;
     st.stopping = false;
     st.thread_id = 0;
+    // A write from the callback that stopped the loop has had no iteration left
+    // to flush it. Draining after clearing `running` sends anything those
+    // callbacks write in turn.
+    drainFlushList(st);
 
     if (st.fatal) |exc| {
         st.fatal = null;
