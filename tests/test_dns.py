@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import socket
+from collections.abc import Sequence
 
 import pytest
 
 from conftest import running_loop
 
 pytestmark = pytest.mark.anyio
+
+type Sockaddr = tuple[str, int] | tuple[str, int, int, int] | tuple[int, bytes]
+type AddrInfo = tuple[int, int, int, str, Sockaddr]
+# What a lookup produced: the addresses, or the `(errno, strerror)` it failed with.
+# `Sequence` rather than `list` because the two APIs disagree on how narrowly they
+# type the family and the address, and only a covariant container accepts both.
+type Outcome = Sequence[AddrInfo] | tuple[int, str]
 
 
 async def test_getaddrinfo_resolves_localhost() -> None:
@@ -81,11 +89,11 @@ async def test_getaddrinfo_answers_as_the_stdlib_does(host: str, port: str) -> N
     loop = running_loop()
     kwargs = {"family": socket.AF_INET, "type": socket.SOCK_STREAM}
     try:
-        theirs: object = sorted(socket.getaddrinfo(host, port, **kwargs))
+        theirs: Outcome = sorted(socket.getaddrinfo(host, port, **kwargs))
     except socket.gaierror as exc:
         theirs = exc.args
     try:
-        mine: object = sorted(await loop.getaddrinfo(host, port, **kwargs))
+        mine: Outcome = sorted(await loop.getaddrinfo(host, port, **kwargs))
     except socket.gaierror as exc:
         mine = exc.args
     assert mine == theirs
@@ -106,13 +114,13 @@ async def test_getnameinfo_reports_failures_as_the_stdlib_does() -> None:
     loop = running_loop()
     flags = socket.NI_NAMEREQD | socket.NI_NUMERICHOST
     try:
-        theirs: object = socket.getnameinfo(("127.0.0.1", 80), flags)
+        theirs: tuple[str, str] | tuple[int, str] = socket.getnameinfo(("127.0.0.1", 80), flags)
     except socket.gaierror as exc:
-        theirs = type(exc)
+        theirs = exc.args
     try:
-        mine: object = await loop.getnameinfo(("127.0.0.1", 80), flags)
+        mine: tuple[str, str] | tuple[int, str] = await loop.getnameinfo(("127.0.0.1", 80), flags)
     except socket.gaierror as exc:
-        mine = type(exc)
+        mine = exc.args
     assert mine == theirs
 
 
