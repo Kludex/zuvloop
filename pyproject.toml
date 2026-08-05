@@ -9,6 +9,8 @@ description = "A libuv event loop for asyncio, written in Zig."
 readme = "README.md"
 requires-python = ">=3.14"
 license = "MIT"
+# libuv is compiled into the extension, so its licence ships with the wheel.
+license-files = ["LICENSE", "vendor/libuv/LICENSE*"]
 authors = [{ name = "Marcelo Trylesinski", email = "marcelotryle@gmail.com" }]
 keywords = ["asyncio", "libuv", "event-loop", "zig", "uvloop"]
 classifiers = [
