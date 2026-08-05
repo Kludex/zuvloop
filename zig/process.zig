@@ -44,21 +44,43 @@ const SpawnArgs = struct {
     storage: std.ArrayListUnmanaged(u8) = .empty,
     argv: std.ArrayListUnmanaged(?[*:0]const u8) = .empty,
     envp: std.ArrayListUnmanaged(?[*:0]const u8) = .empty,
+    /// Where each argument and each environment entry starts in `storage`.
+    /// Offsets rather than pointers, because appending can move the buffer.
+    argv_at: std.ArrayListUnmanaged(usize) = .empty,
+    envp_at: std.ArrayListUnmanaged(usize) = .empty,
     stdio: [3]uv.StdioContainer = @splat(.{ .flags = uv.StdioFlags.ignore, .data = .{ .fd = -1 } }),
 
     fn deinit(self: *SpawnArgs) void {
         self.storage.deinit(alloc);
         self.argv.deinit(alloc);
         self.envp.deinit(alloc);
+        self.argv_at.deinit(alloc);
+        self.envp_at.deinit(alloc);
     }
 
-    /// Copies a string into the arena and returns a pointer that stays valid
-    /// until `deinit`. The arena is sized up front so nothing can move.
-    fn dup(self: *SpawnArgs, text: []const u8) py.Error![*:0]const u8 {
+    /// Turns the recorded offsets into the null-terminated pointer array
+    /// `uv_spawn` wants. Called once every string is in place, so the buffer is
+    /// done moving and the pointers cannot be invalidated afterwards.
+    fn resolve(self: *SpawnArgs, list: *std.ArrayListUnmanaged(?[*:0]const u8), offsets: []const usize) py.Error!void {
+        list.ensureTotalCapacity(alloc, offsets.len + 1) catch return py.errNoMemory();
+        for (offsets) |offset| list.appendAssumeCapacity(@ptrCast(self.storage.items.ptr + offset));
+        list.appendAssumeCapacity(null);
+    }
+
+    fn at(self: *SpawnArgs, offset: usize) [*:0]const u8 {
+        return @ptrCast(self.storage.items.ptr + offset);
+    }
+
+    /// Copies a string into the arena and returns where it starts.
+    ///
+    /// An offset rather than a pointer: the arena is reserved up front, but
+    /// nothing enforces that reservation, and one append past it would move
+    /// every string already copied - leaving `uv_spawn` reading freed memory.
+    fn dup(self: *SpawnArgs, text: []const u8) py.Error!usize {
         const start = self.storage.items.len;
         self.storage.appendSlice(alloc, text) catch return py.errNoMemory();
         self.storage.append(alloc, 0) catch return py.errNoMemory();
-        return @ptrCast(self.storage.items.ptr + start);
+        return start;
     }
 };
 
@@ -83,9 +105,9 @@ fn reserve(sequence: *py.Object, what: [:0]const u8) py.Error!usize {
     return total;
 }
 
-fn appendAll(args: *SpawnArgs, list: *std.ArrayListUnmanaged(?[*:0]const u8), sequence: *py.Object) py.Error!void {
+fn appendAll(args: *SpawnArgs, list: *std.ArrayListUnmanaged(usize), sequence: *py.Object) py.Error!void {
     const n: usize = @intCast(c.PySequence_Size(sequence));
-    list.ensureTotalCapacity(alloc, n + 1) catch return py.errNoMemory();
+    list.ensureTotalCapacity(alloc, n) catch return py.errNoMemory();
     var i: usize = 0;
     while (i < n) : (i += 1) {
         const item = c.PySequence_GetItem(sequence, @intCast(i)) orelse return py.Error.Python;
@@ -98,7 +120,6 @@ fn appendAll(args: *SpawnArgs, list: *std.ArrayListUnmanaged(?[*:0]const u8), se
         if (c.PyBytes_Check(item) != 0) len = c.PyBytes_Size(item);
         list.appendAssumeCapacity(try args.dup(text[0..@intCast(len)]));
     }
-    list.appendAssumeCapacity(null);
 }
 
 // ---------------------------------------------------------------------------
@@ -186,7 +207,7 @@ fn sendSignal(self_obj: *py.Object, signum: *py.Object) py.Error!*py.Object {
 // ---------------------------------------------------------------------------
 // spawning
 
-fn optionalString(args: *SpawnArgs, value: ?*py.Object) py.Error!?[*:0]const u8 {
+fn optionalString(args: *SpawnArgs, value: ?*py.Object) py.Error!?usize {
     const obj = value orelse return null;
     if (py.isNone(obj)) return null;
     var len: c.Py_ssize_t = 0;
@@ -211,13 +232,19 @@ pub fn spawnProcess(self_obj: *py.Object, args_in: []const ?*py.Object) py.Error
     // Size the arena before copying so no string can move afterwards.
     var needed = try reserve(args_in[1].?, "args");
     if (!py.isNone(args_in[2].?)) needed += try reserve(args_in[2].?, "env");
-    needed += 4096; // file, cwd and their terminators
+    needed = 0; // STRESS: reserve nothing, so every append reallocates
     spawn.storage.ensureTotalCapacity(alloc, needed) catch return py.errNoMemory();
 
-    const file = try optionalString(&spawn, args_in[0]) orelse return py.errValue("file is required");
-    try appendAll(&spawn, &spawn.argv, args_in[1].?);
-    if (!py.isNone(args_in[2].?)) try appendAll(&spawn, &spawn.envp, args_in[2].?);
-    const cwd = try optionalString(&spawn, args_in[3]);
+    const file_at = try optionalString(&spawn, args_in[0]) orelse return py.errValue("file is required");
+    try appendAll(&spawn, &spawn.argv_at, args_in[1].?);
+    if (!py.isNone(args_in[2].?)) try appendAll(&spawn, &spawn.envp_at, args_in[2].?);
+    const cwd_at = try optionalString(&spawn, args_in[3]);
+
+    // Every string is in the arena now, so it will not move again.
+    try spawn.resolve(&spawn.argv, spawn.argv_at.items);
+    if (spawn.envp_at.items.len != 0) try spawn.resolve(&spawn.envp, spawn.envp_at.items);
+    const file = spawn.at(file_at);
+    const cwd: ?[*:0]const u8 = if (cwd_at) |offset| spawn.at(offset) else null;
 
     var i: usize = 0;
     while (i < 3) : (i += 1) {
