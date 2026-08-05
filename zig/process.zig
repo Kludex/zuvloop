@@ -258,7 +258,14 @@ pub fn spawnProcess(self_obj: *py.Object, args_in: []const ?*py.Object) py.Error
 
     uv.setData(self.handle(), self);
     const status = uv.uv_spawn(st.uvloop, self.handle(), &options);
-    if (status < 0) return py.errUv(status);
+    if (status < 0) {
+        // `uv_spawn` links the handle into the loop before anything in it can
+        // fail, and only `uv_close` unlinks it. Freeing the object here would
+        // leave the loop holding a queue node inside it.
+        py.incref(obj); // released by the close callback
+        uv.uv_close(uv.asHandle(self.handle()), onClosed);
+        return py.errUv(status);
+    }
 
     self.flags |= OPEN;
     py.incref(obj); // released by the close callback

@@ -310,3 +310,48 @@ async def test_a_cancelled_read_leaves_the_next_one_watching() -> None:
     finally:
         left.close()
         right.close()
+
+
+async def test_replacing_a_watcher_survives_a_reentrant_finaliser() -> None:
+    """The slot has to name the new watcher before the old one is released.
+
+    Releasing a watcher runs its arguments' finalisers, and a finaliser is free to
+    call `remove_reader` for the same descriptor. If it finds the slot still
+    naming the handle being destroyed, it releases it a second time and closes a
+    poll handle the replacement is about to be armed on.
+    """
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    fd = right.fileno()
+    reentered: list[bool] = []
+
+    class Reentrant:
+        def __del__(self) -> None:
+            reentered.append(True)
+            loop.remove_reader(fd)
+
+    try:
+        loop.add_reader(fd, lambda _held: None, Reentrant())
+        loop.add_reader(fd, lambda: None)
+        assert reentered == [True]
+
+        # The descriptor has to remain watchable: an orphaned poll handle makes
+        # the next registration fail with EEXIST.
+        seen: list[str] = []
+        loop.remove_reader(fd)
+        loop.add_reader(fd, seen.append, "after")
+        left.send(b"!")
+        await asyncio.sleep(0.05)
+        # That it fires at all is the point: an orphaned poll handle would have
+        # made the registration above fail. Level-triggered, so it fires until
+        # the data is read.
+        assert seen and set(seen) == {"after"}
+        assert loop.remove_reader(fd) is True
+    finally:
+        # An assertion above leaves the watcher armed, and closing a descriptor
+        # libuv is still polling is its own kind of trouble.
+        loop.remove_reader(fd)
+        left.close()
+        right.close()
