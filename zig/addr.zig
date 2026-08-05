@@ -105,3 +105,23 @@ pub fn toPython(sa: *const posix.sockaddr) py.Error!*py.Object {
         @as(c_uint, sin6.scope_id),
     ) orelse py.Error.Python;
 }
+
+/// Whether two addresses name the same endpoint.
+///
+/// A byte comparison would not do: the platforms disagree about padding, and on
+/// the BSDs `sockaddr_in` carries an `sin_len` that the two sides need not have
+/// filled in the same way. Only the fields that identify the peer are read.
+pub fn same(a: *const posix.sockaddr, b: *const posix.sockaddr) bool {
+    if (a.family != b.family) return false;
+    if (a.family == AF_INET) {
+        const x: *const posix.sockaddr.in = @ptrCast(@alignCast(a));
+        const y: *const posix.sockaddr.in = @ptrCast(@alignCast(b));
+        return x.port == y.port and x.addr == y.addr;
+    }
+    if (a.family == AF_INET6) {
+        const x: *const posix.sockaddr.in6 = @ptrCast(@alignCast(a));
+        const y: *const posix.sockaddr.in6 = @ptrCast(@alignCast(b));
+        return x.port == y.port and std.mem.eql(u8, &x.addr, &y.addr) and x.scope_id == y.scope_id;
+    }
+    return false;
+}

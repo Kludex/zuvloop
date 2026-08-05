@@ -107,12 +107,27 @@ async def test_the_transport_is_an_asyncio_datagram_transport() -> None:
         server.close()
 
 
-async def test_an_address_is_rejected_on_a_connected_endpoint() -> None:
+async def test_a_connected_endpoint_accepts_the_address_it_is_connected_to() -> None:
+    """asyncio allows `addr` when it names the peer already connected to."""
+    server, _echo, address = await start_echo()
+    client, protocol = await running_loop().create_datagram_endpoint(Collector, remote_addr=address)
+    try:
+        client.sendto(b"hello", address)
+        assert protocol.done is not None
+        assert await asyncio.wait_for(protocol.done, 2) == b"re:hello"
+    finally:
+        client.close()
+        server.close()
+
+
+async def test_a_connected_endpoint_rejects_a_different_address() -> None:
     server, _echo, address = await start_echo()
     client, _protocol = await running_loop().create_datagram_endpoint(Collector, remote_addr=address)
     try:
+        host, port = address[0], address[1]
+        assert isinstance(host, str) and isinstance(port, int)
         with pytest.raises(ValueError, match="connected"):
-            client.sendto(b"hello", address)
+            client.sendto(b"hello", (host, port + 1))
     finally:
         client.close()
         server.close()
