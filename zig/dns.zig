@@ -194,6 +194,13 @@ fn resolverException(status: c_int) ?*py.Object {
 
 /// Raises `socket.gaierror` for a code the platform's resolver produced itself.
 fn raisePlatformError(code: std.c.EAI) py.Error {
+    // `EAI_SYSTEM` says only that the real error is in `errno`, so the standard
+    // library reports that instead - `set_gaierror` in CPython's socketmodule
+    // hands it straight to `PyErr_SetFromErrno`. Windows has no such code.
+    if (@hasField(std.c.EAI, "SYSTEM") and code == eai("SYSTEM", .FAIL)) {
+        _ = c.PyErr_SetFromErrno(@ptrCast(c.PyExc_OSError));
+        return py.Error.Python;
+    }
     const exc = c.PyObject_CallFunction(gaierror, "is", @intFromEnum(code), std.c.gai_strerror(code)) orelse
         return py.Error.Python;
     c.PyErr_SetRaisedException(exc);
