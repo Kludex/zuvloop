@@ -395,9 +395,11 @@ fn repr(obj: ?*py.Object) callconv(.c) ?*py.Object {
 }
 
 fn isSocket(fd: uv.OsFd) bool {
-    var info: std.c.Stat = undefined;
-    if (std.c.fstat(fd, &info) != 0) return false;
-    return info.mode & std.c.S.IFMT == std.c.S.IFSOCK;
+    // getsockopt succeeds only on a socket, and unlike fstat it reaches libc on
+    // every platform Zig targets (std.c.fstat is unavailable on Linux).
+    var kind: c_int = 0;
+    var len: std.c.socklen_t = @sizeOf(c_int);
+    return std.c.getsockopt(fd, std.c.SOL.SOCKET, std.c.SO.TYPE, &kind, &len) == 0;
 }
 
 fn takeUvError(status: c_int) ?*py.Object {
