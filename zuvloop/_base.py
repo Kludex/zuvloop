@@ -16,7 +16,7 @@ from functools import partial
 from typing import Any
 
 from . import _zuvloop
-from ._instrumentation import Instrumentation
+from ._instrumentation import Instrumentation, metrics_provider_installed, publish_metrics
 
 _ExceptionHandler = Callable[[asyncio.AbstractEventLoop, dict[str, Any]], object]
 
@@ -30,6 +30,10 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
     writer registrations) come from the Zig extension; everything here is
     orchestration that runs once per loop or once per connection.
     """
+
+    # How often the loop gauges are sampled while a real OpenTelemetry meter
+    # provider is installed. Assign before running the loop to change it.
+    metrics_interval: float = 10.0
 
     def __init__(self) -> None:
         self._exception_handler: _ExceptionHandler | None = None
@@ -91,9 +95,14 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         self._attach_wakeup_fd()
         _events._set_running_loop(self)
         sys.set_asyncgen_hooks(firstiter=self._asyncgen_firstiter, finalizer=self._asyncgen_finalizer)
+        # Gauges cost nothing to skip and something to sample, so the sampler
+        # runs exactly when there is somewhere for the numbers to go.
+        if metrics_provider_installed():
+            self._start_metrics(self.metrics_interval, publish_metrics)
         try:
             self._run()
         finally:
+            self._stop_metrics()
             sys.set_asyncgen_hooks(*old_hooks)
             _events._set_running_loop(None)
             self._detach_wakeup_fd()

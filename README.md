@@ -110,10 +110,16 @@ import zuvloop
 logfire.configure()  # installs the OTel providers
 
 
-async def main() -> None:
-    zuvloop.instrument()  # start the periodic loop gauges
-    ...
+async def main() -> None: ...
+
+
+zuvloop.run(main())
 ```
+
+That's all — there is no zuvloop-specific setup. Spans and counters are emitted
+as events happen, and the loop gauges are sampled automatically while the loop
+runs (only when a real provider is installed, so an uninstrumented program never
+pays for sampling).
 
 You get:
 

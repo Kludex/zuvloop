@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from opentelemetry import metrics, trace
+from opentelemetry.metrics import NoOpMeterProvider
 from opentelemetry.trace import Status, StatusCode
 
 _NAMESPACE = "zuvloop"
@@ -99,6 +100,23 @@ def capture_call_graph(handle: object = None) -> str | None:
     if task is None:
         return None
     return asyncio.format_call_graph(task)
+
+
+def metrics_provider_installed() -> bool:
+    """Whether the application has installed a real meter provider.
+
+    Before that happens, OpenTelemetry hands out proxies whose instruments do
+    nothing - sampling the loop to feed them would be pure overhead.
+    """
+    provider = metrics.get_meter_provider()
+    if isinstance(provider, NoOpMeterProvider):
+        return False
+    real = getattr(provider, "_real_meter_provider", _MISSING)
+    # A _ProxyMeterProvider delegates only once set_meter_provider() ran.
+    return real is _MISSING or real is not None
+
+
+_MISSING = object()
 
 
 _GAUGES = {
