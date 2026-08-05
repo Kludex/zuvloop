@@ -60,6 +60,7 @@ class ConnectionOperations(SocketOperations):
         ssl_shutdown_timeout: float | None = None,
     ) -> tuple[asyncio.Transport, Any]:
         server_hostname = _check_ssl_args(ssl, server_hostname, host)
+        _check_ssl_timeouts(ssl, ssl_handshake_timeout, ssl_shutdown_timeout)
         if host is not None or port is not None:
             if sock is not None:
                 raise ValueError("host/port and sock can not be specified at the same time")
@@ -86,6 +87,7 @@ class ConnectionOperations(SocketOperations):
     ) -> tuple[asyncio.Transport, Any]:
         if ssl is None and server_hostname is not None:
             raise ValueError("server_hostname is only meaningful with ssl")
+        _check_ssl_timeouts(ssl, ssl_handshake_timeout, ssl_shutdown_timeout)
         if path is not None:
             if sock is not None:
                 raise ValueError("path and sock can not be specified at the same time")
@@ -114,6 +116,7 @@ class ConnectionOperations(SocketOperations):
         ssl_handshake_timeout: float | None = None,
         ssl_shutdown_timeout: float | None = None,
     ) -> tuple[asyncio.Transport, Any]:
+        _check_ssl_timeouts(ssl, ssl_handshake_timeout, ssl_shutdown_timeout)
         _check_socket(sock, socket.SOCK_STREAM)
         sock.setblocking(False)
         return await self._wrap_socket(
@@ -138,7 +141,12 @@ class ConnectionOperations(SocketOperations):
             try:
                 sock.setblocking(False)
                 if local_addr is not None:
-                    sock.bind(local_addr)
+                    try:
+                        sock.bind(local_addr)
+                    except OSError as exc:
+                        # Which address was refused is the useful half of the report.
+                        message = f"error while attempting to bind on address {local_addr!r}: {str(exc).lower()}"
+                        raise OSError(exc.errno, message) from None
                 await self.sock_connect(sock, address)
             except OSError as exc:
                 sock.close()
@@ -167,6 +175,7 @@ class ConnectionOperations(SocketOperations):
         start_serving: bool = True,
     ) -> Server:
         _check_server_ssl(ssl)
+        _check_ssl_timeouts(ssl, ssl_handshake_timeout, ssl_shutdown_timeout)
         if host is not None or port is not None:
             if sock is not None:
                 raise ValueError("host/port and sock can not be specified at the same time")
@@ -200,6 +209,7 @@ class ConnectionOperations(SocketOperations):
         cleanup_socket: bool = True,
     ) -> Server:
         _check_server_ssl(ssl)
+        _check_ssl_timeouts(ssl, ssl_handshake_timeout, ssl_shutdown_timeout)
         if path is not None:
             if sock is not None:
                 raise ValueError("path and sock can not be specified at the same time")
@@ -328,31 +338,24 @@ class ConnectionOperations(SocketOperations):
             "proto": sock.proto,
         }
         kind = _zuvloop.KIND_PIPE if sock.family == socket.AF_UNIX else _zuvloop.KIND_TCP
-        family, kind_, proto = sock.family, sock.type, sock.proto
         fd = sock.fileno()
 
-        # anyio - and so httpx, Starlette and FastAPI - reaches for the raw
-        # socket through get_extra_info("socket"). Prepare that view before
-        # libuv adopts the descriptor, while failure can still leave `sock`
-        # as its sole owner.
-        view = socket.socket(family, kind_, proto, fileno=fd)
-        try:
-            extra["socket"] = trsock.TransportSocket(view)
-            transport = self._make_transport(fd, kind, protocol, waiter, extra, server)
-        except BaseException:
-            view.detach()
-            raise
+        # anyio - and so httpx, Starlette and FastAPI - reaches for the raw socket
+        # through get_extra_info("socket"). asyncio exposes the caller's own object
+        # here and leaves it armed for the life of the transport, which callers that
+        # passed `sock=` read back afterwards; a separate view detached from `sock`
+        # would hand them a closed socket instead.
+        extra["socket"] = trsock.TransportSocket(sock)
+        transport = self._make_transport(fd, kind, protocol, waiter, extra, server)
 
-        # libuv owns the descriptor after _make_transport succeeds. Disarm
-        # both Python socket objects on every later failure and close the
-        # native transport so ownership cannot be split or lost.
+        # libuv owns the descriptor from here. Disarm the socket on any later
+        # failure and close the native transport, so ownership cannot be split.
         try:
-            sock.detach()
-            transport._adopt_socket_view(view)
+            transport._adopt_socket_view(sock)
             if server is not None:
                 server._attach(transport)
         except BaseException:
-            view.detach()
+            sock.detach()
             transport.abort()
             raise
         return transport
@@ -538,21 +541,13 @@ class ConnectionOperations(SocketOperations):
             "type": sock.type,
             "proto": sock.proto,
         }
-        family, kind, proto = sock.family, sock.type, sock.proto
         fd = sock.fileno()
 
-        view = socket.socket(family, kind, proto, fileno=fd)
-        try:
-            extra["socket"] = trsock.TransportSocket(view)
-            transport = self._make_datagram_transport(fd, family, connected, protocol, extra)
-        except BaseException:
-            view.detach()
-            raise
-
-        # libuv owns the descriptor from here, so both Python socket objects
-        # have to be disarmed before anything else can fail.
-        sock.detach()
-        transport._adopt_socket_view(view)
+        # As on the stream path: the caller's own socket is what asyncio exposes,
+        # and `create_datagram_endpoint(sock=...)` callers go on using it.
+        extra["socket"] = trsock.TransportSocket(sock)
+        transport = self._make_datagram_transport(fd, sock.family, connected, protocol, extra)
+        transport._adopt_socket_view(sock)
         return transport
 
     async def subprocess_shell(
@@ -682,6 +677,13 @@ class ConnectionOperations(SocketOperations):
             transport.close()
             raise
         return transport, protocol
+
+
+def _check_ssl_timeouts(ssl: _SSLArg, handshake: float | None, shutdown: float | None) -> None:
+    if handshake is not None and not ssl:
+        raise ValueError("ssl_handshake_timeout is only meaningful with ssl")
+    if shutdown is not None and not ssl:
+        raise ValueError("ssl_shutdown_timeout is only meaningful with ssl")
 
 
 def _check_ssl_args(ssl: _SSLArg, server_hostname: str | None, host: str | None) -> str | None:

@@ -23,40 +23,6 @@ const alloc = std.heap.c_allocator;
 /// Timers below this many cancelled entries are never compacted.
 const min_cancelled_timers = 100;
 
-/// Lock-free LIFO of handles pushed from other threads, drained by the waker.
-const Inbox = struct {
-    head: ?*Handle = null,
-
-    fn push(self: *Inbox, h: *Handle) void {
-        while (true) {
-            const old = @atomicLoad(?*Handle, &self.head, .monotonic);
-            h.next = old;
-            if (@cmpxchgWeak(?*Handle, &self.head, old, h, .release, .monotonic) == null) return;
-        }
-    }
-
-    /// Returns the queued handles in push order.
-    fn takeAll(self: *Inbox) ?*Handle {
-        var node = @atomicRmw(?*Handle, &self.head, .Xchg, null, .acquire);
-        var reversed: ?*Handle = null;
-        while (node) |h| {
-            node = h.next;
-            h.next = reversed;
-            reversed = h;
-        }
-        return reversed;
-    }
-
-    fn traverse(self: *Inbox, visitproc: c.visitproc, arg: ?*anyopaque) c_int {
-        var node = @atomicLoad(?*Handle, &self.head, .acquire);
-        while (node) |h| : (node = h.next) {
-            const r = py.visit(@ptrCast(h), visitproc, arg);
-            if (r != 0) return r;
-        }
-        return 0;
-    }
-};
-
 pub const State = struct {
     uvloop: *uv.Loop,
     idle: *uv.Idle,
@@ -68,7 +34,6 @@ pub const State = struct {
 
     ready: collections.Ready = .empty,
     timers: collections.Timers = .empty,
-    inbox: Inbox = .{},
     pollers: pollermod.Map = .empty,
     scratch: ?[*]u8 = null,
     dns_requests: ?*anyopaque = null,
@@ -186,12 +151,6 @@ fn onWake(waker: ?*uv.Async) callconv(.c) void {
     const st = self.state();
     st.gilEnter();
     defer st.gilExit();
-    var node = st.inbox.takeAll();
-    while (node) |h| {
-        node = h.next;
-        h.next = null;
-        st.ready.push(@as(*py.Object, @ptrCast(h))) catch py.decref(h);
-    }
     startIdle(st);
 }
 
@@ -498,7 +457,16 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
     const p = try parseCall(args, nargs, kwnames, 1);
     const h = try handlemod.create(handlemod.handle_type.?, self_obj, args[0].?, p.positional, p.context);
     py.incref(h);
-    st.inbox.push(h);
+    // One FIFO for both schedulers, so a `call_soon` issued after a
+    // `call_soon_threadsafe` still runs after it. The caller holds the GIL and the
+    // loop touches `ready` only while holding it, so the push is atomic against it.
+    st.ready.push(@as(*py.Object, @ptrCast(h))) catch {
+        py.decref(h);
+        py.decref(h);
+        return py.errNoMemory();
+    };
+    // The only libuv call legal from a foreign thread; `uv_idle_start` is not, so
+    // the idle handle is armed by the waker on the loop thread.
     _ = uv.uv_async_send(st.waker);
     return @ptrCast(h);
 }
@@ -705,7 +673,6 @@ fn closeLoop(self_obj: *py.Object) py.Error!*py.Object {
 
     st.ready.deinit();
     st.timers.deinit();
-    drainInbox(st);
     dropFlushList(st);
     py.clear(&st.fatal);
     py.clear(&st.metrics_cb);
@@ -725,15 +692,6 @@ fn closeLoop(self_obj: *py.Object) py.Error!*py.Object {
     }
     closeAllHandles(st);
     return py.noneRef();
-}
-
-fn drainInbox(st: *State) void {
-    var node = st.inbox.takeAll();
-    while (node) |h| {
-        node = h.next;
-        h.next = null;
-        py.decref(h);
-    }
 }
 
 fn walkClose(handle: ?*uv.Handle, _: ?*anyopaque) callconv(.c) void {
@@ -925,8 +883,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
         if (needs_close) {
             st.ready.deinit();
             st.timers.deinit();
-            drainInbox(st);
-        }
+            }
         // The flush list owns one Python reference per transport regardless of
         // how the loop reached deallocation, including partially completed
         // explicit close paths.
@@ -974,8 +931,6 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
             transport = owned.owner_next;
         }
         r = dns.traverse(st, visitproc, arg);
-        if (r != 0) return r;
-        r = st.inbox.traverse(visitproc, arg);
         if (r != 0) return r;
         r = pollermod.traverse(st, visitproc, arg);
         if (r != 0) return r;

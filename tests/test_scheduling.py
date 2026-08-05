@@ -165,7 +165,7 @@ async def test_call_soon_threadsafe_from_another_thread() -> None:
 
 async def test_call_soon_threadsafe_validates_its_arguments() -> None:
     loop = running_loop()
-    with pytest.raises(TypeError, match="requires a callback"):
+    with pytest.raises(TypeError, match="missing 1 required positional argument"):
         loop.call_soon_threadsafe()  # type: ignore[call-arg]
 
 

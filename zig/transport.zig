@@ -28,6 +28,10 @@ const HANDLE_REF: u32 = 1 << 8;
 /// The tracked object is a pipe this transport owns, so closing it is the
 /// transport's job. A socket view is only detached - libuv owns its descriptor.
 const PIPE_OWNED: u32 = 1 << 9;
+/// The application asked for this transport to close. Loop teardown also sets
+/// CLOSING, and `repr` has to tell the two apart: asyncio still calls a transport
+/// "open" after `loop.close()`, because that never delivers `connection_lost`.
+const CLOSE_REQUESTED: u32 = 1 << 10;
 
 pub const KIND_TCP: c_int = 0;
 pub const KIND_PIPE: c_int = 1;
@@ -329,6 +333,19 @@ fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) vo
     const buffered = self.flags & BUFFERED != 0;
     if (buffered and self.view.obj != null) c.PyBuffer_Release(&self.view);
 
+    // A write pipe reads only to learn that the peer went away; asyncio arms the
+    // descriptor for the same reason and never delivers what arrives on it.
+    if (self.kind == KIND_PIPE_WRITE) {
+        py.clear(&self.read_bytes);
+        if (nread == 0) return;
+        if (bufferedBytes(self) != 0) {
+            forceClose(self, takeUvError(uv.EPIPE));
+        } else {
+            closeTransport(self);
+        }
+        return;
+    }
+
     if (nread > 0) {
         if (buffered) {
             const n = py.int(@as(c.Py_ssize_t, @intCast(nread))) orelse {
@@ -367,6 +384,20 @@ fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) vo
         return;
     }
     forceClose(self, takeUvError(@intCast(nread)));
+}
+
+fn repr(obj: ?*py.Object) callconv(.c) ?*py.Object {
+    const self: *Transport = @ptrCast(@alignCast(obj.?));
+    const name = py.typeOf(obj.?).tp_name;
+    if (self.flags & CLOSE_REQUESTED == 0) return c.PyUnicode_FromFormat("<%s open>", name);
+    if (self.flags & CONN_LOST != 0) return c.PyUnicode_FromFormat("<%s closed>", name);
+    return c.PyUnicode_FromFormat("<%s closing>", name);
+}
+
+fn isSocket(fd: uv.OsFd) bool {
+    var info: std.c.Stat = undefined;
+    if (std.c.fstat(fd, &info) != 0) return false;
+    return info.mode & std.c.S.IFMT == std.c.S.IFSOCK;
 }
 
 fn takeUvError(status: c_int) ?*py.Object {
@@ -680,6 +711,7 @@ pub fn closeFromLoop(handle: *uv.Handle) void {
 }
 
 fn closeTransport(self: *Transport) void {
+    self.flags |= CLOSE_REQUESTED;
     if (self.flags & CLOSING != 0) return;
     flushPending(self);
     self.flags |= CLOSING;
@@ -691,6 +723,7 @@ fn closeTransport(self: *Transport) void {
 }
 
 fn forceClose(self: *Transport, exc: ?*py.Object) void {
+    self.flags |= CLOSE_REQUESTED;
     discardPending(self);
     if (exc) |e| {
         py.clear(&self.conn_lost_exc);
@@ -953,7 +986,11 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
     bindProtocol(self, args[2].?);
     const connection_made = c.PyObject_GetAttr(args[2].?, str_connection_made) orelse return py.Error.Python;
     defer py.decref(connection_made);
-    const reads = kind != KIND_PIPE_WRITE;
+    // A write pipe still watches for readability, which is how asyncio notices the
+    // peer closing. Only on a socket, though: on a PTY it would steal the bytes a
+    // paired read transport is waiting for, and an O_WRONLY FIFO cannot be read at
+    // all - libuv rejects `uv_read_start` there with ENOTCONN.
+    const reads = kind != KIND_PIPE_WRITE or isSocket(fd);
     const start = if (reads) c.PyObject_GetAttr(obj, str_start_reading) orelse return py.Error.Python else null;
     defer if (start) |s| py.decref(s);
 
@@ -1142,6 +1179,7 @@ var slots = [_]c.PyType_Slot{
     .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
     .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
     .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&clear_)) },
+    .{ .slot = c.Py_tp_repr, .pfunc = @ptrCast(@constCast(&repr)) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
     .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("A libuv-backed stream transport.")) },
     .{ .slot = 0, .pfunc = null },
