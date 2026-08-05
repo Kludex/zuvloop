@@ -344,8 +344,9 @@ async def test_replacing_a_watcher_survives_a_reentrant_finaliser() -> None:
         loop.add_reader(fd, seen.append, "after")
         left.send(b"!")
         await asyncio.sleep(0.05)
-        # Level-triggered, so it fires until the data is read; only the surviving
-        # registration should ever have run.
+        # That it fires at all is the point: an orphaned poll handle would have
+        # made the registration above fail. Level-triggered, so it fires until
+        # the data is read.
         assert seen and set(seen) == {"after"}
         assert loop.remove_reader(fd) is True
     finally:
