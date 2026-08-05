@@ -17,8 +17,8 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import TypedDict
 
 import uvicorn
 
@@ -26,14 +26,32 @@ import zuvloop
 
 Factory = Callable[[], asyncio.AbstractEventLoop]
 
+
+class ResponseStart(TypedDict):
+    type: str
+    status: int
+    headers: list[tuple[bytes, bytes]]
+
+
+class ResponseBody(TypedDict):
+    type: str
+    body: bytes
+
+
+Message = ResponseStart | ResponseBody
+Scope = dict[str, str | bytes | int | list[tuple[bytes, bytes]]]
+Receive = Callable[[], Awaitable[Scope]]
+Send = Callable[[Message], Awaitable[None]]
+App = Callable[[Scope, Receive, Send], Awaitable[None]]
+
 BODY_SIZES = {"plaintext": 13, "10kb": 10 * 1024}
 
 
-def build_app(size: int) -> Any:
+def build_app(size: int) -> App:
     body = b"x" * size if size != 13 else b"Hello, World!"
     headers = [(b"content-type", b"text/plain"), (b"content-length", str(len(body)).encode())]
 
-    async def app(scope: Any, receive: Any, send: Any) -> None:
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
         await send({"type": "http.response.start", "status": 200, "headers": headers})
         await send({"type": "http.response.body", "body": body})
 
@@ -49,7 +67,7 @@ def free_port() -> int:
 class ServerThread:
     """Runs uvicorn on a specific loop, in a thread, and reports the loop it used."""
 
-    def __init__(self, factory: Factory, app: Any, port: int) -> None:
+    def __init__(self, factory: Factory, app: App, port: int) -> None:
         self._factory = factory
         self._server = uvicorn.Server(
             uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error", access_log=False)

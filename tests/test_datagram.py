@@ -4,7 +4,7 @@ import asyncio
 import socket
 import tempfile
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
@@ -13,18 +13,20 @@ from zuvloop import _connect, _zuvloop
 
 pytestmark = pytest.mark.anyio
 
+Address = tuple[str, int] | str
+
 
 class Echo(asyncio.DatagramProtocol):
     """Server endpoint that answers every datagram to its sender."""
 
     def __init__(self) -> None:
         self.transport: asyncio.DatagramTransport | None = None
-        self.received: list[tuple[bytes, Any]] = []
+        self.received: list[tuple[bytes, Address]] = []
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         self.transport = transport  # type: ignore[assignment]
 
-    def datagram_received(self, data: bytes, addr: Any) -> None:
+    def datagram_received(self, data: bytes, addr: Address) -> None:
         self.received.append((data, addr))
         assert self.transport is not None
         self.transport.sendto(b"re:" + data, addr)
@@ -35,7 +37,7 @@ class Collector(asyncio.DatagramProtocol):
 
     def __init__(self) -> None:
         self.transport: asyncio.DatagramTransport | None = None
-        self.received: list[tuple[bytes, Any]] = []
+        self.received: list[tuple[bytes, Address]] = []
         self.errors: list[BaseException] = []
         self.done: asyncio.Future[bytes] | None = None
         self.lost: asyncio.Future[BaseException | None] | None = None
@@ -46,7 +48,7 @@ class Collector(asyncio.DatagramProtocol):
         self.done = loop.create_future()
         self.lost = loop.create_future()
 
-    def datagram_received(self, data: bytes, addr: Any) -> None:
+    def datagram_received(self, data: bytes, addr: Address) -> None:
         self.received.append((data, addr))
         assert self.done is not None
         if not self.done.done():
@@ -61,7 +63,7 @@ class Collector(asyncio.DatagramProtocol):
             self.lost.set_result(exc)
 
 
-async def start_echo() -> tuple[asyncio.DatagramTransport, Echo, Any]:
+async def start_echo() -> tuple[asyncio.DatagramTransport, Echo, Address]:
     transport, protocol = await running_loop().create_datagram_endpoint(Echo, local_addr=("127.0.0.1", 0))
     return transport, protocol, transport.get_extra_info("sockname")
 
@@ -308,7 +310,7 @@ async def test_a_socket_that_cannot_be_bound_is_closed() -> None:
 
 
 async def test_a_transport_that_fails_to_adopt_releases_the_socket(monkeypatch: pytest.MonkeyPatch) -> None:
-    def refuse(*args: Any, **kwargs: Any) -> Any:
+    def refuse(*args: object, **kwargs: object) -> _zuvloop.DatagramTransport:
         raise RuntimeError("refused")
 
     monkeypatch.setattr(type(running_loop()), "_make_datagram_transport", refuse)
@@ -317,7 +319,7 @@ async def test_a_transport_that_fails_to_adopt_releases_the_socket(monkeypatch: 
 
 
 async def test_an_empty_resolution_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def nothing(*args: Any, **kwargs: Any) -> list[Any]:
+    async def nothing(*args: object, **kwargs: object) -> list[tuple[int, int, int, str, tuple[str, int]]]:
         return []
 
     monkeypatch.setattr(type(running_loop()), "getaddrinfo", nothing)

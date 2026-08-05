@@ -4,7 +4,8 @@ import asyncio
 import os
 import signal
 import sys
-from typing import Any
+from asyncio.subprocess import Process
+from pathlib import Path
 
 import pytest
 
@@ -156,7 +157,7 @@ async def test_several_children_run_concurrently() -> None:
 
 
 async def test_a_cancelled_spawn_reaps_the_child() -> None:
-    task: asyncio.Task[Any] = asyncio.ensure_future(
+    task: asyncio.Task[Process] = asyncio.ensure_future(
         asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(30)", stdout=PIPE)
     )
     # The child is spawned synchronously and the setup then waits for its pipes,
@@ -253,7 +254,7 @@ async def test_a_spawn_that_fails_closes_the_pipes_it_opened() -> None:
     assert len(os.listdir("/dev/fd")) < before + 10
 
 
-async def test_a_descriptor_can_be_handed_to_the_child(tmp_path: Any) -> None:
+async def test_a_descriptor_can_be_handed_to_the_child(tmp_path: Path) -> None:
     target = tmp_path / "out.txt"
     with open(target, "wb") as sink:
         process = await asyncio.create_subprocess_exec("/bin/echo", "to a file", stdout=sink)
@@ -261,7 +262,7 @@ async def test_a_descriptor_can_be_handed_to_the_child(tmp_path: Any) -> None:
     assert target.read_bytes() == b"to a file\n"
 
 
-async def test_a_raw_descriptor_number_can_be_handed_to_the_child(tmp_path: Any) -> None:
+async def test_a_raw_descriptor_number_can_be_handed_to_the_child(tmp_path: Path) -> None:
     target = tmp_path / "raw.txt"
     fd = os.open(target, os.O_WRONLY | os.O_CREAT)
     try:

@@ -22,10 +22,10 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
-from collections.abc import Callable, Coroutine
-from typing import Any
+from collections.abc import Callable, Coroutine, Iterator
 
 import pytest
+from pytest_codspeed import BenchmarkFixture
 
 import zuvloop
 
@@ -41,14 +41,14 @@ else:
 
 
 @pytest.fixture(params=list(LOOPS), ids=list(LOOPS))
-def loop(request: pytest.FixtureRequest) -> Any:
+def loop(request: pytest.FixtureRequest) -> Iterator[asyncio.AbstractEventLoop]:
     factory = LOOPS[request.param]
     loop = factory() if factory is not None else asyncio.new_event_loop()
     yield loop
     loop.close()
 
 
-def drive(loop: asyncio.AbstractEventLoop, work: Callable[[], Coroutine[Any, Any, None]]) -> Callable[[], None]:
+def drive(loop: asyncio.AbstractEventLoop, work: Callable[[], Coroutine[None, None, None]]) -> Callable[[], None]:
     return lambda: loop.run_until_complete(work())
 
 
@@ -57,7 +57,7 @@ def drive(loop: asyncio.AbstractEventLoop, work: Callable[[], Coroutine[Any, Any
 
 
 @pytest.mark.benchmark
-def test_call_soon(benchmark: Any, loop: asyncio.AbstractEventLoop) -> None:
+def test_call_soon(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
     iterations = 10_000
 
     async def work() -> None:
@@ -78,7 +78,7 @@ def test_call_soon(benchmark: Any, loop: asyncio.AbstractEventLoop) -> None:
 
 
 @pytest.mark.benchmark
-def test_call_soon_args(benchmark: Any, loop: asyncio.AbstractEventLoop) -> None:
+def test_call_soon_args(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
     """Arguments are where the handle layout shows: asyncio packs a tuple per call."""
     iterations = 10_000
 
@@ -100,7 +100,7 @@ def test_call_soon_args(benchmark: Any, loop: asyncio.AbstractEventLoop) -> None
 
 
 @pytest.mark.benchmark
-def test_timers(benchmark: Any, loop: asyncio.AbstractEventLoop) -> None:
+def test_timers(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
     """Schedule then cancel, never firing: timer bookkeeping on its own."""
     iterations = 10_000
 
@@ -112,7 +112,7 @@ def test_timers(benchmark: Any, loop: asyncio.AbstractEventLoop) -> None:
 
 
 @pytest.mark.benchmark
-def test_loop_iterations(benchmark: Any, loop: asyncio.AbstractEventLoop) -> None:
+def test_loop_iterations(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
     """One callback per turn, so the poll is included in every iteration."""
 
     async def work() -> None:
@@ -127,7 +127,7 @@ def test_loop_iterations(benchmark: Any, loop: asyncio.AbstractEventLoop) -> Non
 
 
 @pytest.mark.benchmark
-def test_echo_roundtrips(benchmark: Any, loop: asyncio.AbstractEventLoop) -> None:
+def test_echo_roundtrips(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
     payload = os.urandom(1024)
     roundtrips = 2_000
 
@@ -174,7 +174,7 @@ def test_echo_roundtrips(benchmark: Any, loop: asyncio.AbstractEventLoop) -> Non
 
 
 @pytest.mark.benchmark
-def test_split_response_write(benchmark: Any, loop: asyncio.AbstractEventLoop) -> None:
+def test_split_response_write(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
     """A response sent as a header write plus a body write, as ASGI does it.
 
     A loop that sends each write as it arrives spends a syscall per piece.
@@ -227,7 +227,7 @@ def test_split_response_write(benchmark: Any, loop: asyncio.AbstractEventLoop) -
 
 
 @pytest.mark.benchmark
-def test_bulk_stream(benchmark: Any, loop: asyncio.AbstractEventLoop) -> None:
+def test_bulk_stream(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
     """Bulk transfer with flow control engaged."""
     chunk = b"x" * 65536
     total = 16 << 20
@@ -267,7 +267,7 @@ def test_bulk_stream(benchmark: Any, loop: asyncio.AbstractEventLoop) -> None:
 
 
 @pytest.mark.benchmark
-def test_getaddrinfo_literal(benchmark: Any, loop: asyncio.AbstractEventLoop) -> None:
+def test_getaddrinfo_literal(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
     """An address literal, which is what `create_connection` is handed most often."""
 
     async def work() -> None:
@@ -282,7 +282,7 @@ def test_getaddrinfo_literal(benchmark: Any, loop: asyncio.AbstractEventLoop) ->
 
 
 @pytest.mark.benchmark
-def test_process_spawn(benchmark: Any, loop: asyncio.AbstractEventLoop) -> None:
+def test_process_spawn(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
     async def work() -> None:
         for _ in range(20):
             process = await asyncio.create_subprocess_exec(
@@ -297,7 +297,7 @@ def test_process_spawn(benchmark: Any, loop: asyncio.AbstractEventLoop) -> None:
 
 
 @pytest.mark.benchmark
-def test_process_pipe(benchmark: Any, loop: asyncio.AbstractEventLoop) -> None:
+def test_process_pipe(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
     payload = b"p" * (1 << 20)
 
     async def work() -> None:
