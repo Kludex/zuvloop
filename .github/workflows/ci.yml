@@ -48,6 +48,46 @@ jobs:
           uv run coverage report
 
 
+  # The wheels are built `ReleaseFast`, which disables every bounds and overflow
+  # check, and this layer is where the defects have been. `ReleaseSafe` keeps
+  # those checks on, so an index or a cast that is wrong traps here instead of
+  # corrupting memory in a release.
+  release-safe:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --python 3.14 --group dev
+
+      # Built straight with zig rather than through the wheel hook, which pins
+      # `ReleaseFast`. The install step puts it where the package expects.
+      - name: Build checked
+        run: |
+          HATCH_ZIG_PYTHON_INCLUDE="$(uv run python -c 'import sysconfig; print(sysconfig.get_path("include"))')" \
+          HATCH_ZIG_EXT_SUFFIX="$(uv run python -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')" \
+            zig build -Doptimize=ReleaseSafe
+
+      - name: Test
+        run: uv run pytest
+
+      - name: Conformance
+        run: uv run python scripts/conformance.py
+
+
   benchmarks:
     runs-on: ubuntu-latest
     permissions:
