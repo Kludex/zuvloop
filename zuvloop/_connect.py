@@ -258,27 +258,33 @@ class ConnectionOperations(SocketOperations):
     ) -> list[socket.socket]:
         hosts: Sequence[str | None]
         if host is None or isinstance(host, str):
-            hosts = [host]
+            # An empty host means every interface, which is what a null host
+            # resolves to; passing it through would ask for the host named "".
+            hosts = [host or None]
         else:
-            hosts = list(host)
+            hosts = [entry or None for entry in host]
         if reuse_address is None:
             reuse_address = os.name == "posix"
 
+        resolved: list[tuple[int, int, int, str, Any]] = []
+        for entry in hosts:
+            resolved += await self.getaddrinfo(entry, port, family=family, type=socket.SOCK_STREAM, flags=flags)
+
         sockets: list[socket.socket] = []
         try:
-            for entry in hosts:
-                infos = await self.getaddrinfo(entry, port, family=family, type=socket.SOCK_STREAM, flags=flags)
-                for af, kind, proto, _canon, address in infos:
-                    sock = socket.socket(af, kind, proto)
-                    sockets.append(sock)
-                    if reuse_address:
-                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    if reuse_port:
-                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-                    if af == socket.AF_INET6 and hasattr(socket, "IPPROTO_IPV6"):
-                        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, True)
-                    sock.setblocking(False)
-                    sock.bind(address)
+            # Hosts that resolve to the same address collapse to one socket -
+            # repeating a host in the list is not a request to bind it twice.
+            for af, kind, proto, _canon, address in dict.fromkeys(resolved):
+                sock = socket.socket(af, kind, proto)
+                sockets.append(sock)
+                if reuse_address:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                if reuse_port:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                if af == socket.AF_INET6 and hasattr(socket, "IPPROTO_IPV6"):
+                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, True)
+                sock.setblocking(False)
+                sock.bind(address)
         except BaseException:
             for sock in sockets:
                 sock.close()

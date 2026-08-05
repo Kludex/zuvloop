@@ -36,11 +36,21 @@ HARNESS = '''\
 
 `SubprocessTestsMixin` has no `setUp`; every stdlib user composes it with
 `EventLoopTestsMixin`, which is what builds `self.loop`.
+
+Three tests are skipped. All three are white-box tests of CPython's own loop
+internals rather than of observable behaviour, so no third-party loop can pass
+them - which is not a reason to skip a test lightly, so each one says why.
 """
 import unittest
 import zuvloop
 from test.test_asyncio import utils as test_utils
 from test.test_asyncio import test_events, test_sock_lowlevel
+
+_MIXIN = test_events.EventLoopTestsMixin
+
+
+def _inapplicable(name, reason):
+    return unittest.skip(reason)(getattr(_MIXIN, name))
 
 
 class ZuvloopEventLoopTests(test_events.EventLoopTestsMixin,
@@ -48,6 +58,27 @@ class ZuvloopEventLoopTests(test_events.EventLoopTestsMixin,
                             test_utils.TestCase):
     def create_event_loop(self):
         return zuvloop.new_event_loop()
+
+    # Patches `asyncio.base_events.socket`, which only rebinds the name inside
+    # that stdlib module, and stubs `loop._start_serving`, which only the stdlib
+    # Server calls. The sockets it asserts on are mocks: it reads `getsockbyname`,
+    # which real sockets do not have. The behaviour it targets - repeated hosts
+    # collapsing to one socket - is covered in this repo's own suite instead.
+    test_create_server_multiple_hosts_ipv4 = _inapplicable(
+        "test_create_server_multiple_hosts_ipv4",
+        "mocks asyncio.base_events.socket and loop._start_serving",
+    )
+    test_create_server_multiple_hosts_ipv6 = _inapplicable(
+        "test_create_server_multiple_hosts_ipv6",
+        "mocks asyncio.base_events.socket and loop._start_serving",
+    )
+    # Replaces `loop._run_once` to count how often `BaseEventLoop` rounds the
+    # `select()` timeout. zuvloop iterates inside `uv_run`, so there is no such
+    # callable to replace and the assertion would be vacuous.
+    test_timeout_rounding = _inapplicable(
+        "test_timeout_rounding",
+        "counts BaseEventLoop._run_once select() rounding; zuvloop iterates in uv_run",
+    )
 
 
 class ZuvloopSockTests(test_sock_lowlevel.BaseSockTestsMixin, test_utils.TestCase):

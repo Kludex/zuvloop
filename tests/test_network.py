@@ -1230,3 +1230,25 @@ async def test_contextvars_reach_protocol_callbacks() -> None:
         "data_received": "set-before-the-connection",
         "connection_lost": "set-before-the-connection",
     }
+
+
+async def test_a_repeated_host_binds_one_socket() -> None:
+    """Naming a host twice is not a request to bind it twice."""
+    loop = running_loop()
+    server = await loop.create_server(Echo, ["127.0.0.1", "127.0.0.1"], 0, start_serving=False)
+    try:
+        assert len(server.sockets) == 1
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_an_empty_host_binds_every_interface() -> None:
+    """`host=""` means the null host, not a host literally named ""."""
+    loop = running_loop()
+    server = await loop.create_server(Echo, "", 0, start_serving=False)
+    try:
+        assert server.sockets
+    finally:
+        server.close()
+        await server.wait_closed()
