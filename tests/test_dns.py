@@ -109,10 +109,18 @@ async def test_getaddrinfo_without_a_host_or_a_port_reports_no_name() -> None:
     assert caught.value.args == stdlib.value.args
 
 
-async def test_getnameinfo_reports_failures_as_the_stdlib_does() -> None:
-    """Whether a reverse lookup fails depends on the resolver; agreeing does not."""
+@pytest.mark.parametrize(
+    "flags",
+    [
+        # Contradictory, and the resolver says so - the failure path.
+        socket.NI_NAMEREQD | socket.NI_NUMERICHOST,
+        # A real reverse lookup, answered from the hosts file - the success path.
+        socket.NI_NAMEREQD,
+    ],
+)
+async def test_getnameinfo_answers_as_the_stdlib_does(flags: int) -> None:
+    """Whether a reverse lookup succeeds is the resolver's business; agreeing is not."""
     loop = running_loop()
-    flags = socket.NI_NAMEREQD | socket.NI_NUMERICHOST
     try:
         theirs: tuple[str, str] | tuple[int, str] = socket.getnameinfo(("127.0.0.1", 80), flags)
     except socket.gaierror as exc:

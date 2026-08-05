@@ -196,16 +196,16 @@ fn resolverException(status: c_int) ?*py.Object {
 fn raisePlatformError(code: std.c.EAI) py.Error {
     const exc = c.PyObject_CallFunction(gaierror, "is", @intFromEnum(code), std.c.gai_strerror(code)) orelse
         return py.Error.Python;
-    defer py.decref(exc);
-    c.PyErr_SetObject(gaierror, exc);
+    c.PyErr_SetRaisedException(exc);
     return py.Error.Python;
 }
 
 /// Raises it, for the paths that report synchronously rather than through a future.
+/// `PyErr_SetRaisedException` takes the reference, and needs no separate type -
+/// `PyObject_Type` would hand back one more to own.
 fn raiseResolverError(status: c_int) py.Error {
     const exc = resolverException(status) orelse return py.Error.Python;
-    defer py.decref(exc);
-    c.PyErr_SetObject(@ptrCast(c.PyObject_Type(exc)), exc);
+    c.PyErr_SetRaisedException(exc);
     return py.Error.Python;
 }
 
