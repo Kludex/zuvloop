@@ -13,16 +13,18 @@ asyncio loop, with every `Popen` keyword — `env`, `cwd`, `pass_fds`,
 
 ## How it is put together
 
-The process is driven by asyncio's own subprocess transport. What that transport
-needs from a loop is `connect_read_pipe` and `connect_write_pipe`, and those are
-native here, so the **stdio data path is zuvloop's while the spawn is CPython's**.
+The child is spawned with `uv_spawn` and its stdio runs over native pipe
+transports. asyncio's own subprocess transport still drives it: that transport
+reaches for six things on a `subprocess.Popen` and the three pipe objects, so
+presenting that surface over a libuv process handle replaces the spawn without
+touching the protocol callbacks or the exit bookkeeping.
 
-That is the same trade as sockets: a process is started once, so the tested
-implementation is worth more there than owning the fork. The bytes, which are not
-once, go through the native transport.
+libuv reaps the child itself and reports the status through its exit callback,
+so there is no child watcher - no thread per child, and no pidfd to poll.
 
-Child reaping uses a pidfd where the kernel has one, and a thread per child
-otherwise.
+Signals go through `uv_process_kill` rather than the pid. asyncio signals the raw
+pid and swallows the lookup error, which can reach a process that merely
+inherited a reaped pid; a handle can only signal the child it spawned.
 
 ## Pipes
 

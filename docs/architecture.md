@@ -12,6 +12,7 @@ packet, Python if it runs per connection or per loop.**
 | Datagram sends and receives | `zig/datagram.zig` | Once per datagram |
 | Descriptor watchers | `zig/poller.zig` | One `uv_poll_t` per descriptor |
 | Name resolution | `zig/dns.zig` | On libuv's threadpool, not the executor |
+| Process spawning | `zig/process.zig` | libuv reaps the child, so no watcher is needed |
 | Connection and server setup | `src/zuvloop/_connect.py` | Once per connection |
 | Lifecycle, executors, error reporting | `src/zuvloop/_base.py` | Once per loop |
 | OpenTelemetry emission | `src/zuvloop/_instrumentation.py` | The only file that imports OTel |

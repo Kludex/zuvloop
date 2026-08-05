@@ -19,6 +19,8 @@ best of each is reported, with the run-to-run spread beside it.
 | aiohttp client | 13.2k req/s | 16.2k req/s | **16.9k req/s** | **1.04x** |
 | UDP round trips, 512 B | 39.8k/s | 53.1k/s | **54.2k/s** | **1.02x** |
 | `getaddrinfo`, numeric host | 28.5k/s | 1.57M/s | **1.90M/s** | **1.21x** |
+| subprocess spawn | 582/s | 1,174/s | 1,109/s | 0.95x |
+| subprocess pipe | 838 MiB/s | 677 MiB/s | **1,547 MiB/s** | **2.29x** |
 
 ## Reading these numbers
 
