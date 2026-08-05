@@ -37,7 +37,7 @@ jobs:
       - name: Lint
         run: |
           uv run ruff check
-          uv run ruff format --check src tests benchmarks scripts hatch_build.py
+          uv run ruff format --check
 
       - name: Type check
         run: uv run mypy

@@ -53,7 +53,9 @@ include = ["zuvloop", "zig", "vendor", "build.zig", "build.zig.zon", "LICENSE", 
 [tool.ruff]
 line-length = 120
 src = [".", "tests"]
-extend-exclude = ["vendor"]
+# Documentation code blocks render in a narrower column than the source line
+# length assumes, so joining them to 120 characters makes them scroll sideways.
+extend-exclude = ["vendor", "docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "FA", "UP", "RUF100"]
@@ -80,6 +82,23 @@ addopts = "--strict-config --strict-markers"
 testpaths = ["tests"]
 xfail_strict = true
 filterwarnings = ["error"]
+
+[tool.cibuildwheel]
+# Only what the project supports: CPython 3.14 on Linux and macOS. The
+# free-threaded build is excluded until the loop's GIL handling is tested
+# against one - it saves a thread state and counts nesting, and assumes there is
+# a GIL to save.
+build = "cp314-*"
+skip = "*-musllinux_i686 *t-*"
+build-frontend = "build[uv]"
+test-command = "python -c \"import zuvloop, asyncio; asyncio.run(asyncio.sleep(0), loop_factory=zuvloop.new_event_loop); print(zuvloop.libuv_version())\""
+
+[tool.cibuildwheel.linux]
+# The Zig toolchain comes from PyPI, so the manylinux image needs nothing extra.
+archs = ["x86_64", "aarch64"]
+
+[tool.cibuildwheel.macos]
+archs = ["x86_64", "arm64"]
 
 [tool.coverage.run]
 source_pkgs = ["zuvloop"]
