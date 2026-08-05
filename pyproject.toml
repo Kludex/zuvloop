@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-ziglang", "ziglang==0.16.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -41,18 +41,18 @@ bench = ["aiohttp", "httptools", "pytest-codspeed>=5", "uvicorn", "uvloop>=0.21"
 docs = ["zensical"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/zuvloop"]
-artifacts = ["src/zuvloop/*.so"]
+packages = ["zuvloop"]
 
-[tool.hatch.build.targets.wheel.hooks.custom]
-path = "hatch_build.py"
+[tool.hatch.build.targets.wheel.hooks.zig]
+package = "zuvloop"
+optimize = "ReleaseFast"
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "zig", "vendor", "build.zig", "build.zig.zon", "hatch_build.py", "README.md"]
+include = ["zuvloop", "zig", "vendor", "build.zig", "build.zig.zon", "LICENSE", "README.md"]
 
 [tool.ruff]
 line-length = 120
-src = ["src", "tests"]
+src = [".", "tests"]
 extend-exclude = ["vendor"]
 
 [tool.ruff.lint]
@@ -64,7 +64,7 @@ combine-as-imports = true
 [tool.mypy]
 strict = true
 python_version = "3.14"
-files = ["src", "tests", "benchmarks", "hatch_build.py", "scripts"]
+files = ["zuvloop", "tests", "benchmarks", "scripts"]
 exclude = ["^vendor/"]
 
 [[tool.mypy.overrides]]
@@ -87,7 +87,7 @@ source = ["tests"]
 branch = true
 
 [tool.coverage.paths]
-source = ["src/zuvloop", "*/src/zuvloop"]
+source = ["zuvloop", "*/zuvloop"]
 
 [tool.coverage.report]
 fail_under = 100

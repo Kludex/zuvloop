@@ -17,3 +17,7 @@ site/
 
 # CodSpeed run data
 .codspeed/
+
+# Compiled extension, built in place
+zuvloop/*.so
+zig-out/

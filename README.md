@@ -128,9 +128,9 @@ controllable clock should schedule against one explicitly.
 | Datagram sends and receives | `zig/datagram.zig` | Called once per datagram |
 | Descriptor watchers | `zig/poller.zig` | One `uv_poll_t` per descriptor |
 | Name resolution | `zig/dns.zig` | Runs on libuv's threadpool, not the executor |
-| Connection and server setup | `src/zuvloop/_connect.py` | Called once per connection |
-| Lifecycle, executors, error reporting | `src/zuvloop/_base.py` | Called once per loop |
-| OpenTelemetry emission | `src/zuvloop/_instrumentation.py` | The only file that imports OTel |
+| Connection and server setup | `zuvloop/_connect.py` | Called once per connection |
+| Lifecycle, executors, error reporting | `zuvloop/_base.py` | Called once per loop |
+| OpenTelemetry emission | `zuvloop/_instrumentation.py` | The only file that imports OTel |
 
 A few decisions worth knowing about:
 

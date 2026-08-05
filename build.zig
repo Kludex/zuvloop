@@ -58,10 +58,14 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // hatch-ziglang passes the building interpreter through the environment, so a
+    // wheel is always built against the interpreter that asked for it. The `-D`
+    // options are for building by hand.
     const python_include = b.option([]const u8, "python-include", "CPython include directory") orelse
-        @panic("-Dpython-include is required");
-    const ext_path = b.option([]const u8, "ext-path", "Installed name of the extension module") orelse
-        "_zuvloop.so";
+        (b.graph.environ_map.get("HATCH_ZIG_PYTHON_INCLUDE") orelse
+            @panic("python-include is required: pass -Dpython-include or set HATCH_ZIG_PYTHON_INCLUDE"));
+    const ext_suffix = b.option([]const u8, "ext-suffix", "Extension module suffix") orelse
+        (b.graph.environ_map.get("HATCH_ZIG_EXT_SUFFIX") orelse ".so");
     const os = target.result.os.tag;
 
     const mod = b.createModule(.{
@@ -120,9 +124,11 @@ pub fn build(b: *std.Build) void {
     lib.bundle_compiler_rt = true;
     if (os == .linux) mod.linkSystemLibrary("rt", .{});
 
+    // Relative to the install prefix, so with the default `zig-out` the module
+    // lands beside the Python sources, which is where the build hook looks.
     b.getInstallStep().dependOn(&b.addInstallFileWithDir(
         lib.getEmittedBin(),
-        .prefix,
-        ext_path,
+        .{ .custom = "../zuvloop" },
+        b.fmt("_zuvloop{s}", .{ext_suffix}),
     ).step);
 }
