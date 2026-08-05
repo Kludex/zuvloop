@@ -373,3 +373,18 @@ async def test_resolving_a_cancelled_waiter_is_a_no_op() -> None:
     waiter.cancel()
     _connect._set_result_unless_done(waiter)
     assert waiter.cancelled()
+
+
+@pytest.mark.parametrize("port", [-1, 65536, 70000])
+async def test_an_out_of_range_port_is_rejected(port: int) -> None:
+    """`uv_ip4_addr` stores `htons(port)`, so 70000 would address 4464 instead.
+
+    The standard library refuses the address rather than sending it somewhere
+    else, and `socket.sendto` raises `OverflowError` for it.
+    """
+    transport, _protocol = await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
+    try:
+        with pytest.raises(OverflowError, match="0-65535"):
+            transport.sendto(b"misdirected", ("127.0.0.1", port))
+    finally:
+        transport.close()

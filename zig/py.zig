@@ -136,6 +136,10 @@ pub fn errType(comptime msg: [:0]const u8) Error {
     return err(@ptrCast(c.PyExc_TypeError), msg);
 }
 
+pub fn errOverflow(comptime msg: [:0]const u8) Error {
+    return err(@ptrCast(c.PyExc_OverflowError), msg);
+}
+
 pub fn errNotImplemented(comptime msg: [:0]const u8) Error {
     return err(@ptrCast(c.PyExc_NotImplementedError), msg);
 }

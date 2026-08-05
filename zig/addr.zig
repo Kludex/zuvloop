@@ -54,6 +54,9 @@ pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!vo
 
     const host_obj = try tupleItem(address, 0);
     const port = try py.asCInt(try tupleItem(address, 1));
+    // `uv_ip4_addr` stores `htons(port)`, which truncates rather than complains:
+    // a port of 70000 would quietly address 4464. The standard library rejects it.
+    if (port < 0 or port > 65535) return py.errOverflow("port must be 0-65535");
 
     var host_buf: [256]u8 = undefined;
     const host: [*:0]const u8 = blk: {
