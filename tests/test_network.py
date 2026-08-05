@@ -1306,3 +1306,26 @@ async def test_the_asyncio_server_hook_unregisters_and_closes() -> None:
     loop._stop_serving(sock)
 
     assert sock.fileno() == -1
+
+
+async def test_serve_forever_on_a_closed_server_is_rejected() -> None:
+    """asyncio raises rather than waiting on a server that can never serve."""
+    server, _port, _ = await start_echo()
+    server.close()
+    await server.wait_closed()
+    with pytest.raises(RuntimeError, match="is closed"):
+        await server.serve_forever()
+
+
+async def test_serve_forever_twice_is_rejected() -> None:
+    server, _port, _ = await start_echo()
+    loop = running_loop()
+    first = loop.create_task(server.serve_forever())
+    await asyncio.sleep(0.02)
+    try:
+        with pytest.raises(RuntimeError, match="already being awaited"):
+            await server.serve_forever()
+    finally:
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first

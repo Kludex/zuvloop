@@ -39,7 +39,8 @@ class Server(asyncio.AbstractServer):
         self._active = 0
         self._transports: set[asyncio.Transport] = set()
         self._serving = False
-        self._waiters: list[asyncio.Future[None]] = []
+        self._waiters: list[asyncio.Future[None]] | None = []
+        self._serving_forever: asyncio.Future[None] | None = None
         self._cleanup_path: str | None = None
         self._cleanup_identity: tuple[int, int] | None = None
 
@@ -134,29 +135,39 @@ class Server(asyncio.AbstractServer):
             transport.abort()
 
     def _wakeup(self) -> None:
-        waiters, self._waiters = self._waiters, []
-        for waiter in waiters:
+        # `None` rather than an empty list, as asyncio does: it is how the two of
+        # them say "closed, and every connection gone" to a later `wait_closed`.
+        waiters, self._waiters = self._waiters, None
+        for waiter in waiters or ():
             if not waiter.done():
                 waiter.set_result(None)
 
     async def wait_closed(self) -> None:
-        if self._sockets is None and self._active == 0:
+        if self._waiters is None or (self._sockets is None and self._active == 0):
             return
         waiter = self._loop.create_future()
         self._waiters.append(waiter)
         try:
             await waiter
         finally:
-            try:
+            # A cancelled waiter is dropped rather than left for `_wakeup` to
+            # skip, so waiting and giving up repeatedly cannot grow the list.
+            # Once `_wakeup` has run there is no list to drop it from.
+            if self._waiters is not None:
                 self._waiters.remove(waiter)
-            except ValueError:
-                pass
 
     async def serve_forever(self) -> None:
+        if self._serving_forever is not None:
+            raise RuntimeError(f"server {self!r} is already being awaited on serve_forever()")
+        if self._sockets is None:
+            raise RuntimeError(f"server {self!r} is closed")
+
         self._start_serving()
+        self._serving_forever = self._loop.create_future()
         try:
-            await self._loop.create_future()
+            await self._serving_forever
         finally:
+            self._serving_forever = None
             self.close()
 
     async def __aenter__(self) -> Server:
