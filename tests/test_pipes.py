@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
-from typing import Any
+from typing import IO
 
 import pytest
 
@@ -38,7 +38,7 @@ class Reader(asyncio.Protocol):
             self.done.set_result(None)
 
 
-async def make_pipe() -> tuple[Any, Any]:
+async def make_pipe() -> tuple[IO[bytes], IO[bytes]]:
     read_fd, write_fd = os.pipe()
     return open(read_fd, "rb", 0), open(write_fd, "wb", 0)
 
@@ -163,7 +163,7 @@ async def test_a_pipe_that_cannot_be_adopted_releases_its_descriptor(monkeypatch
     loop = running_loop()
     reader_file, writer_file = await make_pipe()
 
-    def refuse(*args: Any, **kwargs: Any) -> Any:
+    def refuse(*args: object, **kwargs: object) -> zuvloop.Transport:
         raise RuntimeError("refused")
 
     monkeypatch.setattr(type(loop), "_make_transport", refuse)

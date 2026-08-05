@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from collections.abc import Mapping
 
 import pytest
 from opentelemetry.trace import StatusCode
 
 import zuvloop
-from conftest import Telemetry, attribute, running_loop
+from conftest import Telemetry, attribute, collect_contexts, numeric_attribute, running_loop
 from zuvloop._instrumentation import capture_call_graph, publish_metrics
 
 pytestmark = pytest.mark.anyio
@@ -27,7 +27,7 @@ async def test_slow_callbacks_are_reported(telemetry: Telemetry) -> None:
 
     span = telemetry.spans("zuvloop.slow_callback")[0]
     assert span.status.status_code is StatusCode.ERROR
-    assert attribute(span, "duration") >= 0.01
+    assert numeric_attribute(span, "duration") >= 0.01
     assert "Handle" in str(attribute(span, "code.callback"))
     assert telemetry.counted("zuvloop.slow_callbacks") >= 1
 
@@ -47,7 +47,7 @@ async def test_a_slow_callback_span_covers_the_time_it_took(telemetry: Telemetry
     span = telemetry.spans("zuvloop.slow_callback")[0]
     assert span.end_time is not None and span.start_time is not None
     measured = (span.end_time - span.start_time) / 1e9
-    assert measured == pytest.approx(attribute(span, "duration"), abs=1e-6)
+    assert measured == pytest.approx(numeric_attribute(span, "duration"), abs=1e-6)
     assert measured >= 0.05
 
 
@@ -104,9 +104,8 @@ async def test_unhandled_exceptions_are_reported(telemetry: Telemetry) -> None:
 
 async def test_a_custom_exception_handler_takes_over() -> None:
     loop = running_loop()
-    seen: list[dict[str, Any]] = []
     previous = loop.get_exception_handler()
-    loop.set_exception_handler(lambda _loop, context: seen.append(context))
+    seen = collect_contexts(loop)
     assert loop.get_exception_handler() is not None
     try:
         loop.call_soon(lambda: 1 / 0)
@@ -119,7 +118,7 @@ async def test_a_custom_exception_handler_takes_over() -> None:
 async def test_a_failing_exception_handler_falls_back(telemetry: Telemetry) -> None:
     loop = running_loop()
 
-    def broken(_loop: Any, _context: dict[str, Any]) -> None:
+    def broken(_loop: asyncio.AbstractEventLoop, _context: Mapping[str, object]) -> None:
         raise RuntimeError("handler is broken")
 
     previous = loop.get_exception_handler()
@@ -201,13 +200,12 @@ async def test_the_sampling_interval_must_be_positive() -> None:
 
 async def test_a_failing_sampler_callback_is_reported() -> None:
     loop = running_loop()
-    seen: list[dict[str, Any]] = []
 
     def boom(_snapshot: dict[str, int]) -> None:
         raise RuntimeError("sampler failed")
 
     previous = loop.get_exception_handler()
-    loop.set_exception_handler(lambda _loop, context: seen.append(context))
+    seen = collect_contexts(loop)
     loop._start_metrics(0.02, boom)
     try:
         await asyncio.sleep(0.06)
