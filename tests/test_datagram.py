@@ -144,15 +144,23 @@ async def test_abort_closes_immediately() -> None:
     await asyncio.wait_for(protocol.lost, 2)
 
 
-async def test_sending_after_close_is_rejected() -> None:
+async def test_sending_after_close_is_dropped() -> None:
+    """asyncio drops it; a shutdown race should not raise out of user code."""
     server, _echo, address = await start_echo()
     transport, _protocol = await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
     transport.close()
     try:
-        with pytest.raises(RuntimeError, match="after close"):
-            transport.sendto(b"hello", address)
+        transport.sendto(b"hello", address)
     finally:
         server.close()
+
+
+async def test_a_closing_endpoint_still_rejects_a_bad_address() -> None:
+    """Only the state check softens - the argument errors asyncio raises remain."""
+    transport, _protocol = await running_loop().create_datagram_endpoint(Collector, remote_addr=("127.0.0.1", 9))
+    transport.close()
+    with pytest.raises(ValueError, match="connected"):
+        transport.sendto(b"hello", ("127.0.0.1", 1234))
 
 
 async def test_the_protocol_can_be_replaced() -> None:

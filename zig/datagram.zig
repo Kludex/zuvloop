@@ -365,8 +365,6 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
         }
     }
     const self = asDatagram(self_obj);
-    if (self.flags & CONN_LOST != 0) return py.noneRef();
-    if (self.flags & CLOSING != 0) return py.errRuntime("Cannot call sendto() after close()");
 
     const target = if (address) |a| (if (py.isNone(a)) null else address) else null;
     var dest: addr.Storage = .{};
@@ -378,6 +376,11 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
     } else if (self.flags & CONNECTED == 0) {
         return py.errValue("sendto() requires an address on an unconnected transport");
     }
+
+    // A closing endpoint drops the datagram, as asyncio does. The argument
+    // errors above still raise there while closing, which is why they come
+    // first rather than after this.
+    if (self.flags & (CONN_LOST | CLOSING) != 0) return py.noneRef();
 
     var view: c.Py_buffer = undefined;
     if (c.PyObject_GetBuffer(args[0].?, &view, c.PyBUF_SIMPLE) < 0) return py.Error.Python;

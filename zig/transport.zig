@@ -521,13 +521,16 @@ fn queueWrite(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) py.E
 /// Writes what the socket accepts immediately and queues the rest.
 /// Takes ownership of `views` on every path.
 fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!void {
-    if (self.flags & CONN_LOST != 0) {
+    // A closing transport drops what it is given, as asyncio does; only
+    // `write_eof()` makes a later write an error there, and raising for a close
+    // turns an ordinary shutdown race into an exception out of user code.
+    if (self.flags & (CONN_LOST | CLOSING) != 0) {
         releaseViews(views);
         return;
     }
-    if (self.flags & (CLOSING | EOF_WRITTEN) != 0) {
+    if (self.flags & EOF_WRITTEN != 0) {
         releaseViews(views);
-        return py.errRuntime("Cannot call write() after write_eof() or close()");
+        return py.errRuntime("Cannot call write() after write_eof()");
     }
 
     var pending = bufs;
@@ -607,13 +610,16 @@ fn appendPending(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) v
 /// Accepts a write, deferring the syscall to the end of the iteration.
 /// Takes ownership of `views` on every path.
 fn submitWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!void {
-    if (self.flags & CONN_LOST != 0) {
+    // A closing transport drops what it is given, as asyncio does; only
+    // `write_eof()` makes a later write an error there, and raising for a close
+    // turns an ordinary shutdown race into an exception out of user code.
+    if (self.flags & (CONN_LOST | CLOSING) != 0) {
         releaseViews(views);
         return;
     }
-    if (self.flags & (CLOSING | EOF_WRITTEN) != 0) {
+    if (self.flags & EOF_WRITTEN != 0) {
         releaseViews(views);
-        return py.errRuntime("Cannot call write() after write_eof() or close()");
+        return py.errRuntime("Cannot call write() after write_eof()");
     }
     appendPending(self, bufs, views);
     // Batching pays off only for consecutive writes from one callback, and a
