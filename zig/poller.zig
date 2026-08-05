@@ -54,18 +54,26 @@ fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     alloc.free(@as([*]u8, @ptrCast(self))[0 .. poll_offset + uv.uv_handle_size(.poll)]);
 }
 
+/// Detaches the handles and closes the descriptor before releasing anything.
+///
+/// Releasing a handle runs its arguments' finalizers, and a finalizer is free to
+/// call `remove_reader` for this same descriptor. Anything it can reach has to be
+/// consistent by then, or it re-enters onto a slot holding a dying handle and a
+/// `uv_poll_t` that is about to be closed twice.
 fn destroy(self: *Poller) void {
-    if (self.reader) |h| {
-        h.flags |= handlemod.CANCELLED;
-        py.decref(h);
-        self.reader = null;
-    }
-    if (self.writer) |h| {
-        h.flags |= handlemod.CANCELLED;
-        py.decref(h);
-        self.writer = null;
-    }
+    const reader = self.reader;
+    const writer = self.writer;
+    self.reader = null;
+    self.writer = null;
     uv.uv_close(uv.asHandle(self.uvPoll()), onClosed);
+    if (reader) |h| {
+        h.flags |= handlemod.CANCELLED;
+        py.decref(h);
+    }
+    if (writer) |h| {
+        h.flags |= handlemod.CANCELLED;
+        py.decref(h);
+    }
 }
 
 fn get(st: *State, loop: *LoopObject, fd: c_int) py.Error!*Poller {
@@ -112,11 +120,12 @@ fn add(self_obj: *py.Object, args: []const ?*py.Object, comptime writer: bool) p
     const poller = try get(st, loop, fd);
     const h = try handlemod.create(handlemod.handle_type.?, self_obj, args[1].?, args[2..], null);
     const slot = if (writer) &poller.writer else &poller.reader;
-    if (slot.*) |old| {
-        old.flags |= handlemod.CANCELLED;
-        py.decref(old);
-    }
+    // The slot has to name the new handle before the old one is released; see
+    // `destroy`. The `defer` also covers the error path out of `rearm`.
+    const superseded = slot.*;
     slot.* = h;
+    defer if (superseded) |old| py.decref(old);
+    if (superseded) |old| old.flags |= handlemod.CANCELLED;
     try rearm(st, poller);
     return py.noneRef();
 }
@@ -127,9 +136,9 @@ fn remove(self_obj: *py.Object, arg: *py.Object, comptime writer: bool) py.Error
     const poller = st.pollers.get(fd) orelse return py.boolRef(false);
     const slot = if (writer) &poller.writer else &poller.reader;
     const h = slot.* orelse return py.boolRef(false);
-    h.flags |= handlemod.CANCELLED;
-    py.decref(h);
     slot.* = null;
+    h.flags |= handlemod.CANCELLED;
+    defer py.decref(h);
     try rearm(st, poller);
     return py.boolRef(true);
 }

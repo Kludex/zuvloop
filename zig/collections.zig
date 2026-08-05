@@ -119,13 +119,28 @@ pub const Timers = struct {
     }
 
     /// Drops cancelled entries once they dominate the heap.
+    /// Drops cancelled entries and restores the heap.
+    ///
+    /// The handles are released only once the heap is whole again. Releasing one
+    /// runs its arguments' finalizers, and a finalizer calling `call_later`
+    /// reaches `push`, which writes at `items[len]` and sifts - so a release from
+    /// inside the pass would shuffle slots the pass has already moved, and one
+    /// from inside the array would land on an entry not yet released. Which is
+    /// also why the doomed handles are copied out rather than parked in the tail.
     pub fn compact(self: *Timers, isCancelled: *const fn (*py.Object) bool) void {
+        var none: [0]*py.Object = .{};
+        const doomed: []*py.Object = alloc.alloc(*py.Object, self.cancelled) catch none[0..];
+        defer if (doomed.len != 0) alloc.free(doomed);
+        var dropped: usize = 0;
         var write: usize = 0;
         var read: usize = 0;
         while (read < self.len) : (read += 1) {
             const entry = self.items[read];
-            if (isCancelled(entry.handle)) {
-                py.decref(entry.handle);
+            // Without room to set it aside it stays on the heap, cancelled and
+            // inert, for the next compaction to reclaim.
+            if (isCancelled(entry.handle) and dropped < doomed.len) {
+                doomed[dropped] = entry.handle;
+                dropped += 1;
             } else {
                 self.items[write] = entry;
                 write += 1;
@@ -133,12 +148,14 @@ pub const Timers = struct {
         }
         self.len = write;
         self.cancelled = 0;
-        if (write < 2) return;
-        var i = write / 2;
-        while (i > 0) {
-            i -= 1;
-            self.siftDown(i);
+        if (write >= 2) {
+            var i = write / 2;
+            while (i > 0) {
+                i -= 1;
+                self.siftDown(i);
+            }
         }
+        for (doomed[0..dropped]) |handle| py.decref(handle);
     }
 
     fn grow(self: *Timers) error{OutOfMemory}!void {
