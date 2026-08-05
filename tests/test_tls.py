@@ -5,7 +5,7 @@ import ssl
 
 import pytest
 
-from conftest import running_loop
+from conftest import collect_contexts, running_loop
 
 pytestmark = pytest.mark.anyio
 
@@ -61,8 +61,7 @@ async def test_tls_rejects_an_untrusted_certificate(server_context: ssl.SSLConte
 
 async def test_a_failed_handshake_is_reported(server_context: ssl.SSLContext) -> None:
     loop = running_loop()
-    reported: list[dict[str, object]] = []
-    loop.set_exception_handler(lambda _loop, context: reported.append(context))
+    reported = collect_contexts(loop)
     server = await loop.create_server(asyncio.Protocol, "127.0.0.1", 0, ssl=server_context)
     port = server.sockets[0].getsockname()[1]
     try:

@@ -8,7 +8,6 @@ import ssl
 import struct
 import tempfile
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -74,7 +73,7 @@ class Collector(asyncio.Protocol):
         self.done.set_result(bytes(self.received))
 
 
-async def start_echo(**kwargs: Any) -> tuple[zuvloop.Server, int, list[Echo]]:
+async def start_echo(backlog: int = 100) -> tuple[zuvloop.Server, int, list[Echo]]:
     protocols: list[Echo] = []
 
     def factory() -> Echo:
@@ -83,7 +82,7 @@ async def start_echo(**kwargs: Any) -> tuple[zuvloop.Server, int, list[Echo]]:
         return protocol
 
     loop = running_loop()
-    server = await loop.create_server(factory, "127.0.0.1", 0, **kwargs)
+    server = await loop.create_server(factory, "127.0.0.1", 0, backlog=backlog)
     return server, server.sockets[0].getsockname()[1], protocols
 
 
@@ -933,7 +932,9 @@ async def test_unix_server_cleanup_tolerates_a_path_unlinked_while_binding() -> 
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "zuvloop.sock"
 
-        def vanishing_stat(target: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        def vanishing_stat(
+            target: int | str | bytes | os.PathLike[str], *, dir_fd: int | None = None, follow_symlinks: bool = True
+        ) -> os.stat_result:
             raise FileNotFoundError(target)
 
         with pytest.MonkeyPatch.context() as patch:
@@ -967,7 +968,9 @@ async def test_unix_server_closes_its_listener_when_the_cleanup_stat_fails() -> 
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "zuvloop.sock"
 
-        def refuse_stat(target: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        def refuse_stat(
+            target: int | str | bytes | os.PathLike[str], *, dir_fd: int | None = None, follow_symlinks: bool = True
+        ) -> os.stat_result:
             raise BlockingIOError("stat refused")
 
         with pytest.MonkeyPatch.context() as patch:
