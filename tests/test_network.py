@@ -8,11 +8,13 @@ import ssl
 import struct
 import tempfile
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 import zuvloop
 from conftest import running_loop
+from zuvloop import _zuvloop
 from zuvloop._server import Server
 
 pytestmark = pytest.mark.anyio
@@ -1306,3 +1308,55 @@ async def test_the_asyncio_server_hook_unregisters_and_closes() -> None:
     loop._stop_serving(sock)
 
     assert sock.fileno() == -1
+
+
+async def test_aborting_a_backed_up_transport_reports_no_reason() -> None:
+    """Cancelled writes are not the reason a transport closed.
+
+    Closing the handle completes everything still queued with `ECANCELED`, and
+    treating those as failures overwrites whatever reason was already recorded -
+    so `abort()`, which has none, would arrive as `OSError(89)`.
+    """
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    lost: asyncio.Future[BaseException | None] = loop.create_future()
+
+    class Watcher(asyncio.Protocol):
+        def connection_lost(self, exc: BaseException | None) -> None:
+            lost.set_result(exc)
+
+    try:
+        transport, _protocol = await loop.connect_accepted_socket(Watcher, left)
+        # More than the peer's receive buffer, so writes are still queued.
+        for _ in range(16):
+            transport.write(b"x" * (1 << 20))
+        await asyncio.sleep(0)
+        transport.abort()
+        assert await asyncio.wait_for(lost, 5) is None
+    finally:
+        right.close()
+
+
+async def test_force_closing_a_backed_up_transport_keeps_the_reason() -> None:
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    lost: asyncio.Future[BaseException | None] = loop.create_future()
+
+    class Watcher(asyncio.Protocol):
+        def connection_lost(self, exc: BaseException | None) -> None:
+            lost.set_result(exc)
+
+    try:
+        raw, _protocol = await loop.connect_accepted_socket(Watcher, left)
+        transport = cast("_zuvloop.Transport", raw)
+        for _ in range(16):
+            transport.write(b"x" * (1 << 20))
+        await asyncio.sleep(0)
+        transport._force_close(ZeroDivisionError("the real reason"))
+        assert isinstance(await asyncio.wait_for(lost, 5), ZeroDivisionError)
+    finally:
+        right.close()
