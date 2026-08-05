@@ -19,14 +19,14 @@ jobs:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-13]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # No Zig setup step: the build takes its toolchain from the `ziglang`
       # package named in build-system.requires, which is the only way it can
       # reach inside a manylinux container.
       - uses: pypa/cibuildwheel@v4.2.0
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.os }}
           path: wheelhouse/*.whl
@@ -35,9 +35,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
 
       - name: Build
         run: uv build --sdist
@@ -50,7 +50,7 @@ jobs:
           env PATH="/usr/bin:/bin" VIRTUAL_ENV=/tmp/check uv pip install --no-cache dist/*.tar.gz
           /tmp/check/bin/python -c "import zuvloop; print(zuvloop.libuv_version())"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sdist
           path: dist/*.tar.gz
@@ -65,7 +65,7 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
