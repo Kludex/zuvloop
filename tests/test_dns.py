@@ -49,9 +49,53 @@ async def test_getaddrinfo_returns_canonical_names() -> None:
 
 
 async def test_getaddrinfo_reports_failures() -> None:
+    """The exception the standard library raises, carrying the code it carries.
+
+    libuv numbers its resolver errors itself, and those numbers are neither the
+    platform's `EAI_*` nor stable across platforms, so a caller comparing against
+    `socket.EAI_NONAME` would never match.
+    """
     loop = running_loop()
-    with pytest.raises(socket.gaierror):
+    with pytest.raises(socket.gaierror) as caught:
         await loop.getaddrinfo("this-host-should-not-exist.invalid", 80, type=socket.SOCK_STREAM)
+    assert caught.value.errno in (socket.EAI_NONAME, socket.EAI_NODATA)
+
+    with pytest.raises(socket.gaierror) as stdlib:
+        socket.getaddrinfo("this-host-should-not-exist.invalid", 80, type=socket.SOCK_STREAM)
+    assert caught.value.args == stdlib.value.args
+
+
+async def test_getaddrinfo_treats_an_empty_host_as_the_null_host() -> None:
+    """`""` is the wildcard address, not a host whose name is the empty string."""
+    loop = running_loop()
+    mine = await loop.getaddrinfo("", "http", family=socket.AF_INET, type=socket.SOCK_STREAM)
+    theirs = socket.getaddrinfo("", "http", family=socket.AF_INET, type=socket.SOCK_STREAM)
+    assert sorted(mine) == sorted(theirs)
+
+
+async def test_getaddrinfo_without_a_host_or_a_port_reports_no_name() -> None:
+    """libuv rejects the pair as EINVAL; the resolver would call it a missing name."""
+    loop = running_loop()
+    with pytest.raises(socket.gaierror) as caught:
+        await loop.getaddrinfo(None, None)
+    with pytest.raises(socket.gaierror) as stdlib:
+        socket.getaddrinfo(None, None)
+    assert caught.value.args == stdlib.value.args
+
+
+async def test_getnameinfo_reports_failures_as_the_stdlib_does() -> None:
+    """Whether a reverse lookup fails depends on the resolver; agreeing does not."""
+    loop = running_loop()
+    flags = socket.NI_NAMEREQD | socket.NI_NUMERICHOST
+    try:
+        theirs: object = socket.getnameinfo(("127.0.0.1", 80), flags)
+    except socket.gaierror as exc:
+        theirs = type(exc)
+    try:
+        mine: object = await loop.getnameinfo(("127.0.0.1", 80), flags)
+    except socket.gaierror as exc:
+        mine = type(exc)
+    assert mine == theirs
 
 
 async def test_getaddrinfo_rejects_unusable_arguments() -> None:

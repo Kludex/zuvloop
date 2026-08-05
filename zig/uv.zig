@@ -146,6 +146,22 @@ fn negErrno(comptime e: std.c.E) c_int {
 }
 
 pub const EOF: c_int = -4095;
+/// libuv's own resolver codes, which are not errno values and do not vary by
+/// platform - unlike the `EAI_*` they correspond to.
+pub const EAI_ADDRFAMILY: c_int = -3000;
+pub const EAI_AGAIN: c_int = -3001;
+pub const EAI_BADFLAGS: c_int = -3002;
+pub const EAI_FAIL: c_int = -3004;
+pub const EAI_FAMILY: c_int = -3005;
+pub const EAI_MEMORY: c_int = -3006;
+pub const EAI_NODATA: c_int = -3007;
+pub const EAI_NONAME: c_int = -3008;
+pub const EAI_OVERFLOW: c_int = -3009;
+pub const EAI_SERVICE: c_int = -3010;
+pub const EAI_SOCKTYPE: c_int = -3011;
+pub const EAI_BADHINTS: c_int = -3013;
+pub const EAI_PROTOCOL: c_int = -3014;
+
 pub const EAGAIN = negErrno(.AGAIN);
 pub const ECANCELED = negErrno(.CANCELED);
 pub const EINVAL = negErrno(.INVAL);
