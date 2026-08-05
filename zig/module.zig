@@ -4,6 +4,7 @@ const c = py.c;
 const uv = @import("uv.zig");
 const loop = @import("loop.zig");
 const datagram = @import("datagram.zig");
+const process = @import("process.zig");
 const handle = @import("handle.zig");
 
 fn libuvVersion(_: ?*py.Object, _: ?*py.Object) callconv(.c) ?*py.Object {
@@ -20,6 +21,7 @@ fn exec(module: ?*py.Object) callconv(.c) c_int {
     handle.register(m) catch return -1;
     loop.register(m) catch return -1;
     datagram.register(m) catch return -1;
+    process.register(m) catch return -1;
     return 0;
 }
 

@@ -9,7 +9,7 @@ import sys
 import threading
 import warnings
 import weakref
-from asyncio import events as _events, unix_events
+from asyncio import events as _events
 from collections.abc import Callable, Coroutine
 from contextvars import Context
 from functools import partial
@@ -40,14 +40,6 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         self._asyncgens_shutdown_called = False
         self._signal_handlers: dict[int, tuple[Callable[..., object], tuple[Any, ...], Context]] = {}
         self._wakeup_fd_attached = False
-        # pidfd where the kernel has it, a thread per child otherwise. The
-        # pidfd watcher watches through the loop, so it needs the private reader
-        # names asyncio's own loop exposes.
-        self._child_watcher: Any = (
-            unix_events._PidfdChildWatcher()  # type: ignore[attr-defined]  # private, and not in typeshed
-            if unix_events.can_use_pidfd()  # type: ignore[attr-defined]
-            else unix_events._ThreadedChildWatcher()  # type: ignore[attr-defined]
-        )
         self._instrumentation = Instrumentation()
         self._setup_self_pipe()
 

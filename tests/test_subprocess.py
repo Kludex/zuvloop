@@ -185,3 +185,81 @@ async def test_the_private_reader_names_asyncio_uses_are_present() -> None:
     finally:
         os.close(read_fd)
         os.close(write_fd)
+
+
+async def test_devnull_is_accepted_for_every_stream() -> None:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "import sys; sys.stdout.write('gone'); sys.stderr.write('gone')",
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    assert await asyncio.wait_for(process.wait(), 10) == 0
+    assert process.stdout is None
+    assert process.stderr is None
+
+
+async def test_stderr_can_be_merged_into_stdout() -> None:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "import sys; sys.stdout.write('out'); sys.stdout.flush(); sys.stderr.write('err')",
+        stdout=PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    stdout, stderr = await process.communicate()
+    assert stderr is None
+    assert b"out" in stdout
+
+
+async def test_an_unsupported_popen_argument_is_rejected() -> None:
+    with pytest.raises(ValueError, match="preexec_fn is not supported"):
+        await asyncio.create_subprocess_exec("/bin/echo", stdout=PIPE, preexec_fn=lambda: None)
+
+
+async def test_signalling_an_exited_child_is_a_no_op() -> None:
+    loop = running_loop()
+    transport, _protocol = await loop.subprocess_exec(asyncio.SubprocessProtocol, "/bin/echo", stdout=PIPE)
+    try:
+
+        async def until_exited() -> None:
+            while transport.get_returncode() is None:
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(until_exited(), 10)
+        # asyncio makes signalling an exited child a no-op rather than an error.
+        transport.send_signal(signal.SIGTERM)
+        transport.terminate()
+        transport.kill()
+    finally:
+        transport.close()
+
+
+async def test_a_spawn_that_fails_closes_the_pipes_it_opened() -> None:
+    before = len(os.listdir("/dev/fd"))
+    for _ in range(20):
+        with pytest.raises(OSError):
+            await asyncio.create_subprocess_exec("/nonexistent-program-zuvloop", stdin=PIPE, stdout=PIPE, stderr=PIPE)
+    # A leak would grow the table by three descriptors per attempt.
+    assert len(os.listdir("/dev/fd")) < before + 10
+
+
+async def test_a_descriptor_can_be_handed_to_the_child(tmp_path: Any) -> None:
+    target = tmp_path / "out.txt"
+    with open(target, "wb") as sink:
+        process = await asyncio.create_subprocess_exec("/bin/echo", "to a file", stdout=sink)
+        assert await asyncio.wait_for(process.wait(), 10) == 0
+    assert target.read_bytes() == b"to a file\n"
+
+
+async def test_a_raw_descriptor_number_can_be_handed_to_the_child(tmp_path: Any) -> None:
+    target = tmp_path / "raw.txt"
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT)
+    try:
+        process = await asyncio.create_subprocess_exec("/bin/echo", "by number", stdout=fd)
+        assert await asyncio.wait_for(process.wait(), 10) == 0
+    finally:
+        os.close(fd)
+    assert target.read_bytes() == b"by number\n"

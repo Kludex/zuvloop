@@ -5,11 +5,22 @@ from collections.abc import Callable, Iterable, Sequence
 from contextvars import Context
 from typing import Any, Literal
 
-__all__ = ["DatagramTransport", "Handle", "Loop", "TimerHandle", "Transport", "libuv_version"]
+__all__ = [
+    "DatagramTransport",
+    "Handle",
+    "Loop",
+    "Process",
+    "TimerHandle",
+    "Transport",
+    "libuv_version",
+]
 
 KIND_TCP: Literal[0]
 KIND_PIPE: Literal[1]
 KIND_PIPE_WRITE: Literal[2]
+PROCESS_DETACHED: int
+PROCESS_SETUID: int
+PROCESS_SETGID: int
 
 def libuv_version() -> str:
     """Return the version of the libuv build compiled into the extension."""
@@ -34,6 +45,11 @@ class DatagramTransport(asyncio.DatagramTransport):
     def set_write_buffer_limits(self, high: int | None = None, low: int | None = None) -> None: ...
     def _adopt_socket_view(self, view: Any) -> None: ...
     def _start_receiving(self) -> None: ...
+
+class Process:
+    def get_pid(self) -> int: ...
+    def get_returncode(self) -> int | None: ...
+    def send_signal(self, signum: int) -> None: ...
 
 class Transport(asyncio.Transport):
     def _adopt_pipe(self, pipe: Any) -> None: ...
@@ -110,3 +126,15 @@ class Loop:
         protocol: asyncio.BaseProtocol,
         extra: dict[str, Any],
     ) -> DatagramTransport: ...
+    def _spawn_process(
+        self,
+        file: str,
+        args: Sequence[str],
+        env: Sequence[str] | None,
+        cwd: str | None,
+        stdio: Sequence[int],
+        flags: int,
+        uid: int,
+        gid: int,
+        on_exit: Callable[[int], object] | None,
+    ) -> Process: ...

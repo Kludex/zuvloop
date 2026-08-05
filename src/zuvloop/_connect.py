@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import socket
 import ssl as ssl_module
 import stat
 import subprocess
-from asyncio import sslproto, trsock, unix_events
+from asyncio import base_subprocess, sslproto, trsock
 from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 from . import _zuvloop
+from ._process import Popen
 from ._server import Server
 from ._sockets import SocketOperations
 
@@ -620,10 +622,19 @@ class ConnectionOperations(SocketOperations):
         # process is spawned once, so the readable implementation is worth more
         # than owning the fork.
         waiter = self.create_future()
-        transport = unix_events._UnixSubprocessTransport(  # type: ignore[attr-defined]  # private
-            self, protocol, args, shell, stdin, stdout, stderr, bufsize, waiter=waiter, extra=extra, **kwargs
+        transport = _SubprocessTransport(
+            self,
+            cast("asyncio.SubprocessProtocol", protocol),
+            args,
+            shell,
+            stdin,
+            stdout,
+            stderr,
+            bufsize,
+            waiter=waiter,
+            extra=extra,
+            **kwargs,
         )
-        self._child_watcher.add_child_handler(transport.get_pid(), self._child_exited, transport)
         try:
             await waiter
         except SystemExit, KeyboardInterrupt:  # pragma: no cover - not raised by a spawn
@@ -633,10 +644,6 @@ class ConnectionOperations(SocketOperations):
             await transport._wait()
             raise
         return cast("asyncio.SubprocessTransport", transport)
-
-    def _child_exited(self, pid: int, returncode: int, transport: Any) -> None:
-        # Reported from the watcher's thread on platforms without pidfd.
-        self.call_soon_threadsafe(transport._process_exited, returncode)
 
     async def connect_read_pipe(
         self, protocol_factory: Callable[[], asyncio.BaseProtocol], pipe: Any
@@ -747,3 +754,50 @@ def _check_subprocess_text(
         raise ValueError("encoding must be None")
     if errors is not None:
         raise ValueError("errors must be None")
+
+
+class _SubprocessTransport(base_subprocess.BaseSubprocessTransport):
+    """asyncio's subprocess transport, spawning through libuv.
+
+    Everything it does with the child - the pipes, the protocol callbacks, the
+    exit bookkeeping - is asyncio's. Only the spawn is replaced, and `Popen`
+    reports the exit itself, so no child watcher is needed.
+    """
+
+    def send_signal(self, signal_number: int) -> None:
+        # asyncio signals the pid directly, which can race a reaped pid onto a
+        # new process. libuv holds the handle, so it signals the child it spawned
+        # or nothing at all. An exited child is a no-op, as asyncio has it.
+        self._check_proc()
+        assert self._proc is not None
+        try:
+            self._proc.send_signal(signal_number)
+        except ProcessLookupError:
+            pass
+
+    def terminate(self) -> None:
+        self.send_signal(signal.SIGTERM)
+
+    def kill(self) -> None:
+        self.send_signal(signal.SIGKILL)
+
+    def _start(
+        self,
+        args: Any,
+        shell: bool,
+        stdin: Any,
+        stdout: Any,
+        stderr: Any,
+        bufsize: int,
+        **kwargs: Any,
+    ) -> None:
+        argv = ["/bin/sh", "-c", args] if shell else [os.fsdecode(arg) for arg in args]
+        self._proc = Popen(  # type: ignore[assignment]  # a Popen-shaped object, not a Popen
+            cast("ConnectionOperations", self._loop),
+            argv,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            on_exit=self._process_exited,
+            **kwargs,
+        )
