@@ -4,19 +4,34 @@ import asyncio
 import socket
 import ssl
 import subprocess
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TypedDict, cast
 
 import pytest
 from opentelemetry import metrics, trace
 from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.metrics.export import HistogramDataPoint, InMemoryMetricReader, NumberDataPoint
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.util.types import AttributeValue
 
 import zuvloop
+
+
+class ExceptionContext(TypedDict, total=False):
+    """The keys of asyncio's exception-handler context that the tests inspect."""
+
+    message: str
+    exception: BaseException
+
+
+def collect_contexts(loop: asyncio.AbstractEventLoop) -> list[ExceptionContext]:
+    """Install an exception handler that records every reported context."""
+    seen: list[ExceptionContext] = []
+    loop.set_exception_handler(lambda _loop, context: seen.append(cast("ExceptionContext", context)))
+    return seen
 
 
 @pytest.fixture(scope="session")
@@ -60,11 +75,13 @@ class Telemetry:
             for resource in data.resource_metrics if data else ():
                 for scope in resource.scope_metrics:
                     for metric in scope.metrics:
-                        points: Sequence[Any] = getattr(metric.data, "data_points", ())
+                        points: Sequence[NumberDataPoint | HistogramDataPoint] = getattr(metric.data, "data_points", ())
                         for point in points:
                             # Histograms report a count rather than a single value.
-                            value = getattr(point, "value", None)
-                            self._collected[metric.name] = point.count if value is None else value
+                            if isinstance(point, HistogramDataPoint):
+                                self._collected[metric.name] = point.count
+                            else:
+                                self._collected[metric.name] = point.value
         return self._collected.get(name)
 
     def counted(self, name: str) -> float:
@@ -74,10 +91,17 @@ class Telemetry:
         return value
 
 
-def attribute(span: ReadableSpan, key: str) -> Any:
+def attribute(span: ReadableSpan, key: str) -> AttributeValue:
     """A span attribute, without OpenTelemetry's value union getting in the way."""
     assert span.attributes is not None
     return span.attributes[key]
+
+
+def numeric_attribute(span: ReadableSpan, key: str) -> float:
+    """A span attribute that the test compares as a number."""
+    value = attribute(span, key)
+    assert isinstance(value, (int, float))
+    return value
 
 
 def running_loop() -> zuvloop.EventLoop:
@@ -88,7 +112,7 @@ def running_loop() -> zuvloop.EventLoop:
 
 
 @pytest.fixture
-def anyio_backend() -> tuple[str, dict[str, object]]:
+def anyio_backend() -> tuple[str, dict[str, Callable[[], asyncio.AbstractEventLoop]]]:
     return "asyncio", {"loop_factory": zuvloop.new_event_loop}
 
 

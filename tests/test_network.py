@@ -8,7 +8,6 @@ import ssl
 import struct
 import tempfile
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -74,7 +73,7 @@ class Collector(asyncio.Protocol):
         self.done.set_result(bytes(self.received))
 
 
-async def start_echo(**kwargs: Any) -> tuple[zuvloop.Server, int, list[Echo]]:
+async def start_echo(backlog: int = 100) -> tuple[zuvloop.Server, int, list[Echo]]:
     protocols: list[Echo] = []
 
     def factory() -> Echo:
@@ -83,7 +82,7 @@ async def start_echo(**kwargs: Any) -> tuple[zuvloop.Server, int, list[Echo]]:
         return protocol
 
     loop = running_loop()
-    server = await loop.create_server(factory, "127.0.0.1", 0, **kwargs)
+    server = await loop.create_server(factory, "127.0.0.1", 0, backlog=backlog)
     return server, server.sockets[0].getsockname()[1], protocols
 
 
@@ -933,7 +932,9 @@ async def test_unix_server_cleanup_tolerates_a_path_unlinked_while_binding() -> 
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "zuvloop.sock"
 
-        def vanishing_stat(target: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        def vanishing_stat(
+            target: int | str | bytes | os.PathLike[str], *, dir_fd: int | None = None, follow_symlinks: bool = True
+        ) -> os.stat_result:
             raise FileNotFoundError(target)
 
         with pytest.MonkeyPatch.context() as patch:
@@ -967,7 +968,9 @@ async def test_unix_server_closes_its_listener_when_the_cleanup_stat_fails() -> 
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "zuvloop.sock"
 
-        def refuse_stat(target: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        def refuse_stat(
+            target: int | str | bytes | os.PathLike[str], *, dir_fd: int | None = None, follow_symlinks: bool = True
+        ) -> os.stat_result:
             raise BlockingIOError("stat refused")
 
         with pytest.MonkeyPatch.context() as patch:
@@ -1230,3 +1233,76 @@ async def test_contextvars_reach_protocol_callbacks() -> None:
         "data_received": "set-before-the-connection",
         "connection_lost": "set-before-the-connection",
     }
+
+
+async def test_a_repeated_host_binds_one_socket() -> None:
+    """Naming a host twice is not a request to bind it twice."""
+    loop = running_loop()
+    server = await loop.create_server(Echo, ["127.0.0.1", "127.0.0.1"], 0, start_serving=False)
+    try:
+        assert len(server.sockets) == 1
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_an_empty_host_binds_every_interface() -> None:
+    """`host=""` means the null host, not a host literally named ""."""
+    loop = running_loop()
+    server = await loop.create_server(Echo, "", 0, start_serving=False)
+    try:
+        assert server.sockets
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_a_refused_local_addr_names_the_address() -> None:
+    """asyncio puts the address in the message; the bare errno text does not."""
+    loop = running_loop()
+    taken = socket.socket()
+    taken.bind(("127.0.0.1", 0))
+    taken.listen(1)
+    local = taken.getsockname()
+    try:
+        with pytest.raises(OSError) as caught:
+            await loop.create_connection(Echo, *local, local_addr=local)
+        assert repr(local) in str(caught.value)
+    finally:
+        taken.close()
+
+
+async def test_an_ssl_handshake_timeout_without_ssl_is_rejected() -> None:
+    loop = running_loop()
+    left, right = socket.socketpair()
+    try:
+        with pytest.raises(ValueError, match="ssl_handshake_timeout is only meaningful with ssl"):
+            await loop.connect_accepted_socket(Echo, left, ssl_handshake_timeout=5.0)
+    finally:
+        left.close()
+        right.close()
+
+
+async def test_an_ssl_shutdown_timeout_without_ssl_is_rejected() -> None:
+    loop = running_loop()
+    left, right = socket.socketpair()
+    try:
+        with pytest.raises(ValueError, match="ssl_shutdown_timeout is only meaningful with ssl"):
+            await loop.connect_accepted_socket(Echo, left, ssl_shutdown_timeout=5.0)
+    finally:
+        left.close()
+        right.close()
+
+
+async def test_the_asyncio_server_hook_unregisters_and_closes() -> None:
+    """`_stop_serving` is what `asyncio.base_events.Server.close` reaches for."""
+    loop = running_loop()
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
+    sock.setblocking(False)
+    loop.add_reader(sock.fileno(), lambda: None)
+
+    loop._stop_serving(sock)
+
+    assert sock.fileno() == -1

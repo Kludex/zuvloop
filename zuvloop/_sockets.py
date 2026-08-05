@@ -11,6 +11,25 @@ from ._base import LoopBase
 class SocketOperations(LoopBase):
     """`sock_*` helpers, layered on the native reader/writer registrations."""
 
+    def _watch(self, fd: int, write: bool, callback: Callable[..., Any], *args: Any) -> object:
+        """Register a reader or writer, tagged so its owner can recognise it later."""
+        token = object()
+        self._sock_watchers[fd, write] = token
+        (self.add_writer if write else self.add_reader)(fd, callback, *args)
+        return token
+
+    def _unwatch(self, fd: int, write: bool, token: object) -> None:
+        """Unregister only if the watcher on `fd` is still the one `token` installed.
+
+        A cancelled operation runs its cleanup a turn late, by which time the next
+        operation on the same descriptor has replaced the registration - only one
+        watcher exists per direction. Removing blindly would strand that one.
+        """
+        if self._sock_watchers.get((fd, write)) is not token:
+            return
+        del self._sock_watchers[fd, write]
+        (self.remove_writer if write else self.remove_reader)(fd)
+
     async def _retry_until_ready(
         self, sock: socket.socket, op: Callable[..., Any], *args: Any, write: bool = False
     ) -> Any:
@@ -21,12 +40,11 @@ class SocketOperations(LoopBase):
             return await future
 
         fd = sock.fileno()
-        register, unregister = (self.add_writer, self.remove_writer) if write else (self.add_reader, self.remove_reader)
-        register(fd, _attempt, future, op, args)
+        token = self._watch(fd, write, _attempt, future, op, args)
         try:
             return await future
         finally:
-            unregister(fd)
+            self._unwatch(fd, write, token)
 
     async def sock_recv(self, sock: socket.socket, nbytes: int) -> bytes:
         return await self._retry_until_ready(sock, sock.recv, nbytes)  # type: ignore[no-any-return]
@@ -41,7 +59,7 @@ class SocketOperations(LoopBase):
         return await self._retry_until_ready(sock, sock.recvfrom_into, buf, nbytes)  # type: ignore[no-any-return]
 
     async def sock_sendto(self, sock: socket.socket, data: Any, address: Any) -> int:
-        return await self._retry_until_ready(sock, sock.sendto, data, address, write=True)  # type: ignore[no-any-return]
+        return await self._retry_until_ready(sock, _sendto, sock, data, address, write=True)  # type: ignore[no-any-return]
 
     async def sock_accept(self, sock: socket.socket) -> tuple[socket.socket, Any]:
         conn, address = await self._retry_until_ready(sock, sock.accept)
@@ -77,11 +95,11 @@ class SocketOperations(LoopBase):
             else:
                 future.set_result(None)
 
-        self.add_writer(fd, check)
+        token = self._watch(fd, True, check)
         try:
             await future
         finally:
-            self.remove_writer(fd)
+            self._unwatch(fd, True, token)
 
     async def sock_sendfile(  # type: ignore[override]  # typeshed allows fallback=None
         self, sock: socket.socket, file: Any, offset: int = 0, count: int | None = None, *, fallback: bool = True
@@ -119,6 +137,11 @@ def _attempt(future: asyncio.Future[Any], op: Callable[..., Any], args: tuple[An
 
 def _send_chunk(sock: socket.socket, view: memoryview, sent: int) -> int:
     return sock.send(view[sent:])
+
+
+def _sendto(sock: socket.socket, data: Any, address: Any) -> int:
+    """Resolved per attempt, not bound once: callers rebind `sendto` between retries."""
+    return sock.sendto(data, address)
 
 
 def _check_non_blocking(sock: socket.socket) -> None:

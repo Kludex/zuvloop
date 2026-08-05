@@ -4,7 +4,7 @@ import asyncio
 import contextvars
 import threading
 import time
-from typing import Any
+from collections.abc import Coroutine
 
 import pytest
 
@@ -26,7 +26,7 @@ async def test_call_soon_runs_in_order() -> None:
 
 async def test_call_soon_passes_many_arguments() -> None:
     loop = running_loop()
-    captured: list[tuple[Any, ...]] = []
+    captured: list[tuple[int, ...]] = []
     loop.call_soon(lambda *args: captured.append(args), 1, 2, 3, 4, 5, 6)
     await asyncio.sleep(0)
     await asyncio.sleep(0)
@@ -165,7 +165,7 @@ async def test_call_soon_threadsafe_from_another_thread() -> None:
 
 async def test_call_soon_threadsafe_validates_its_arguments() -> None:
     loop = running_loop()
-    with pytest.raises(TypeError, match="requires a callback"):
+    with pytest.raises(TypeError, match="missing 1 required positional argument"):
         loop.call_soon_threadsafe()  # type: ignore[call-arg]
 
 
@@ -190,9 +190,11 @@ async def test_task_factory_round_trip() -> None:
     assert loop.get_task_factory() is None
     made: list[str] = []
 
-    def factory(inner_loop: Any, coro: Any, **kwargs: Any) -> asyncio.Task[Any]:
+    def factory(
+        inner_loop: asyncio.AbstractEventLoop, coro: Coroutine[None, None, None], **kwargs: object
+    ) -> asyncio.Task[None]:
         made.append("called")
-        return asyncio.Task(coro, loop=inner_loop, **kwargs)
+        return asyncio.Task(coro, loop=inner_loop, **kwargs)  # type: ignore[arg-type]
 
     loop.set_task_factory(factory)
     assert loop.get_task_factory() is factory

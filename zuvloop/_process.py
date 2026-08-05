@@ -53,7 +53,7 @@ class Popen:
         child_fds: list[int] = []
         try:
             for index, request in enumerate((stdin, stdout, stderr)):
-                child, mine = _open_stream(index, request)
+                child, mine = _open_stream(index, request, child_fds)
                 child_fds.append(child)
                 if mine is not None:
                     # Wrapping the descriptor hands it to the file object, which
@@ -103,8 +103,12 @@ class Popen:
         self.send_signal(signal.SIGKILL)
 
 
-def _open_stream(index: int, request: Any) -> tuple[int, int | None]:
-    """Returns the descriptor the child inherits, and ours if there is one."""
+def _open_stream(index: int, request: Any, child_fds: list[int]) -> tuple[int, int | None]:
+    """Returns the descriptor the child inherits, and ours if there is one.
+
+    `child_fds` holds what the earlier streams resolved to, which is what lets a
+    redirected stderr follow the child's stdout wherever it was pointed.
+    """
     if request is None:
         return -1 if index == 0 else _dup_std(index), None
     if request == subprocess.DEVNULL or request == _DEVNULL:
@@ -119,7 +123,9 @@ def _open_stream(index: int, request: Any) -> tuple[int, int | None]:
         os.set_inheritable(child_fd, True)
         return child_fd, our_fd
     if request == subprocess.STDOUT:
-        return _dup_std(1), None
+        # Whatever stdout resolved to, which is a pipe back to us whenever one
+        # was asked for - never our own stdout unless the child inherited it.
+        return os.dup(child_fds[1]), None
     fd = request if isinstance(request, int) else request.fileno()
     return os.dup(fd), None
 

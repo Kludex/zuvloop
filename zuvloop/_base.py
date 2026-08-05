@@ -39,6 +39,8 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         self._asyncgens: weakref.WeakSet[Any] = weakref.WeakSet()
         self._asyncgens_shutdown_called = False
         self._signal_handlers: dict[int, tuple[Callable[..., object], tuple[Any, ...], Context]] = {}
+        # Which `sock_*` call owns the watcher currently on each (fd, write).
+        self._sock_watchers: dict[tuple[int, bool], object] = {}
         self._wakeup_fd_attached = False
         self._instrumentation = Instrumentation()
         self._setup_self_pipe()
@@ -297,6 +299,29 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
 
     def _remove_reader(self, fd: int) -> bool:
         return self.remove_reader(fd)
+
+    def _stop_serving(self, sock: socket.socket) -> None:
+        """asyncio's own name for the hook `asyncio.base_events.Server.close` calls."""
+        self.remove_reader(sock.fileno())
+        sock.close()
+
+    def call_soon_threadsafe(  # type: ignore[override]  # widens the native handle to asyncio's
+        self, callback: Callable[..., object], *args: object, context: Context | None = None
+    ) -> asyncio.Handle:
+        """Schedule from another thread, behind the lock `cancel()` has to honour.
+
+        `_ThreadSafeHandle` serialises `cancel`, `cancelled` and `_run` on one
+        reentrant lock, so cancelling from a second thread blocks until a callback
+        that already started has finished. Doing that natively would have to take
+        the lock while the loop thread holds the GIL across the whole ready batch,
+        which deadlocks; wrapping keeps the wait on a lock that releases the GIL.
+        """
+        self._check_closed()
+        # Private, and absent from typeshed; the behaviour it carries is the point.
+        factory: Callable[..., asyncio.Handle] = _events._ThreadSafeHandle  # type: ignore[attr-defined]
+        handle = factory(callback, args, self, context)
+        super().call_soon_threadsafe(handle._run)
+        return handle
 
     def _drain_self_pipe(self, sock: socket.socket) -> None:
         """Read the wakeup bytes; each one is a signal number to dispatch.

@@ -60,6 +60,7 @@ class ConnectionOperations(SocketOperations):
         ssl_shutdown_timeout: float | None = None,
     ) -> tuple[asyncio.Transport, Any]:
         server_hostname = _check_ssl_args(ssl, server_hostname, host)
+        _check_ssl_timeouts(ssl, ssl_handshake_timeout, ssl_shutdown_timeout)
         if host is not None or port is not None:
             if sock is not None:
                 raise ValueError("host/port and sock can not be specified at the same time")
@@ -86,6 +87,7 @@ class ConnectionOperations(SocketOperations):
     ) -> tuple[asyncio.Transport, Any]:
         if ssl is None and server_hostname is not None:
             raise ValueError("server_hostname is only meaningful with ssl")
+        _check_ssl_timeouts(ssl, ssl_handshake_timeout, ssl_shutdown_timeout)
         if path is not None:
             if sock is not None:
                 raise ValueError("path and sock can not be specified at the same time")
@@ -114,6 +116,7 @@ class ConnectionOperations(SocketOperations):
         ssl_handshake_timeout: float | None = None,
         ssl_shutdown_timeout: float | None = None,
     ) -> tuple[asyncio.Transport, Any]:
+        _check_ssl_timeouts(ssl, ssl_handshake_timeout, ssl_shutdown_timeout)
         _check_socket(sock, socket.SOCK_STREAM)
         sock.setblocking(False)
         return await self._wrap_socket(
@@ -138,7 +141,12 @@ class ConnectionOperations(SocketOperations):
             try:
                 sock.setblocking(False)
                 if local_addr is not None:
-                    sock.bind(local_addr)
+                    try:
+                        sock.bind(local_addr)
+                    except OSError as exc:
+                        # Which address was refused is the useful half of the report.
+                        message = f"error while attempting to bind on address {local_addr!r}: {str(exc).lower()}"
+                        raise OSError(exc.errno, message) from None
                 await self.sock_connect(sock, address)
             except OSError as exc:
                 sock.close()
@@ -167,6 +175,7 @@ class ConnectionOperations(SocketOperations):
         start_serving: bool = True,
     ) -> Server:
         _check_server_ssl(ssl)
+        _check_ssl_timeouts(ssl, ssl_handshake_timeout, ssl_shutdown_timeout)
         if host is not None or port is not None:
             if sock is not None:
                 raise ValueError("host/port and sock can not be specified at the same time")
@@ -200,6 +209,7 @@ class ConnectionOperations(SocketOperations):
         cleanup_socket: bool = True,
     ) -> Server:
         _check_server_ssl(ssl)
+        _check_ssl_timeouts(ssl, ssl_handshake_timeout, ssl_shutdown_timeout)
         if path is not None:
             if sock is not None:
                 raise ValueError("path and sock can not be specified at the same time")
@@ -248,27 +258,33 @@ class ConnectionOperations(SocketOperations):
     ) -> list[socket.socket]:
         hosts: Sequence[str | None]
         if host is None or isinstance(host, str):
-            hosts = [host]
+            # An empty host means every interface, which is what a null host
+            # resolves to; passing it through would ask for the host named "".
+            hosts = [host or None]
         else:
-            hosts = list(host)
+            hosts = [entry or None for entry in host]
         if reuse_address is None:
             reuse_address = os.name == "posix"
 
+        resolved: list[tuple[int, int, int, str, Any]] = []
+        for entry in hosts:
+            resolved += await self.getaddrinfo(entry, port, family=family, type=socket.SOCK_STREAM, flags=flags)
+
         sockets: list[socket.socket] = []
         try:
-            for entry in hosts:
-                infos = await self.getaddrinfo(entry, port, family=family, type=socket.SOCK_STREAM, flags=flags)
-                for af, kind, proto, _canon, address in infos:
-                    sock = socket.socket(af, kind, proto)
-                    sockets.append(sock)
-                    if reuse_address:
-                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    if reuse_port:
-                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-                    if af == socket.AF_INET6 and hasattr(socket, "IPPROTO_IPV6"):
-                        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, True)
-                    sock.setblocking(False)
-                    sock.bind(address)
+            # Hosts that resolve to the same address collapse to one socket -
+            # repeating a host in the list is not a request to bind it twice.
+            for af, kind, proto, _canon, address in dict.fromkeys(resolved):
+                sock = socket.socket(af, kind, proto)
+                sockets.append(sock)
+                if reuse_address:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                if reuse_port:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                if af == socket.AF_INET6 and hasattr(socket, "IPPROTO_IPV6"):
+                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, True)
+                sock.setblocking(False)
+                sock.bind(address)
         except BaseException:
             for sock in sockets:
                 sock.close()
@@ -328,31 +344,24 @@ class ConnectionOperations(SocketOperations):
             "proto": sock.proto,
         }
         kind = _zuvloop.KIND_PIPE if sock.family == socket.AF_UNIX else _zuvloop.KIND_TCP
-        family, kind_, proto = sock.family, sock.type, sock.proto
         fd = sock.fileno()
 
-        # anyio - and so httpx, Starlette and FastAPI - reaches for the raw
-        # socket through get_extra_info("socket"). Prepare that view before
-        # libuv adopts the descriptor, while failure can still leave `sock`
-        # as its sole owner.
-        view = socket.socket(family, kind_, proto, fileno=fd)
-        try:
-            extra["socket"] = trsock.TransportSocket(view)
-            transport = self._make_transport(fd, kind, protocol, waiter, extra, server)
-        except BaseException:
-            view.detach()
-            raise
+        # anyio - and so httpx, Starlette and FastAPI - reaches for the raw socket
+        # through get_extra_info("socket"). asyncio exposes the caller's own object
+        # here and leaves it armed for the life of the transport, which callers that
+        # passed `sock=` read back afterwards; a separate view detached from `sock`
+        # would hand them a closed socket instead.
+        extra["socket"] = trsock.TransportSocket(sock)
+        transport = self._make_transport(fd, kind, protocol, waiter, extra, server)
 
-        # libuv owns the descriptor after _make_transport succeeds. Disarm
-        # both Python socket objects on every later failure and close the
-        # native transport so ownership cannot be split or lost.
+        # libuv owns the descriptor from here. Disarm the socket on any later
+        # failure and close the native transport, so ownership cannot be split.
         try:
-            sock.detach()
-            transport._adopt_socket_view(view)
+            transport._adopt_socket_view(sock)
             if server is not None:
                 server._attach(transport)
         except BaseException:
-            view.detach()
+            sock.detach()
             transport.abort()
             raise
         return transport
@@ -538,21 +547,13 @@ class ConnectionOperations(SocketOperations):
             "type": sock.type,
             "proto": sock.proto,
         }
-        family, kind, proto = sock.family, sock.type, sock.proto
         fd = sock.fileno()
 
-        view = socket.socket(family, kind, proto, fileno=fd)
-        try:
-            extra["socket"] = trsock.TransportSocket(view)
-            transport = self._make_datagram_transport(fd, family, connected, protocol, extra)
-        except BaseException:
-            view.detach()
-            raise
-
-        # libuv owns the descriptor from here, so both Python socket objects
-        # have to be disarmed before anything else can fail.
-        sock.detach()
-        transport._adopt_socket_view(view)
+        # As on the stream path: the caller's own socket is what asyncio exposes,
+        # and `create_datagram_endpoint(sock=...)` callers go on using it.
+        extra["socket"] = trsock.TransportSocket(sock)
+        transport = self._make_datagram_transport(fd, sock.family, connected, protocol, extra)
+        transport._adopt_socket_view(sock)
         return transport
 
     async def subprocess_shell(
@@ -677,11 +678,57 @@ class ConnectionOperations(SocketOperations):
             raise
         transport._adopt_pipe(pipe)
         try:
+            # A socket write pipe learns of the hangup by reading; `uv_pipe_open`
+            # clears the readable flag on an `O_WRONLY` FIFO, so that one needs a
+            # poll of its own. Character devices report no hangup at all.
+            if kind == _zuvloop.KIND_PIPE_WRITE and stat.S_ISFIFO(mode):
+                watch = _HangupWatch(self, pipe, fd, transport)
+                transport._adopt_pipe(watch)
+                watch.arm()
             await waiter
         except BaseException:
             transport.close()
             raise
         return transport, protocol
+
+
+class _HangupWatch:
+    """Reports the peer closing the read end of a write pipe.
+
+    The poll goes on the descriptor the transport kept rather than the duplicate
+    libuv adopted, so the two never contend for one watcher. The transport adopts
+    this object in place of the pipe, which puts `close()` on every teardown path
+    the transport already has - dropping the poll before the pipe it watches.
+    """
+
+    __slots__ = ("_fd", "_loop", "_pipe", "_transport")
+
+    def __init__(self, loop: ConnectionOperations, pipe: Any, fd: int, transport: _zuvloop.Transport) -> None:
+        self._loop = loop
+        self._pipe = pipe
+        self._fd = fd
+        self._transport = transport
+
+    def arm(self) -> None:
+        self._loop.add_reader(self._fd, self._hangup)
+
+    def close(self) -> None:
+        self._loop.remove_reader(self._fd)
+        self._pipe.close()
+
+    def _hangup(self) -> None:
+        # Dropping the watch here, rather than leaving it to close(), also marks
+        # this callback cancelled should the loop already have it queued.
+        self._loop.remove_reader(self._fd)
+        buffered = self._transport.get_write_buffer_size()
+        self._transport._force_close(BrokenPipeError() if buffered else None)
+
+
+def _check_ssl_timeouts(ssl: _SSLArg, handshake: float | None, shutdown: float | None) -> None:
+    if handshake is not None and not ssl:
+        raise ValueError("ssl_handshake_timeout is only meaningful with ssl")
+    if shutdown is not None and not ssl:
+        raise ValueError("ssl_shutdown_timeout is only meaningful with ssl")
 
 
 def _check_ssl_args(ssl: _SSLArg, server_hostname: str | None, host: str | None) -> str | None:

@@ -30,6 +30,7 @@ var str_error_received: ?*py.Object = null;
 var str_pause_writing: ?*py.Object = null;
 var str_resume_writing: ?*py.Object = null;
 var str_sock_detach: ?*py.Object = null;
+var str_addr: ?*py.Object = null;
 var str_high: ?*py.Object = null;
 var str_low: ?*py.Object = null;
 
@@ -349,13 +350,25 @@ fn asDatagram(obj: *py.Object) *Datagram {
 }
 
 fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames: ?*py.Object) py.Error!*py.Object {
-    _ = kwnames;
     if (nargs < 1 or nargs > 2) return py.errType("sendto() takes 1 or 2 arguments");
+    var address: ?*py.Object = if (nargs > 1) args[1] else null;
+    if (kwnames) |names| {
+        const n: usize = @intCast(c.PyTuple_Size(names));
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const key = c.PyTuple_GetItem(names, @intCast(i)) orelse return py.Error.Python;
+            if (c.PyObject_RichCompareBool(key, str_addr, c.Py_EQ) != 1) {
+                return py.errType("sendto() got an unexpected keyword argument");
+            }
+            if (address != null) return py.errType("sendto() got multiple values for argument 'addr'");
+            address = args[nargs + i];
+        }
+    }
     const self = asDatagram(self_obj);
     if (self.flags & CONN_LOST != 0) return py.noneRef();
     if (self.flags & CLOSING != 0) return py.errRuntime("Cannot call sendto() after close()");
 
-    const target = if (nargs == 2 and !py.isNone(args[1].?)) args[1] else null;
+    const target = if (address) |a| (if (py.isNone(a)) null else address) else null;
     var dest: addr.Storage = .{};
     var dest_ptr: ?*const std.posix.sockaddr = null;
     if (target) |t| {
@@ -672,6 +685,7 @@ pub fn register(module: *py.Object) py.Error!void {
     str_pause_writing = py.intern("pause_writing") orelse return py.Error.Python;
     str_resume_writing = py.intern("resume_writing") orelse return py.Error.Python;
     str_sock_detach = py.intern("detach") orelse return py.Error.Python;
+    str_addr = py.intern("addr") orelse return py.Error.Python;
     str_high = py.intern("high") orelse return py.Error.Python;
     str_low = py.intern("low") orelse return py.Error.Python;
 
@@ -679,12 +693,19 @@ pub fn register(module: *py.Object) py.Error!void {
     send_req_offset = std.mem.alignForward(usize, @sizeOf(SendReq), 16);
     spec.basicsize = @intCast(handle_offset + uv.uv_handle_size(.udp));
 
-    const base = py.importFrom("asyncio.transports", "DatagramTransport") orelse return py.Error.Python;
-    defer py.decref(base);
-    if (@as(*c.PyTypeObject, @ptrCast(base)).tp_basicsize != @offsetOf(Datagram, "loop")) {
-        return py.errRuntime("asyncio.DatagramTransport instance layout is not the one zuvloop was built against");
+    // asyncio's own datagram transport derives from both legs, so `isinstance(t,
+    // asyncio.Transport)` holds for it as well; test_events asserts exactly that.
+    const stream_base = py.importFrom("asyncio.transports", "Transport") orelse return py.Error.Python;
+    defer py.decref(stream_base);
+    const dgram_base = py.importFrom("asyncio.transports", "DatagramTransport") orelse return py.Error.Python;
+    defer py.decref(dgram_base);
+    const layout: c.Py_ssize_t = @offsetOf(Datagram, "loop");
+    if (@as(*c.PyTypeObject, @ptrCast(stream_base)).tp_basicsize != layout or
+        @as(*c.PyTypeObject, @ptrCast(dgram_base)).tp_basicsize != layout)
+    {
+        return py.errRuntime("asyncio transport instance layout is not the one zuvloop was built against");
     }
-    const bases = c.PyTuple_Pack(1, base) orelse return py.Error.Python;
+    const bases = c.PyTuple_Pack(2, stream_base, dgram_base) orelse return py.Error.Python;
     defer py.decref(bases);
 
     datagram_type = @ptrCast(c.PyType_FromModuleAndSpec(module, &spec, bases) orelse return py.Error.Python);

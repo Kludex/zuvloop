@@ -7,12 +7,13 @@ import socket
 import threading
 import time
 import weakref
-from typing import Any
+from collections.abc import AsyncGenerator, Callable, Mapping
+from typing import cast
 
 import pytest
 
 import zuvloop
-from conftest import running_loop
+from conftest import collect_contexts, running_loop
 from zuvloop._base import _shutdown_executor
 from zuvloop._connect import ConnectionOperations
 
@@ -480,7 +481,7 @@ def test_executor_shutdown_tolerates_close_racing_with_notification() -> None:
     class ClosingLoop:
         closed = False
 
-        def call_soon_threadsafe(self, *args: Any) -> None:
+        def call_soon_threadsafe(self, callback: Callable[..., object], *args: object) -> None:
             self.closed = True
             raise RuntimeError("Event loop is closed")
 
@@ -491,9 +492,9 @@ def test_executor_shutdown_tolerates_close_racing_with_notification() -> None:
         def shutdown(self, *, wait: bool) -> None:
             assert wait
 
-    fake_loop: Any = ClosingLoop()
-    fake_future: Any = object()
-    fake_executor: Any = FinishedExecutor()
+    fake_loop = cast("zuvloop.EventLoop", ClosingLoop())
+    fake_future = cast("asyncio.Future[None]", object())
+    fake_executor = cast("concurrent.futures.Executor", FinishedExecutor())
 
     _shutdown_executor(fake_loop, fake_future, fake_executor)
 
@@ -502,7 +503,7 @@ async def test_shutdown_asyncgens_closes_generators() -> None:
     loop = running_loop()
     closed: list[str] = []
 
-    async def generator() -> Any:
+    async def generator() -> AsyncGenerator[int]:
         try:
             yield 1
         finally:
@@ -517,10 +518,9 @@ async def test_shutdown_asyncgens_closes_generators() -> None:
 
 async def test_shutdown_asyncgens_reports_failures() -> None:
     loop = running_loop()
-    reported: list[dict[str, Any]] = []
-    loop.set_exception_handler(lambda _loop, context: reported.append(context))
+    reported = collect_contexts(loop)
 
-    async def generator() -> Any:
+    async def generator() -> AsyncGenerator[int]:
         try:
             yield 1
         finally:
@@ -543,7 +543,7 @@ async def test_shutdown_asyncgens_without_generators_is_a_no_op() -> None:
 
 
 def test_asyncgens_scheduled_after_shutdown_warn(loop: zuvloop.EventLoop) -> None:
-    async def generator() -> Any:
+    async def generator() -> AsyncGenerator[int]:
         yield 1
 
     async def main() -> None:
@@ -611,7 +611,7 @@ def test_an_interrupt_after_the_task_finishes_consumes_its_error(loop: zuvloop.E
 async def test_an_exception_handler_may_stop_the_program() -> None:
     loop = running_loop()
 
-    def handler(_loop: Any, _context: dict[str, Any]) -> None:
+    def handler(_loop: asyncio.AbstractEventLoop, _context: Mapping[str, object]) -> None:
         raise SystemExit(2)
 
     previous = loop.get_exception_handler()
@@ -628,7 +628,7 @@ async def test_a_dropped_async_generator_is_finalized() -> None:
 
     closed: list[str] = []
 
-    async def generator() -> Any:
+    async def generator() -> AsyncGenerator[int]:
         try:
             yield 1
         finally:
@@ -645,9 +645,9 @@ async def test_a_dropped_async_generator_is_finalized() -> None:
 def test_an_async_generator_outliving_its_loop_is_not_rescheduled() -> None:
     import gc
 
-    kept: list[Any] = []
+    kept: list[AsyncGenerator[int]] = []
 
-    async def generator() -> Any:
+    async def generator() -> AsyncGenerator[int]:
         yield 1
 
     async def main() -> None:

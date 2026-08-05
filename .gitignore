@@ -21,3 +21,4 @@ site/
 # Compiled extension, built in place
 zuvloop/*.so
 zig-out/
+.conformance/

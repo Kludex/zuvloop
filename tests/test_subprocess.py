@@ -4,7 +4,8 @@ import asyncio
 import os
 import signal
 import sys
-from typing import Any
+from asyncio.subprocess import Process
+from pathlib import Path
 
 import pytest
 
@@ -156,7 +157,7 @@ async def test_several_children_run_concurrently() -> None:
 
 
 async def test_a_cancelled_spawn_reaps_the_child() -> None:
-    task: asyncio.Task[Any] = asyncio.ensure_future(
+    task: asyncio.Task[Process] = asyncio.ensure_future(
         asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(30)", stdout=PIPE)
     )
     # The child is spawned synchronously and the setup then waits for its pipes,
@@ -211,7 +212,9 @@ async def test_stderr_can_be_merged_into_stdout() -> None:
     )
     stdout, stderr = await process.communicate()
     assert stderr is None
-    assert b"out" in stdout
+    # Both streams have to reach the child's own pipe: merging into the parent's
+    # stdout would leave only "out" here, and print "err" to the terminal.
+    assert stdout == b"outerr"
 
 
 async def test_an_unsupported_popen_argument_is_rejected() -> None:
@@ -223,6 +226,11 @@ async def test_signalling_an_exited_child_is_a_no_op() -> None:
     loop = running_loop()
     transport, _protocol = await loop.subprocess_exec(asyncio.SubprocessProtocol, "/bin/echo", stdout=PIPE)
     try:
+        # An unread pipe keeps the transport from finishing, which is the window
+        # the no-op exists for: a child already reaped, still held by asyncio.
+        stdout = transport.get_pipe_transport(1)
+        assert isinstance(stdout, asyncio.ReadTransport)
+        stdout.pause_reading()
 
         async def until_exited() -> None:
             while transport.get_returncode() is None:
@@ -246,7 +254,7 @@ async def test_a_spawn_that_fails_closes_the_pipes_it_opened() -> None:
     assert len(os.listdir("/dev/fd")) < before + 10
 
 
-async def test_a_descriptor_can_be_handed_to_the_child(tmp_path: Any) -> None:
+async def test_a_descriptor_can_be_handed_to_the_child(tmp_path: Path) -> None:
     target = tmp_path / "out.txt"
     with open(target, "wb") as sink:
         process = await asyncio.create_subprocess_exec("/bin/echo", "to a file", stdout=sink)
@@ -254,7 +262,7 @@ async def test_a_descriptor_can_be_handed_to_the_child(tmp_path: Any) -> None:
     assert target.read_bytes() == b"to a file\n"
 
 
-async def test_a_raw_descriptor_number_can_be_handed_to_the_child(tmp_path: Any) -> None:
+async def test_a_raw_descriptor_number_can_be_handed_to_the_child(tmp_path: Path) -> None:
     target = tmp_path / "raw.txt"
     fd = os.open(target, os.O_WRONLY | os.O_CREAT)
     try:
