@@ -114,8 +114,6 @@ pub fn traverse(st: *loopmod.State, visitproc: c.visitproc, arg: ?*anyopaque) c_
     return 0;
 }
 
-/// An empty host means the null host, as it does for `socket.getaddrinfo` -
-/// the wildcard address, not a host whose name is the empty string.
 fn copyZ(dst: []u8, value: *py.Object, what: [:0]const u8) py.Error!?[*:0]const u8 {
     if (py.isNone(value)) return null;
     var len: c.Py_ssize_t = 0;
@@ -134,7 +132,6 @@ fn copyZ(dst: []u8, value: *py.Object, what: [:0]const u8) py.Error!?[*:0]const 
         _ = c.PyErr_Format(@ptrCast(c.PyExc_TypeError), "%s must be str, bytes, int or None", what.ptr);
         return py.Error.Python;
     }
-    if (len == 0) return null;
     if (@as(usize, @intCast(len)) >= dst.len) return py.errValue("value too long");
     @memcpy(dst[0..@intCast(len)], src[0..@intCast(len)]);
     dst[@intCast(len)] = 0;
@@ -193,6 +190,15 @@ fn resolverException(status: c_int) ?*py.Object {
     var buf: [128]u8 = undefined;
     const msg = uv.strerror(status, &buf);
     return c.PyObject_CallFunction(@ptrCast(c.PyExc_OSError), "is", uv.toErrno(status), msg.ptr);
+}
+
+/// Raises `socket.gaierror` for a code the platform's resolver produced itself.
+fn raisePlatformError(code: std.c.EAI) py.Error {
+    const exc = c.PyObject_CallFunction(gaierror, "is", @intFromEnum(code), std.c.gai_strerror(code)) orelse
+        return py.Error.Python;
+    defer py.decref(exc);
+    c.PyErr_SetObject(gaierror, exc);
+    return py.Error.Python;
 }
 
 /// Raises it, for the paths that report synchronously rather than through a future.
@@ -423,6 +429,23 @@ pub fn getaddrinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
     // it as EINVAL. The resolver the standard library reaches would have answered
     // "neither node nor service", which is what callers are written to expect.
     if (host == null and service == null) return raiseResolverError(uv.EAI_NONAME);
+
+    // libuv runs every hostname through IDNA, which rejects an empty one, so `""`
+    // can never reach a resolver that way. The platforms disagree about what it
+    // means - BSD reads it as the null host, glibc as a name it cannot find - and
+    // matching `socket.getaddrinfo` means letting the platform answer rather than
+    // picking one. Neither looks anything up, so this cannot block the loop.
+    if (host) |name| if (name[0] == 0) {
+        var res: ?*std.c.addrinfo = null;
+        const rc = std.c.getaddrinfo(name, service, &hints, &res);
+        if (rc != @as(std.c.EAI, @enumFromInt(0))) return raisePlatformError(rc);
+        defer if (res) |first| std.c.freeaddrinfo(first);
+        const list = try buildResults(res);
+        defer py.decref(list);
+        const future = c.PyObject_CallMethodNoArgs(@ptrCast(loop), str_create_future) orelse return py.Error.Python;
+        settle(future, str_set_result, list);
+        return future;
+    };
 
     if (resolveLiteral(&hints, host, service) orelse resolveNumeric(&hints, host, service)) |list| {
         defer py.decref(list);

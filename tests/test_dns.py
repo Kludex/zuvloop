@@ -65,12 +65,30 @@ async def test_getaddrinfo_reports_failures() -> None:
     assert caught.value.args == stdlib.value.args
 
 
-async def test_getaddrinfo_treats_an_empty_host_as_the_null_host() -> None:
-    """`""` is the wildcard address, not a host whose name is the empty string."""
+@pytest.mark.parametrize(
+    ("host", "port"),
+    [
+        ("localhost", "http"),
+        ("this-host-should-not-exist.invalid", "http"),
+        # What `""` means is the platform's business, and the platforms disagree:
+        # BSD reads it as the null host and resolves the wildcard address, glibc
+        # calls it a name it cannot find. libuv reaches neither, because it runs
+        # every hostname through IDNA first and that rejects an empty one.
+        ("", "http"),
+    ],
+)
+async def test_getaddrinfo_answers_as_the_stdlib_does(host: str, port: str) -> None:
     loop = running_loop()
-    mine = await loop.getaddrinfo("", "http", family=socket.AF_INET, type=socket.SOCK_STREAM)
-    theirs = socket.getaddrinfo("", "http", family=socket.AF_INET, type=socket.SOCK_STREAM)
-    assert sorted(mine) == sorted(theirs)
+    kwargs = {"family": socket.AF_INET, "type": socket.SOCK_STREAM}
+    try:
+        theirs: object = sorted(socket.getaddrinfo(host, port, **kwargs))
+    except socket.gaierror as exc:
+        theirs = exc.args
+    try:
+        mine: object = sorted(await loop.getaddrinfo(host, port, **kwargs))
+    except socket.gaierror as exc:
+        mine = exc.args
+    assert mine == theirs
 
 
 async def test_getaddrinfo_without_a_host_or_a_port_reports_no_name() -> None:
