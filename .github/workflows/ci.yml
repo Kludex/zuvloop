@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Lets CodSpeed trigger a backtest to seed its baseline.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -48,6 +50,11 @@ jobs:
 
   benchmarks:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # CodSpeed authenticates over OpenID Connect rather than an upload token,
+      # which a public repository does not need.
+      id-token: write
 
     steps:
       - uses: actions/checkout@v4
@@ -68,7 +75,6 @@ jobs:
       - uses: CodSpeedHQ/action@v5
         with:
           mode: walltime
-          token: ${{ secrets.CODSPEED_TOKEN }}
           run: uv run --no-sync pytest benchmarks/ --codspeed
 
   docs:
