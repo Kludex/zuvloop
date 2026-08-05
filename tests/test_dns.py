@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import socket
+from collections.abc import Sequence
 
 import pytest
 
 from conftest import running_loop
 
 pytestmark = pytest.mark.anyio
+
+type Sockaddr = tuple[str, int] | tuple[str, int, int, int] | tuple[int, bytes]
+type AddrInfo = tuple[int, int, int, str, Sockaddr]
+# What a lookup produced: the addresses, or the `(errno, strerror)` it failed with.
+# `Sequence` rather than `list` because the two APIs disagree on how narrowly they
+# type the family and the address, and only a covariant container accepts both.
+type Outcome = Sequence[AddrInfo] | tuple[int, str]
 
 
 async def test_getaddrinfo_resolves_localhost() -> None:
@@ -49,9 +57,79 @@ async def test_getaddrinfo_returns_canonical_names() -> None:
 
 
 async def test_getaddrinfo_reports_failures() -> None:
+    """The exception the standard library raises, carrying the code it carries.
+
+    libuv numbers its resolver errors itself, and those numbers are neither the
+    platform's `EAI_*` nor stable across platforms, so a caller comparing against
+    `socket.EAI_NONAME` would never match.
+    """
     loop = running_loop()
-    with pytest.raises(socket.gaierror):
+    with pytest.raises(socket.gaierror) as caught:
         await loop.getaddrinfo("this-host-should-not-exist.invalid", 80, type=socket.SOCK_STREAM)
+    assert caught.value.errno in (socket.EAI_NONAME, socket.EAI_NODATA)
+
+    with pytest.raises(socket.gaierror) as stdlib:
+        socket.getaddrinfo("this-host-should-not-exist.invalid", 80, type=socket.SOCK_STREAM)
+    assert caught.value.args == stdlib.value.args
+
+
+@pytest.mark.parametrize(
+    ("host", "port"),
+    [
+        ("localhost", "http"),
+        ("this-host-should-not-exist.invalid", "http"),
+        # What `""` means is the platform's business, and the platforms disagree:
+        # BSD reads it as the null host and resolves the wildcard address, glibc
+        # calls it a name it cannot find. libuv reaches neither, because it runs
+        # every hostname through IDNA first and that rejects an empty one.
+        ("", "http"),
+    ],
+)
+async def test_getaddrinfo_answers_as_the_stdlib_does(host: str, port: str) -> None:
+    loop = running_loop()
+    kwargs = {"family": socket.AF_INET, "type": socket.SOCK_STREAM}
+    try:
+        theirs: Outcome = sorted(socket.getaddrinfo(host, port, **kwargs))
+    except socket.gaierror as exc:
+        theirs = exc.args
+    try:
+        mine: Outcome = sorted(await loop.getaddrinfo(host, port, **kwargs))
+    except socket.gaierror as exc:
+        mine = exc.args
+    assert mine == theirs
+
+
+async def test_getaddrinfo_without_a_host_or_a_port_reports_no_name() -> None:
+    """libuv rejects the pair as EINVAL; the resolver would call it a missing name."""
+    loop = running_loop()
+    with pytest.raises(socket.gaierror) as caught:
+        await loop.getaddrinfo(None, None)
+    with pytest.raises(socket.gaierror) as stdlib:
+        socket.getaddrinfo(None, None)
+    assert caught.value.args == stdlib.value.args
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        # Contradictory, and the resolver says so - the failure path.
+        socket.NI_NAMEREQD | socket.NI_NUMERICHOST,
+        # A real reverse lookup, answered from the hosts file - the success path.
+        socket.NI_NAMEREQD,
+    ],
+)
+async def test_getnameinfo_answers_as_the_stdlib_does(flags: int) -> None:
+    """Whether a reverse lookup succeeds is the resolver's business; agreeing is not."""
+    loop = running_loop()
+    try:
+        theirs: tuple[str, str] | tuple[int, str] = socket.getnameinfo(("127.0.0.1", 80), flags)
+    except socket.gaierror as exc:
+        theirs = exc.args
+    try:
+        mine: tuple[str, str] | tuple[int, str] = await loop.getnameinfo(("127.0.0.1", 80), flags)
+    except socket.gaierror as exc:
+        mine = exc.args
+    assert mine == theirs
 
 
 async def test_getaddrinfo_rejects_unusable_arguments() -> None:

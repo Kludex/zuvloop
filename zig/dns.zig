@@ -152,10 +152,72 @@ fn settle(future: *py.Object, method: ?*py.Object, value: *py.Object) void {
     py.decref(res);
 }
 
-fn failFuture(future: *py.Object, status: c_int) void {
+/// The member if this platform has it, and a stand-in if it does not: glibc
+/// carries no `EAI_BADHINTS` or `EAI_PROTOCOL`, and the codes are not the same
+/// numbers across platforms either.
+inline fn eai(comptime name: [:0]const u8, comptime fallback: std.c.EAI) std.c.EAI {
+    return if (@hasField(std.c.EAI, name)) @field(std.c.EAI, name) else fallback;
+}
+
+/// libuv reports resolver failures with codes of its own; `socket.gaierror`
+/// carries the platform's `EAI_*`, which is what callers written against the
+/// standard library compare against. Anything that is not a resolver failure -
+/// a cancellation, an out-of-memory - is left to `OSError`.
+fn resolverError(status: c_int) ?std.c.EAI {
+    return switch (status) {
+        uv.EAI_ADDRFAMILY => eai("ADDRFAMILY", .FAIL),
+        uv.EAI_AGAIN => .AGAIN,
+        uv.EAI_BADFLAGS => .BADFLAGS,
+        uv.EAI_BADHINTS => eai("BADHINTS", .FAIL),
+        uv.EAI_FAIL => .FAIL,
+        uv.EAI_FAMILY => .FAMILY,
+        uv.EAI_MEMORY => .MEMORY,
+        uv.EAI_NODATA => eai("NODATA", .NONAME),
+        uv.EAI_NONAME => .NONAME,
+        uv.EAI_OVERFLOW => eai("OVERFLOW", .FAIL),
+        uv.EAI_PROTOCOL => eai("PROTOCOL", .FAIL),
+        uv.EAI_SERVICE => .SERVICE,
+        uv.EAI_SOCKTYPE => .SOCKTYPE,
+        else => null,
+    };
+}
+
+/// Builds the exception the standard library would have raised for `status`.
+fn resolverException(status: c_int) ?*py.Object {
+    if (resolverError(status)) |code| {
+        return c.PyObject_CallFunction(gaierror, "is", @intFromEnum(code), std.c.gai_strerror(code));
+    }
     var buf: [128]u8 = undefined;
     const msg = uv.strerror(status, &buf);
-    const exc = c.PyObject_CallFunction(gaierror, "is", @as(c_int, status), msg.ptr) orelse {
+    return c.PyObject_CallFunction(@ptrCast(c.PyExc_OSError), "is", uv.toErrno(status), msg.ptr);
+}
+
+/// Raises `socket.gaierror` for a code the platform's resolver produced itself.
+fn raisePlatformError(code: std.c.EAI) py.Error {
+    // `EAI_SYSTEM` says only that the real error is in `errno`, so the standard
+    // library reports that instead - `set_gaierror` in CPython's socketmodule
+    // hands it straight to `PyErr_SetFromErrno`. Windows has no such code.
+    if (@hasField(std.c.EAI, "SYSTEM") and code == eai("SYSTEM", .FAIL)) {
+        _ = c.PyErr_SetFromErrno(@ptrCast(c.PyExc_OSError));
+        return py.Error.Python;
+    }
+    const exc = c.PyObject_CallFunction(gaierror, "is", @intFromEnum(code), std.c.gai_strerror(code)) orelse
+        return py.Error.Python;
+    c.PyErr_SetRaisedException(exc);
+    return py.Error.Python;
+}
+
+/// Raises it, for the paths that report synchronously rather than through a future.
+/// `PyErr_SetRaisedException` takes the reference, and needs no separate type -
+/// `PyObject_Type` would hand back one more to own.
+fn raiseResolverError(status: c_int) py.Error {
+    const exc = resolverException(status) orelse return py.Error.Python;
+    c.PyErr_SetRaisedException(exc);
+    return py.Error.Python;
+}
+
+fn failFuture(future: *py.Object, status: c_int) void {
+    const exc = resolverException(status) orelse {
         py.writeUnraisable(future);
         return;
     };
@@ -370,6 +432,28 @@ pub fn getaddrinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
     hints.protocol = try py.asCInt(args[4].?);
     hints.flags = @bitCast(@as(u32, @bitCast(try py.asCInt(args[5].?))));
 
+    // libuv refuses this pair outright, before any resolver sees it, and reports
+    // it as EINVAL. The resolver the standard library reaches would have answered
+    // "neither node nor service", which is what callers are written to expect.
+    if (host == null and service == null) return raiseResolverError(uv.EAI_NONAME);
+
+    // libuv runs every hostname through IDNA, which rejects an empty one, so `""`
+    // can never reach a resolver that way. The platforms disagree about what it
+    // means - BSD reads it as the null host, glibc as a name it cannot find - and
+    // matching `socket.getaddrinfo` means letting the platform answer rather than
+    // picking one. Neither looks anything up, so this cannot block the loop.
+    if (host) |name| if (name[0] == 0) {
+        var res: ?*std.c.addrinfo = null;
+        const rc = std.c.getaddrinfo(name, service, &hints, &res);
+        if (rc != @as(std.c.EAI, @enumFromInt(0))) return raisePlatformError(rc);
+        defer if (res) |first| std.c.freeaddrinfo(first);
+        const list = try buildResults(res);
+        defer py.decref(list);
+        const future = c.PyObject_CallMethodNoArgs(@ptrCast(loop), str_create_future) orelse return py.Error.Python;
+        settle(future, str_set_result, list);
+        return future;
+    };
+
     if (resolveLiteral(&hints, host, service) orelse resolveNumeric(&hints, host, service)) |list| {
         defer py.decref(list);
         const future = c.PyObject_CallMethodNoArgs(@ptrCast(loop), str_create_future) orelse return py.Error.Python;
@@ -385,7 +469,8 @@ pub fn getaddrinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
     const req_host: ?[*:0]const u8 = if (host == null) null else @ptrCast(&req.host);
     const req_service: ?[*:0]const u8 = if (service == null) null else @ptrCast(&req.service);
 
-    try py.errUvIfNeg(uv.uv_getaddrinfo(loop.state().uvloop, req.addrReq(), onAddrInfo, req_host, req_service, &req.hints));
+    const status = uv.uv_getaddrinfo(loop.state().uvloop, req.addrReq(), onAddrInfo, req_host, req_service, &req.hints);
+    if (status < 0) return raiseResolverError(status);
     return py.newref(req.future.?).?;
 }
 
@@ -401,7 +486,8 @@ pub fn getnameinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
 
     const req = try allocRequest(loop, .getnameinfo);
     errdefer freeRequest(req, .getnameinfo);
-    try py.errUvIfNeg(uv.uv_getnameinfo(loop.state().uvloop, req.nameReq(), onNameInfo, storage.constPtr(), flags));
+    const status = uv.uv_getnameinfo(loop.state().uvloop, req.nameReq(), onNameInfo, storage.constPtr(), flags);
+    if (status < 0) return raiseResolverError(status);
     return py.newref(req.future.?).?;
 }
 

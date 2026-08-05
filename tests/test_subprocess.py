@@ -224,7 +224,15 @@ async def test_an_unsupported_popen_argument_is_rejected() -> None:
 
 async def test_signalling_an_exited_child_is_a_no_op() -> None:
     loop = running_loop()
-    transport, _protocol = await loop.subprocess_exec(asyncio.SubprocessProtocol, "/bin/echo", stdout=PIPE)
+
+    class Waiter(asyncio.SubprocessProtocol):
+        def __init__(self) -> None:
+            self.exited = loop.create_future()
+
+        def process_exited(self) -> None:
+            self.exited.set_result(None)
+
+    transport, protocol = await loop.subprocess_exec(Waiter, "/bin/echo", stdout=PIPE)
     try:
         # An unread pipe keeps the transport from finishing, which is the window
         # the no-op exists for: a child already reaped, still held by asyncio.
@@ -232,11 +240,7 @@ async def test_signalling_an_exited_child_is_a_no_op() -> None:
         assert isinstance(stdout, asyncio.ReadTransport)
         stdout.pause_reading()
 
-        async def until_exited() -> None:
-            while transport.get_returncode() is None:
-                await asyncio.sleep(0.01)
-
-        await asyncio.wait_for(until_exited(), 10)
+        await asyncio.wait_for(protocol.exited, 10)
         # asyncio makes signalling an exited child a no-op rather than an error.
         transport.send_signal(signal.SIGTERM)
         transport.terminate()
