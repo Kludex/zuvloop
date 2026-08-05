@@ -183,6 +183,38 @@ async def bench_getaddrinfo(iterations: int = 5_000) -> float:
     return iterations / (time.perf_counter() - started)
 
 
+async def bench_process_spawn(iterations: int = 250) -> float:
+    """Spawn and reap a minimal process with no pipe traffic."""
+    started = time.perf_counter()
+    for _ in range(iterations):
+        process = await asyncio.create_subprocess_exec(
+            "/usr/bin/true",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        if await process.wait() != 0:
+            raise RuntimeError("subprocess exited unsuccessfully")
+    return iterations / (time.perf_counter() - started)
+
+
+async def bench_process_pipe(repetitions: int = 12, payload_size: int = 4 << 20) -> float:
+    """Round-trip bytes through a subprocess's stdin and stdout pipes."""
+    payload = b"p" * payload_size
+    started = time.perf_counter()
+    for _ in range(repetitions):
+        process = await asyncio.create_subprocess_exec(
+            "/bin/cat",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _stderr = await process.communicate(payload)
+        if process.returncode != 0 or stdout != payload:
+            raise RuntimeError("subprocess pipe corrupted its payload")
+    return repetitions * payload_size / (time.perf_counter() - started)
+
+
 BENCHMARKS: dict[str, tuple[Benchmark, str]] = {
     "call_soon": (bench_call_soon, "callbacks/s"),
     "call_soon_args": (bench_call_soon_args, "callbacks/s"),
@@ -191,6 +223,8 @@ BENCHMARKS: dict[str, tuple[Benchmark, str]] = {
     "echo_1kb": (bench_echo, "roundtrips/s"),
     "stream": (bench_stream, "bytes/s"),
     "getaddrinfo": (bench_getaddrinfo, "lookups/s"),
+    "process_spawn": (bench_process_spawn, "processes/s"),
+    "process_pipe": (bench_process_pipe, "bytes/s"),
 }
 
 

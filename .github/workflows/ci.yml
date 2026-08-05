@@ -46,7 +46,7 @@ jobs:
           uv run coverage report
 
       - name: Benchmark
-        run: uv run python benchmarks/run.py --repeat 1 --only call_soon timers echo_1kb
+        run: uv run python benchmarks/run.py --repeat 1 --only call_soon timers echo_1kb process_spawn process_pipe
 
   docs:
     runs-on: ubuntu-latest
@@ -62,4 +62,3 @@ jobs:
       # link fails here rather than on the deploy that Cloudflare runs.
       - name: Build docs
         run: ./scripts/docs
-
