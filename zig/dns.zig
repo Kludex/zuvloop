@@ -481,7 +481,16 @@ pub fn getnameinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
     try loopmod.checkClosed(loop.state());
 
     var storage: addr.Storage = .{};
-    try addr.fromPython(0, args[0].?, &storage);
+    addr.fromPython(0, args[0].?, &storage) catch |e| {
+        // A host that is not an address literal is one the resolver would have
+        // had to look up, and it reports that as a name it cannot find - not as
+        // the `EINVAL` libuv gives for refusing to parse it. A malformed tuple
+        // or an impossible port is still the caller's mistake, and keeps its own
+        // exception; `gaierror` is an `OSError`, those are not.
+        if (c.PyErr_ExceptionMatches(@ptrCast(c.PyExc_OSError)) == 0) return e;
+        c.PyErr_Clear();
+        return raisePlatformError(eai("NONAME", .FAIL));
+    };
     const flags = try py.asCInt(args[1].?);
 
     const req = try allocRequest(loop, .getnameinfo);
