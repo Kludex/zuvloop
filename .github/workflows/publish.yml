@@ -64,10 +64,13 @@ jobs:
 
       # An sdist that cannot build without a system Zig is useless on any
       # platform the wheels miss, so it is installed here with none available.
+      # PATH is scrubbed for the install only; uv is addressed absolutely so
+      # the scrub removes Zig without removing the installer.
       - name: Install it with no Zig on PATH
         run: |
+          UV="$(command -v uv)"
           uv venv --python 3.14 /tmp/check
-          env PATH="/usr/bin:/bin" VIRTUAL_ENV=/tmp/check uv pip install --no-cache dist/*.tar.gz
+          env PATH="/usr/bin:/bin" VIRTUAL_ENV=/tmp/check "$UV" pip install --no-cache dist/*.tar.gz
           /tmp/check/bin/python -c "import zuvloop; print(zuvloop.libuv_version())"
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
