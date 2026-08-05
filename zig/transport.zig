@@ -272,6 +272,17 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
     _ = suggested;
     const self: *Transport = @ptrCast(@alignCast(uv.getData(handle.?)));
     const st = self.loopState();
+
+    // Handing back the loop's shared buffer touches no Python object, and libuv
+    // asks for one on every readable event, so the GIL round trip the rest of
+    // this needs would be paid per read for nothing.
+    if (self.flags & BUFFERED == 0 and self.read_bytes == null and self.read_size <= copy_threshold) {
+        if (loopmod.scratchBuffer(st)) |scratch| {
+            buf.* = .{ .base = scratch, .len = self.read_size };
+            return;
+        }
+    }
+
     st.gilEnter();
     defer st.gilExit();
 
