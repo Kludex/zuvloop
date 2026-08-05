@@ -132,22 +132,27 @@ pub const Timers = struct {
         const doomed: []*py.Object = alloc.alloc(*py.Object, self.cancelled) catch none[0..];
         defer if (doomed.len != 0) alloc.free(doomed);
         var dropped: usize = 0;
+        var kept: usize = 0;
         var write: usize = 0;
         var read: usize = 0;
         while (read < self.len) : (read += 1) {
             const entry = self.items[read];
-            // Without room to set it aside it stays on the heap, cancelled and
-            // inert, for the next compaction to reclaim.
-            if (isCancelled(entry.handle) and dropped < doomed.len) {
-                doomed[dropped] = entry.handle;
-                dropped += 1;
-            } else {
-                self.items[write] = entry;
-                write += 1;
+            if (isCancelled(entry.handle)) {
+                if (dropped < doomed.len) {
+                    doomed[dropped] = entry.handle;
+                    dropped += 1;
+                    continue;
+                }
+                // Without room to set it aside it stays on the heap, cancelled
+                // and inert. It still counts, or the next compaction waits for a
+                // fresh `min_cancelled_timers` before it will reclaim it.
+                kept += 1;
             }
+            self.items[write] = entry;
+            write += 1;
         }
         self.len = write;
-        self.cancelled = 0;
+        self.cancelled = kept;
         if (write >= 2) {
             var i = write / 2;
             while (i > 0) {

@@ -349,5 +349,8 @@ async def test_replacing_a_watcher_survives_a_reentrant_finaliser() -> None:
         assert seen and set(seen) == {"after"}
         assert loop.remove_reader(fd) is True
     finally:
+        # An assertion above leaves the watcher armed, and closing a descriptor
+        # libuv is still polling is its own kind of trouble.
+        loop.remove_reader(fd)
         left.close()
         right.close()
