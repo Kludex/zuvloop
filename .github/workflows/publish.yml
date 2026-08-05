@@ -71,7 +71,8 @@ jobs:
           UV="$(command -v uv)"
           uv venv --python 3.14 /tmp/check
           env PATH="/usr/bin:/bin" VIRTUAL_ENV=/tmp/check "$UV" pip install --no-cache dist/*.tar.gz
-          /tmp/check/bin/python -c "import zuvloop; print(zuvloop.libuv_version())"
+          # From outside the repo, so the source tree cannot shadow the install.
+          cd /tmp && /tmp/check/bin/python -c "import zuvloop; print(zuvloop.libuv_version())"
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
