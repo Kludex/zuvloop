@@ -134,13 +134,24 @@ $ python -m asyncio pstree <pid>
 
 ## Compatibility
 
-zuvloop is checked against the test suites of the projects that exercise an event loop hardest —
-run unmodified, with the loop swapped underneath:
+zuvloop is checked against CPython's own conformance suite and against the test suites of the
+projects that exercise an event loop hardest — run unmodified, with the loop swapped underneath:
 
 | Suite | Result |
 | --- | --- |
+| CPython `test_asyncio` | 88 passed, 4 skipped, none failing |
 | uvicorn | 1257 passed, no failures |
 | aiohttp | 4473 passed, 36 failed — 33 of which also fail on stock asyncio |
+
+`scripts/conformance.py` runs CPython's `EventLoopTestsMixin`, `SubprocessTestsMixin` and
+`BaseSockTestsMixin` against zuvloop, downloading the source of whichever interpreter is running
+so the suite always matches it. Each test runs in its own process, so a hang is reported rather
+than stopping the run. Three of the four skips are white-box tests of CPython's own internals -
+two patch `asyncio.base_events.socket`, one counts calls to `BaseEventLoop._run_once` - which no
+loop outside the standard library can satisfy.
+
+Of aiohttp's three remaining failures, two are `blockbuster` reporting a blocking `os.stat` that
+the standard library makes on the same path, and the third is the `loop.time()` difference below.
 
 (For reference: uvloop cannot complete the aiohttp suite — it fails fifteen tests and then hangs.)
 
@@ -150,11 +161,11 @@ zuvloop keeps its timer heap in native code and reads the clock directly, so mon
 returns and nothing else. A loop that needs a controllable clock should schedule against one
 explicitly.
 
-Also not implemented: `sendfile()` and `sock_sendfile()` raise `NotImplementedError`, and
-`get_extra_info("socket")` is not provided (libuv owns the descriptor; handing out a Python
-socket for it would risk a double close — `sockname`, `peername`, `family`, `type` and `proto`
-are all available). Handles returned by `call_soon` and `call_later` implement the
-`asyncio.Handle` and `asyncio.TimerHandle` interfaces but are not instances of those classes.
+Also not implemented: `sendfile()` and `sock_sendfile()` raise `NotImplementedError`. Handles
+returned by `call_soon` and `call_later` implement the `asyncio.Handle` and
+`asyncio.TimerHandle` interfaces but are not instances of those classes; `call_soon_threadsafe`
+does return a real `asyncio.Handle`, because 3.14 requires cancelling one from another thread to
+block until a callback that has already started finishes.
 
 ## Development
 
