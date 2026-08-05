@@ -10,7 +10,7 @@ permissions: {}
 
 jobs:
   build-wheels:
-    name: "Wheels on ${{ matrix.os }}"
+    name: "Wheels for ${{ matrix.archs }} on ${{ matrix.os }}"
     runs-on: "${{ matrix.os }}"
     timeout-minutes: 30
     permissions:
@@ -18,10 +18,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Zig cross-compiles, but cibuildwheel still needs a native runner per
-        # OS to build the manylinux containers and the macOS wheels. aarch64
-        # Linux uses the native ARM runner; macos-13 covers x86_64 Macs.
-        os: ["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "macos-13"]
+        # Linux containers must match the runner architecture. The Apple
+        # Silicon runner can also build and test x86_64 wheels under Rosetta.
+        include:
+          - os: ubuntu-latest
+            archs: x86_64
+          - os: ubuntu-24.04-arm
+            archs: aarch64
+          - os: macos-latest
+            archs: "x86_64 arm64"
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
@@ -38,6 +43,8 @@ jobs:
       # reach inside a manylinux container.
       - name: Build wheels
         uses: pypa/cibuildwheel@1828c10ab37f080699c7b81cea34097c684a7074 # v4.2.0
+        env:
+          CIBW_ARCHS: "${{ matrix.archs }}"
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
