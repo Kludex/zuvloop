@@ -67,24 +67,21 @@ have the same property.
 
 ## Instrumentation
 
-### `zuvloop.instrument`
+Everything is automatic: spans and counters are emitted as events happen, and
+the loop gauges are sampled while the loop runs whenever a real OpenTelemetry
+meter provider is installed. See [Instrumentation](../usage/instrumentation.md).
+
+### `EventLoop.metrics_interval`
 
 ```python
-zuvloop.instrument(interval=1.0) -> None
+loop.metrics_interval = 10.0  # seconds, the default
 ```
 
-Starts periodic sampling of the loop gauges on the running loop. Spans and
-counters need no setup; only the gauges are sampled. See
-[Instrumentation](../usage/instrumentation.md).
+How often the gauges are sampled. Assign before running the loop.
 
 ### `zuvloop.Instrumentation`
 
-The per-loop instrumentation state, reachable as `loop._instrumentation`. Useful
-if you want to drive sampling yourself rather than through `instrument()`.
-
-### `zuvloop.MetricsReporter`
-
-The callable the native sampler invokes with each batch of gauge values.
+The per-loop instrumentation state, reachable as `loop._instrumentation`.
 
 ## Utilities
 

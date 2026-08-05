@@ -9,7 +9,7 @@ from opentelemetry.trace import StatusCode
 
 import zuvloop
 from conftest import Telemetry, attribute, collect_contexts, numeric_attribute, running_loop
-from zuvloop._instrumentation import capture_call_graph, publish_metrics
+from zuvloop._instrumentation import capture_call_graph, metrics_provider_installed, publish_metrics
 
 pytestmark = pytest.mark.anyio
 
@@ -154,14 +154,19 @@ async def test_metrics_are_published_as_gauges(telemetry: Telemetry) -> None:
     assert telemetry.metric("zuvloop.timers") == 4
 
 
-async def test_instrument_samples_on_a_native_timer(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_gauges_sample_on_a_native_timer(monkeypatch: pytest.MonkeyPatch) -> None:
     snapshots: list[dict[str, int]] = []
-    monkeypatch.setattr("zuvloop._runner.publish_metrics", snapshots.append)
-    reporter = zuvloop.instrument(interval=0.02)
-    try:
-        await asyncio.sleep(0.09)
-    finally:
-        reporter.cancel()
+    monkeypatch.setattr("zuvloop._base.publish_metrics", snapshots.append)
+
+    def main() -> None:
+        loop = zuvloop.new_event_loop()
+        loop.metrics_interval = 0.02
+        try:
+            loop.run_until_complete(asyncio.sleep(0.09))
+        finally:
+            loop.close()
+
+    await asyncio.to_thread(main)
     assert len(snapshots) >= 2
     assert snapshots[0].keys() == running_loop()._metrics().keys()
     before = len(snapshots)
@@ -169,27 +174,53 @@ async def test_instrument_samples_on_a_native_timer(monkeypatch: pytest.MonkeyPa
     assert len(snapshots) == before
 
 
-async def test_instrument_reaches_the_exporter(telemetry: Telemetry) -> None:
-    reporter = zuvloop.instrument(interval=0.02)
-    try:
-        await asyncio.sleep(0.05)
-    finally:
-        reporter.cancel()
+async def test_gauges_reach_the_exporter(telemetry: Telemetry) -> None:
+    def main() -> None:
+        loop = zuvloop.new_event_loop()
+        loop.metrics_interval = 0.02
+        try:
+            loop.run_until_complete(asyncio.sleep(0.05))
+        finally:
+            loop.close()
+
+    await asyncio.to_thread(main)
     assert telemetry.counted("zuvloop.callbacks_run") > 0
 
 
-async def test_instrument_accepts_an_explicit_loop() -> None:
-    reporter = zuvloop.instrument(running_loop(), interval=5.0)
-    reporter.cancel()
+def test_a_real_provider_is_detected(telemetry: Telemetry) -> None:
+    # The telemetry fixture installs SDK providers for the whole session.
+    assert metrics_provider_installed()
 
 
-async def test_instrument_rejects_a_foreign_loop() -> None:
-    other = asyncio.new_event_loop()
-    try:
-        with pytest.raises(TypeError, match="needs a zuvloop event loop"):
-            zuvloop.instrument(other)  # type: ignore[arg-type]
-    finally:
-        other.close()
+def test_a_noop_provider_is_not_detected(monkeypatch: pytest.MonkeyPatch) -> None:
+    from opentelemetry.metrics import NoOpMeterProvider
+
+    monkeypatch.setattr("zuvloop._instrumentation.metrics.get_meter_provider", NoOpMeterProvider)
+    assert not metrics_provider_installed()
+
+
+def test_an_unset_proxy_provider_is_not_detected(monkeypatch: pytest.MonkeyPatch) -> None:
+    from opentelemetry.metrics._internal import _ProxyMeterProvider
+
+    monkeypatch.setattr("zuvloop._instrumentation.metrics.get_meter_provider", _ProxyMeterProvider)
+    assert not metrics_provider_installed()
+
+
+async def test_gauges_stay_off_without_a_meter_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    snapshots: list[dict[str, int]] = []
+    monkeypatch.setattr("zuvloop._base.publish_metrics", snapshots.append)
+    monkeypatch.setattr("zuvloop._base.metrics_provider_installed", lambda: False)
+
+    def main() -> None:
+        loop = zuvloop.new_event_loop()
+        loop.metrics_interval = 0.02
+        try:
+            loop.run_until_complete(asyncio.sleep(0.09))
+        finally:
+            loop.close()
+
+    await asyncio.to_thread(main)
+    assert snapshots == []
 
 
 async def test_the_sampling_interval_must_be_positive() -> None:

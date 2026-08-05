@@ -21,25 +21,32 @@ there is no flag to turn this off.
 
 ## Collecting it
 
-Anything that speaks OpenTelemetry collects it. `logfire.configure()` is one such
-thing, and zuvloop does not import logfire to work with it:
+Anything that speaks OpenTelemetry collects it, and nothing needs to be turned
+on. `logfire.configure()` is one such thing, and zuvloop does not import logfire
+to work with it:
 
 ```python
 import logfire
 import zuvloop
 
 
-async def main() -> None:
-    zuvloop.instrument()  # start the periodic loop gauges
-    ...
+async def main() -> None: ...
 
 
 logfire.configure()  # installs the OTel providers
 zuvloop.run(main())
 ```
 
-[`zuvloop.instrument()`](../reference/api.md#zuvloopinstrument) starts the gauge sampler. Spans and counters
-need no setup — they are emitted as the events happen.
+Spans and counters are emitted as the events happen. The gauges are sampled
+automatically while the loop runs, but only when a real meter provider is
+installed - without one there would be nowhere for the numbers to go, so the
+sampler never starts. The default interval is 10 seconds; set
+`loop.metrics_interval` before running the loop to change it:
+
+```python
+loop = zuvloop.new_event_loop()
+loop.metrics_interval = 1.0
+```
 
 ## Slow callbacks
 
