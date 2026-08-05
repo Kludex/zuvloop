@@ -8,6 +8,7 @@ import ssl
 import struct
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -1306,3 +1307,98 @@ async def test_the_asyncio_server_hook_unregisters_and_closes() -> None:
     loop._stop_serving(sock)
 
     assert sock.fileno() == -1
+
+
+async def test_happy_eyeballs_beats_a_black_holed_address() -> None:
+    """Without racing, an address on a route that drops costs a full timeout.
+
+    `192.0.2.1` is TEST-NET-1, reserved for documentation, so nothing answers
+    and nothing refuses either - packets simply vanish, which is the case
+    RFC 8305 exists for.
+    """
+    loop = running_loop()
+    server, port, _ = await start_echo()
+    resolved = [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", port)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)),
+    ]
+
+    original = loop.getaddrinfo
+
+    async def getaddrinfo(host: Any, port: Any, **kwargs: Any) -> Any:
+        # Only the made-up name is answered from the list. `sock_connect`
+        # resolves the address it is handed, and answering that from the list
+        # too would send every attempt to the same place.
+        if host == "split":
+            return resolved
+        return await original(host, port, **kwargs)
+
+    async with server:
+        loop.getaddrinfo = getaddrinfo  # type: ignore[method-assign]
+        try:
+            transport, _protocol = await asyncio.wait_for(
+                loop.create_connection(Collector, "split", port, happy_eyeballs_delay=0.1), 5
+            )
+            assert transport.get_extra_info("peername")[0] == "127.0.0.1"
+            transport.close()
+        finally:
+            loop.getaddrinfo = original  # type: ignore[method-assign]
+
+
+async def test_all_errors_reports_every_failure() -> None:
+    loop = running_loop()
+    with pytest.raises(ExceptionGroup) as caught:
+        await loop.create_connection(Collector, "127.0.0.1", 1, all_errors=True)
+    assert caught.value.exceptions
+    assert all(isinstance(exc, OSError) for exc in caught.value.exceptions)
+
+
+async def test_interleave_is_accepted_without_a_delay() -> None:
+    server, port, _ = await start_echo()
+    loop = running_loop()
+    async with server:
+        transport, _protocol = await loop.create_connection(Collector, "127.0.0.1", port, interleave=1)
+        transport.close()
+
+
+async def test_differing_failures_are_reported_together() -> None:
+    """One complaint stands in for many identical ones; different ones do not."""
+    loop = running_loop()
+    original = loop.getaddrinfo
+
+    async def getaddrinfo(host: Any, port: Any, **kwargs: Any) -> Any:
+        if host == "two-ways-to-fail":
+            # Both refuse at once, and the address is in the message, so the two
+            # complaints differ - which is the case that cannot be folded.
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 1)),
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 1, 0, 0)),
+            ]
+        return await original(host, port, **kwargs)
+
+    loop.getaddrinfo = getaddrinfo  # type: ignore[method-assign]
+    try:
+        with pytest.raises(OSError, match="Multiple exceptions"):
+            await loop.create_connection(Collector, "two-ways-to-fail", 1)
+    finally:
+        loop.getaddrinfo = original  # type: ignore[method-assign]
+
+
+async def test_identical_failures_are_reported_once() -> None:
+    """Two attempts that fail the same way are one complaint, not a list of two."""
+    loop = running_loop()
+    original = loop.getaddrinfo
+
+    async def getaddrinfo(host: Any, port: Any, **kwargs: Any) -> Any:
+        if host == "twice-the-same":
+            info = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 1))
+            return [info, info]
+        return await original(host, port, **kwargs)
+
+    loop.getaddrinfo = getaddrinfo  # type: ignore[method-assign]
+    try:
+        with pytest.raises(ConnectionRefusedError) as caught:
+            await loop.create_connection(Collector, "twice-the-same", 1)
+        assert "Multiple exceptions" not in str(caught.value)
+    finally:
+        loop.getaddrinfo = original  # type: ignore[method-assign]

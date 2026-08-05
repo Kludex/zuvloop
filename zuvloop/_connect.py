@@ -7,8 +7,9 @@ import socket
 import ssl as ssl_module
 import stat
 import subprocess
-from asyncio import base_subprocess, sslproto, trsock
-from collections.abc import Callable, Sequence
+from asyncio import base_subprocess, sslproto, staggered, trsock
+from asyncio.base_events import _interleave_addrinfos  # type: ignore[attr-defined]  # private, not in typeshed
+from collections.abc import Callable, Coroutine, Sequence
 from typing import Any, cast
 
 from . import _zuvloop
@@ -43,7 +44,7 @@ class ConnectionOperations(SocketOperations):
 
     # -- clients -----------------------------------------------------------
 
-    async def create_connection(  # type: ignore[override]  # no happy-eyeballs arguments
+    async def create_connection(
         self,
         protocol_factory: Callable[[], asyncio.BaseProtocol],
         host: str | None = None,
@@ -58,13 +59,21 @@ class ConnectionOperations(SocketOperations):
         server_hostname: str | None = None,
         ssl_handshake_timeout: float | None = None,
         ssl_shutdown_timeout: float | None = None,
+        happy_eyeballs_delay: float | None = None,
+        interleave: int | None = None,
+        all_errors: bool = False,
     ) -> tuple[asyncio.Transport, Any]:
         server_hostname = _check_ssl_args(ssl, server_hostname, host)
         _check_ssl_timeouts(ssl, ssl_handshake_timeout, ssl_shutdown_timeout)
+        if happy_eyeballs_delay is not None and interleave is None:
+            # Racing addresses that are all one family races nothing.
+            interleave = 1
         if host is not None or port is not None:
             if sock is not None:
                 raise ValueError("host/port and sock can not be specified at the same time")
-            sock = await self._connect_tcp(host, port, family, proto, flags, local_addr)
+            sock = await self._connect_tcp(
+                host, port, family, proto, flags, local_addr, happy_eyeballs_delay, interleave, all_errors
+            )
         elif sock is None:
             raise ValueError("host and port was not specified and no sock specified")
         else:
@@ -131,29 +140,88 @@ class ConnectionOperations(SocketOperations):
         proto: int,
         flags: int,
         local_addr: tuple[str, int] | None,
+        happy_eyeballs_delay: float | None = None,
+        interleave: int | None = None,
+        all_errors: bool = False,
     ) -> socket.socket:
         infos = await self.getaddrinfo(host, port, family=family, type=socket.SOCK_STREAM, proto=proto, flags=flags)
         if not infos:  # pragma: no cover - libuv reports an error rather than an empty list
             raise OSError(f"getaddrinfo({host!r}, {port!r}) returned no addresses")
+        if interleave:
+            infos = _interleave_addrinfos(infos, interleave)
+
         errors: list[OSError] = []
-        for af, kind, pr, _canon, address in infos:
-            sock = socket.socket(af, kind, pr)
-            try:
-                sock.setblocking(False)
-                if local_addr is not None:
-                    try:
-                        sock.bind(local_addr)
-                    except OSError as exc:
-                        # Which address was refused is the useful half of the report.
-                        message = f"error while attempting to bind on address {local_addr!r}: {str(exc).lower()}"
-                        raise OSError(exc.errno, message) from None
-                await self.sock_connect(sock, address)
-            except OSError as exc:
-                sock.close()
-                errors.append(exc)
-            else:
-                return sock
-        raise errors[0]
+        winner: socket.socket | None = None
+        if happy_eyeballs_delay is None:
+            for info in infos:
+                try:
+                    winner = await self._connect_one(errors, info, local_addr)
+                    break
+                except OSError:
+                    continue
+        else:
+            # Each attempt starts `happy_eyeballs_delay` after the last, and the
+            # first to connect wins - so an address on a broken route costs that
+            # delay rather than a full connect timeout. RFC 8305.
+            winner = (
+                await staggered.staggered_race(
+                    (self._attempt(errors, info, local_addr) for info in infos),
+                    happy_eyeballs_delay,
+                    loop=self,
+                )
+            )[0]
+
+        if winner is not None:
+            return winner
+        if all_errors:
+            raise ExceptionGroup("create_connection failed", errors)
+        if len(errors) == 1:
+            raise errors[0]
+        # All the same complaint reads better as one of them than as a list.
+        model = str(errors[0])
+        if all(str(exc) == model for exc in errors):
+            raise errors[0]
+        raise OSError(f"Multiple exceptions: {', '.join(str(exc) for exc in errors)}")
+
+    def _attempt(
+        self,
+        errors: list[OSError],
+        info: tuple[int, int, int, str, Any],
+        local_addr: tuple[str, int] | None,
+    ) -> Callable[[], Coroutine[Any, Any, socket.socket]]:
+        """One attempt, bound to its address, for the race to start when it likes."""
+
+        async def run() -> socket.socket:
+            return await self._connect_one(errors, info, local_addr)
+
+        return run
+
+    async def _connect_one(
+        self,
+        errors: list[OSError],
+        info: tuple[int, int, int, str, Any],
+        local_addr: tuple[str, int] | None,
+    ) -> socket.socket:
+        af, kind, proto, _canon, address = info
+        sock = socket.socket(af, kind, proto)
+        try:
+            sock.setblocking(False)
+            if local_addr is not None:
+                try:
+                    sock.bind(local_addr)
+                except OSError as exc:
+                    # Which address was refused is the useful half of the report.
+                    message = f"error while attempting to bind on address {local_addr!r}: {str(exc).lower()}"
+                    raise OSError(exc.errno, message) from None
+            await self.sock_connect(sock, address)
+        except OSError as exc:
+            sock.close()
+            errors.append(exc)
+            raise
+        except BaseException:
+            sock.close()
+            raise
+        return sock
 
     # -- servers -----------------------------------------------------------
 
