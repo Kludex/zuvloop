@@ -44,7 +44,7 @@ them - which is not a reason to skip a test lightly, so each one says why.
 import unittest
 import zuvloop
 from test.test_asyncio import utils as test_utils
-from test.test_asyncio import test_events, test_sock_lowlevel
+from test.test_asyncio import test_buffered_proto, test_events, test_server, test_sock_lowlevel
 
 _MIXIN = test_events.EventLoopTestsMixin
 
@@ -83,6 +83,18 @@ class ZuvloopEventLoopTests(test_events.EventLoopTestsMixin,
 
 class ZuvloopSockTests(test_sock_lowlevel.BaseSockTestsMixin, test_utils.TestCase):
     def create_event_loop(self):
+        return zuvloop.new_event_loop()
+
+
+# `FunctionalTestCaseMixin` builds its loop through `new_loop` rather than
+# `create_event_loop`, so these hook a different method to the same end.
+class ZuvloopStartServerTests(test_server.BaseStartServer, unittest.TestCase):
+    def new_loop(self):
+        return zuvloop.new_event_loop()
+
+
+class ZuvloopBufferedProtocolTests(test_buffered_proto.BaseTestBufferedProtocol, unittest.TestCase):
+    def new_loop(self):
         return zuvloop.new_event_loop()
 
 
