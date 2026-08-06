@@ -97,8 +97,9 @@ That's it. That's the migration. 🎉
 ## Observability
 
 zuvloop emits plain OpenTelemetry. The only runtime dependency is `opentelemetry-api` — not the
-SDK, nothing vendor-specific. Until your application installs a provider, the instruments are
-no-ops and cost nothing.
+SDK, nothing vendor-specific. Configure providers before starting the loop; zuvloop checks for them
+at each `run_forever()` entry. Until then the instruments are no-ops and slow-callback timing stays
+off.
 
 Anything that speaks OpenTelemetry can collect it. For example, with
 <a href="https://logfire.pydantic.dev" target="_blank">Logfire</a>:
