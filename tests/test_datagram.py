@@ -146,12 +146,21 @@ async def test_abort_closes_immediately() -> None:
 
 async def test_sending_after_close_is_dropped() -> None:
     """asyncio drops it; a shutdown race should not raise out of user code."""
-    server, _echo, address = await start_echo()
-    transport, _protocol = await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
-    transport.close()
+    loop = running_loop()
+    server, echo, address = await start_echo()
+    transport, _protocol = await loop.create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
+    live, live_protocol = await loop.create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
     try:
-        transport.sendto(b"hello", address)
+        transport.close()
+        transport.sendto(b"dropped", address)
+        # Sent afterwards from an endpoint that is open: once the echo has
+        # answered that one, anything the closed one sent would have arrived.
+        live.sendto(b"delivered", address)
+        assert live_protocol.done is not None
+        assert await asyncio.wait_for(live_protocol.done, 2) == b"re:delivered"
+        assert [data for data, _addr in echo.received] == [b"delivered"]
     finally:
+        live.close()
         server.close()
 
 
