@@ -232,17 +232,20 @@ pub fn spawnProcess(self_obj: *py.Object, args_in: []const ?*py.Object) py.Error
     // Size the arena before copying so no string can move afterwards.
     var needed = try reserve(args_in[1].?, "args");
     if (!py.isNone(args_in[2].?)) needed += try reserve(args_in[2].?, "env");
-    needed = 0; // STRESS: reserve nothing, so every append reallocates
+    needed += 4096; // file, cwd and their terminators
     spawn.storage.ensureTotalCapacity(alloc, needed) catch return py.errNoMemory();
 
+    // An empty environment is not the absence of one: `env={}` asks for a child
+    // with no variables, and only `env=None` asks for the parent's.
+    const has_env = !py.isNone(args_in[2].?);
     const file_at = try optionalString(&spawn, args_in[0]) orelse return py.errValue("file is required");
     try appendAll(&spawn, &spawn.argv_at, args_in[1].?);
-    if (!py.isNone(args_in[2].?)) try appendAll(&spawn, &spawn.envp_at, args_in[2].?);
+    if (has_env) try appendAll(&spawn, &spawn.envp_at, args_in[2].?);
     const cwd_at = try optionalString(&spawn, args_in[3]);
 
     // Every string is in the arena now, so it will not move again.
     try spawn.resolve(&spawn.argv, spawn.argv_at.items);
-    if (spawn.envp_at.items.len != 0) try spawn.resolve(&spawn.envp, spawn.envp_at.items);
+    if (has_env) try spawn.resolve(&spawn.envp, spawn.envp_at.items);
     const file = spawn.at(file_at);
     const cwd: ?[*:0]const u8 = if (cwd_at) |offset| spawn.at(offset) else null;
 
@@ -275,7 +278,7 @@ pub fn spawnProcess(self_obj: *py.Object, args_in: []const ?*py.Object) py.Error
     options.exit_cb = onExit;
     options.file = file;
     options.args = spawn.argv.items.ptr;
-    options.env = if (spawn.envp.items.len != 0) spawn.envp.items.ptr else null;
+    options.env = if (has_env) spawn.envp.items.ptr else null;
     options.cwd = cwd;
     options.flags = @intCast(try py.asCInt(args_in[5].?));
     options.stdio_count = 3;
