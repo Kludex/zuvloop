@@ -153,8 +153,8 @@ async def test_sending_after_close_is_dropped() -> None:
     try:
         transport.close()
         transport.sendto(b"dropped", address)
-        # Sent afterwards from an endpoint that is open: once the echo has
-        # answered that one, anything the closed one sent would have arrived.
+        # Once the echo has answered this one, anything the closed endpoint sent
+        # would have arrived.
         live.sendto(b"delivered", address)
         assert live_protocol.done is not None
         assert await asyncio.wait_for(live_protocol.done, 2) == b"re:delivered"
@@ -173,8 +173,7 @@ async def test_a_closing_endpoint_still_rejects_a_bad_address() -> None:
 
 
 async def test_a_closing_endpoint_still_rejects_a_payload_that_is_not_a_buffer() -> None:
-    """The payload is an argument too, so a closing endpoint owes the same error
-    for it - asyncio checks the type before it decides to drop anything."""
+    """asyncio checks the type before it decides to drop anything."""
     transport, _protocol = await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
     transport.close()
     with pytest.raises(TypeError):

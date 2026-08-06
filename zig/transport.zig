@@ -525,11 +525,9 @@ fn queueWrite(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) py.E
 
 /// Whether a write may proceed, releasing `views` if it may not.
 ///
-/// A close on its own only drops the data: raising there would turn an ordinary
-/// shutdown race into an exception out of code with no reason to guard for it.
-/// `write_eof()` is the caller's own mistake instead, and is rejected by each
-/// entry point before it gets this far - early enough that an empty write, which
-/// never reaches here, is an error too.
+/// A close only drops the data; raising would turn an ordinary shutdown race
+/// into an exception. `write_eof()` is the caller's mistake and each entry point
+/// rejects it earlier, so an empty write is an error too.
 fn acceptsWrite(self: *Transport, views: []c.Py_buffer) py.Error!bool {
     if (self.flags & (CONN_LOST | CLOSING) != 0) {
         releaseViews(views);
