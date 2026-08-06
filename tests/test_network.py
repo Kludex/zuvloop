@@ -1309,9 +1309,7 @@ async def test_the_asyncio_server_hook_unregisters_and_closes() -> None:
 
 
 async def test_a_raising_read_callback_closes_the_connection() -> None:
-    """asyncio treats it as fatal; carrying on hands the protocol another chunk
-    after it has already said it cannot cope, and the exception it raised is
-    what `connection_lost` is for."""
+    """asyncio treats it as fatal, and the exception is what `connection_lost` is for."""
     loop = running_loop()
     loop.set_exception_handler(lambda _loop, _context: None)
     left, right = socket.socketpair()
@@ -1506,12 +1504,8 @@ async def test_a_protocol_that_closes_from_pause_writing_is_not_resumed() -> Non
 
 @pytest.mark.anyio(None)
 def test_an_exit_from_a_read_callback_reaches_the_caller(loop: zuvloop.EventLoop) -> None:
-    """Asking to leave is the loop's business, not the connection's.
-
-    A read callback that raises is otherwise fatal to the transport and reported
-    to the exception handler - which for `KeyboardInterrupt` would mean the
-    caller of `run_forever` never learns why the program was asked to stop.
-    """
+    """Otherwise it reaches the exception handler, and the caller of `run_forever`
+    never learns why the program was asked to stop."""
     loop.set_exception_handler(lambda _loop, _context: None)
     left, right = socket.socketpair()
     left.setblocking(False)

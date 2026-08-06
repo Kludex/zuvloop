@@ -245,13 +245,10 @@ fn callInContext(self: *Transport, callback: ?*py.Object, arg: ?*py.Object, comp
     if (context) |ctx| {
         if (c.PyContext_Exit(ctx) < 0) py.writeUnraisable(@ptrCast(self));
     }
-    // A read callback that raises is fatal to the connection, as it is for
-    // asyncio: reporting it and carrying on would hand the same protocol the
-    // next chunk after it has already said it cannot cope.
+    // Fatal, as it is for asyncio: carrying on hands the protocol another chunk
+    // after it has said it cannot cope.
     if (failure) |exc| {
-        // Except for the two that are not the connection's business. Asking to
-        // leave is answered by the loop, which stops and re-raises where the
-        // caller of `run_forever` can see it.
+        // Asking to leave is the loop's business, not the connection's.
         const loop = loopmod.asLoop(self.loop.?);
         if (isExit(exc)) {
             c.PyErr_SetRaisedException(exc);
