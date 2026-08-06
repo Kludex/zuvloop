@@ -16,12 +16,7 @@ from functools import partial
 from typing import Any
 
 from . import _zuvloop
-from ._instrumentation import (
-    Instrumentation,
-    instrumentation_provider_installed,
-    metrics_provider_installed,
-    publish_metrics,
-)
+from ._instrumentation import Instrumentation, metrics_provider_installed, publish_metrics
 
 _ExceptionHandler = Callable[[asyncio.AbstractEventLoop, dict[str, Any]], object]
 
@@ -104,11 +99,9 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         # runs exactly when there is somewhere for the numbers to go.
         if metrics_provider_installed():
             self._start_metrics(self.metrics_interval, publish_metrics)
-        self._set_slow_callback_monitoring(instrumentation_provider_installed())
         try:
             self._run()
         finally:
-            self._set_slow_callback_monitoring(False)
             self._stop_metrics()
             sys.set_asyncgen_hooks(*old_hooks)
             _events._set_running_loop(None)

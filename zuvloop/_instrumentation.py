@@ -50,6 +50,8 @@ class Instrumentation:
     def report_slow_callback(self, handle: object, duration: float) -> None:
         _counter("slow_callbacks", "Callbacks that exceeded slow_callback_duration").add(1)
         _histogram("callback_duration", "Duration of slow callbacks", "s").record(duration)
+        if not tracing_provider_installed():
+            return
 
         # The loop timed the callback with a monotonic clock, so the span is
         # reconstructed backwards from now rather than started after the fact.
@@ -102,12 +104,10 @@ def capture_call_graph(handle: object = None) -> str | None:
     return asyncio.format_call_graph(task)
 
 
-def instrumentation_provider_installed() -> bool:
-    """Whether slow callbacks have somewhere to be exported."""
+def tracing_provider_installed() -> bool:
+    """Whether the application has installed a real tracing provider."""
     provider = trace.get_tracer_provider()
-    if not isinstance(provider, (NoOpTracerProvider, ProxyTracerProvider)):
-        return True
-    return metrics_provider_installed()
+    return not isinstance(provider, (NoOpTracerProvider, ProxyTracerProvider))
 
 
 def metrics_provider_installed() -> bool:
