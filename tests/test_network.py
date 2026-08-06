@@ -1348,7 +1348,7 @@ async def test_cancelling_serve_forever_waits_for_its_connections() -> None:
     server, port, _ = await start_echo()
     task = loop.create_task(server.serve_forever())
     await asyncio.sleep(0.02)
-    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    _reader, writer = await asyncio.open_connection("127.0.0.1", port)
     await asyncio.sleep(0.02)
 
     task.cancel()
@@ -1360,4 +1360,6 @@ async def test_cancelling_serve_forever_waits_for_its_connections() -> None:
     await writer.wait_closed()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(stopping, 5)
-    assert reader is not None
+    assert not server.is_serving()
+    with pytest.raises(ConnectionRefusedError):
+        await asyncio.open_connection("127.0.0.1", port)
