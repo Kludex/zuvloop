@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
 import signal
 import socket
@@ -304,7 +305,9 @@ class ConnectionOperations(SocketOperations):
                 sock.bind(path)
             except OSError as exc:
                 sock.close()
-                if exc.errno == 98 or isinstance(exc, FileExistsError):  # pragma: no cover - platform dependent
+                # 98 is Linux's EADDRINUSE and 48 is this platform's, so the
+                # number has to come from the platform rather than the source.
+                if exc.errno == errno.EADDRINUSE or isinstance(exc, FileExistsError):
                     raise OSError(exc.errno, f"Address {path!r} is already in use") from None
                 raise
             sock.setblocking(False)
