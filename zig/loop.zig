@@ -575,6 +575,10 @@ fn getSlowCallbackDuration(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?
 
 fn setSlowCallbackDuration(self_obj: ?*py.Object, value: ?*py.Object, _: ?*anyopaque) callconv(.c) c_int {
     const v = py.asF64(value orelse return -1) catch return -1;
+    if (std.math.isNan(v)) {
+        c.PyErr_SetString(@ptrCast(c.PyExc_ValueError), "slow_callback_duration must not be NaN");
+        return -1;
+    }
     asLoop(self_obj.?).state().slow_callback_duration = v;
     return 0;
 }

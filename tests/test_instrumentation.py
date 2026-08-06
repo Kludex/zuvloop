@@ -45,19 +45,33 @@ async def test_slow_callbacks_are_reported_without_debug_mode(telemetry: Telemet
     assert telemetry.counted("zuvloop.slow_callbacks") >= 1
 
 
-async def test_an_infinite_threshold_disables_slow_callback_reports(telemetry: Telemetry) -> None:
+async def test_an_infinite_threshold_disables_slow_callback_reports(
+    telemetry: Telemetry, monkeypatch: pytest.MonkeyPatch
+) -> None:
     loop = running_loop()
+    previous_threshold = loop.slow_callback_duration
     loop.slow_callback_duration = float("inf")
+    reports: list[tuple[object, float]] = []
+    monkeypatch.setattr(
+        loop._instrumentation,
+        "report_slow_callback",
+        lambda handle, duration: reports.append((handle, duration)),
+    )
+    ran = False
 
     def unreported_slow_callback() -> None:
+        nonlocal ran
+        ran = True
         time.sleep(0.05)
 
     try:
         loop.call_soon(unreported_slow_callback)
         await asyncio.sleep(0.1)
     finally:
-        loop.slow_callback_duration = 0.1
+        loop.slow_callback_duration = previous_threshold
 
+    assert ran
+    assert reports == []
     callbacks = [str(attribute(span, "code.callback")) for span in telemetry.spans("zuvloop.slow_callback")]
     assert not any("unreported_slow_callback" in callback for callback in callbacks)
 

@@ -232,6 +232,14 @@ async def test_slow_callback_duration_is_settable() -> None:
     loop.slow_callback_duration = 0.1
 
 
+async def test_slow_callback_duration_rejects_nan() -> None:
+    loop = running_loop()
+    previous = loop.slow_callback_duration
+    with pytest.raises(ValueError, match="slow_callback_duration must not be NaN"):
+        loop.slow_callback_duration = float("nan")
+    assert loop.slow_callback_duration == previous
+
+
 async def test_metrics_report_loop_activity() -> None:
     loop = running_loop()
     await asyncio.sleep(0.01)
