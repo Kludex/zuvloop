@@ -4,7 +4,7 @@ import io
 import os
 import signal
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from . import _zuvloop
@@ -37,9 +37,18 @@ class Popen:
         stdout: Any = None,
         stderr: Any = None,
         start_new_session: bool = False,
+        startupinfo: None = None,
+        creationflags: int = 0,
+        pass_fds: Sequence[int] = (),
         on_exit: Callable[[int], object],
         **unsupported: Any,
     ) -> None:
+        if startupinfo is not None:
+            raise ValueError("startupinfo is not supported by zuvloop's subprocess transport")
+        if creationflags:
+            raise ValueError("creationflags is not supported by zuvloop's subprocess transport")
+        if pass_fds:
+            raise ValueError("pass_fds is not supported by zuvloop's subprocess transport")
         if unsupported:
             name = next(iter(unsupported))
             raise ValueError(f"{name} is not supported by zuvloop's subprocess transport")
