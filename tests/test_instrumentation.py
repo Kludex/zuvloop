@@ -51,11 +51,11 @@ async def test_an_infinite_threshold_disables_slow_callback_reports(
     loop = running_loop()
     previous_threshold = loop.slow_callback_duration
     loop.slow_callback_duration = float("inf")
-    reports: list[tuple[object, float]] = []
+    reported_durations: list[float] = []
     monkeypatch.setattr(
         loop._instrumentation,
         "report_slow_callback",
-        lambda handle, duration: reports.append((handle, duration)),
+        lambda _handle, duration: reported_durations.append(duration),
     )
     ran = False
 
@@ -71,7 +71,7 @@ async def test_an_infinite_threshold_disables_slow_callback_reports(
         loop.slow_callback_duration = previous_threshold
 
     assert ran
-    assert reports == []
+    assert reported_durations == []
     callbacks = [str(attribute(span, "code.callback")) for span in telemetry.spans("zuvloop.slow_callback")]
     assert not any("unreported_slow_callback" in callback for callback in callbacks)
 
