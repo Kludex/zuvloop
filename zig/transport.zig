@@ -518,22 +518,29 @@ fn queueWrite(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) py.E
     maybePauseProtocol(self);
 }
 
-/// Writes what the socket accepts immediately and queues the rest.
-/// Takes ownership of `views` on every path.
-fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!void {
-    // `write_eof()` is the caller saying there is nothing more to send, so a
-    // later write is their mistake and stays an error even once the transport
-    // is closing - which is the order asyncio checks these in. A close on its
-    // own only drops the data: raising there would turn an ordinary shutdown
-    // race into an exception out of code with no reason to guard for it.
+/// Whether a write may proceed, releasing `views` if it may not.
+///
+/// `write_eof()` is the caller saying there is nothing more to send, so a later
+/// write is their mistake and stays an error even once the transport is closing
+/// - which is the order asyncio checks these in. A close on its own only drops
+/// the data: raising there would turn an ordinary shutdown race into an
+/// exception out of code with no reason to guard for it.
+fn acceptsWrite(self: *Transport, views: []c.Py_buffer) py.Error!bool {
     if (self.flags & EOF_WRITTEN != 0) {
         releaseViews(views);
         return py.errRuntime("Cannot call write() after write_eof()");
     }
     if (self.flags & (CONN_LOST | CLOSING) != 0) {
         releaseViews(views);
-        return;
+        return false;
     }
+    return true;
+}
+
+/// Writes what the socket accepts immediately and queues the rest.
+/// Takes ownership of `views` on every path.
+fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!void {
+    if (!try acceptsWrite(self, views)) return;
 
     var pending = bufs;
     if (self.write_buffer_size == 0) {
@@ -612,19 +619,7 @@ fn appendPending(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) v
 /// Accepts a write, deferring the syscall to the end of the iteration.
 /// Takes ownership of `views` on every path.
 fn submitWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!void {
-    // `write_eof()` is the caller saying there is nothing more to send, so a
-    // later write is their mistake and stays an error even once the transport
-    // is closing - which is the order asyncio checks these in. A close on its
-    // own only drops the data: raising there would turn an ordinary shutdown
-    // race into an exception out of code with no reason to guard for it.
-    if (self.flags & EOF_WRITTEN != 0) {
-        releaseViews(views);
-        return py.errRuntime("Cannot call write() after write_eof()");
-    }
-    if (self.flags & (CONN_LOST | CLOSING) != 0) {
-        releaseViews(views);
-        return;
-    }
+    if (!try acceptsWrite(self, views)) return;
     appendPending(self, bufs, views);
     // Batching pays off only for consecutive writes from one callback, and a
     // caller outside the loop may block reading the peer before the flush could
