@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import sys
 
 import pytest
 
 from conftest import running_loop
 
 pytestmark = pytest.mark.anyio
+requires_unix_sockets = pytest.mark.skipif(sys.platform == "win32", reason="Windows has no Unix sockets")
 
 
 async def test_sock_recv_and_sendall() -> None:
@@ -120,6 +122,7 @@ async def test_sock_connect_reports_refusal(closed_port: int) -> None:
         sock.close()
 
 
+@requires_unix_sockets
 async def test_sock_connect_to_a_unix_path_needs_no_resolution() -> None:
     import tempfile
     from pathlib import Path

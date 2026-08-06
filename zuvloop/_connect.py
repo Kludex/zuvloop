@@ -8,6 +8,7 @@ import socket
 import ssl as ssl_module
 import stat
 import subprocess
+import sys
 from asyncio import base_subprocess, sslproto, staggered, trsock
 from asyncio.base_events import _interleave_addrinfos  # type: ignore[attr-defined]  # private, not in typeshed
 from collections.abc import Awaitable, Callable, Sequence
@@ -21,6 +22,18 @@ from ._sockets import SocketOperations
 # What `getaddrinfo` hands back: family, kind, protocol, canonical name, address.
 type _AddrInfo = tuple[int, int, int, str, tuple[str, int] | tuple[str, int, int, int]]
 _SSLArg = ssl_module.SSLContext | bool | None
+
+if sys.platform == "win32":
+    # No `AF_UNIX` in the socket module there; a value no family equals keeps
+    # the comparisons meaningful. `SIGKILL` is also missing, but libuv accepts
+    # the number and turns it into `TerminateProcess`.
+    _AF_UNIX = -1
+    _SHELL = (os.environ.get("ComSpec", "cmd.exe"), "/c")
+    _SIGKILL = 9
+else:
+    _AF_UNIX = socket.AF_UNIX
+    _SHELL = ("/bin/sh", "-c")
+    _SIGKILL = signal.SIGKILL
 
 
 class ConnectionOperations(SocketOperations):
@@ -97,6 +110,10 @@ class ConnectionOperations(SocketOperations):
         ssl_handshake_timeout: float | None = None,
         ssl_shutdown_timeout: float | None = None,
     ) -> tuple[asyncio.Transport, Any]:
+        if sys.platform == "win32":
+            # As asyncio: `uv_pipe_t` is a named pipe there, whose semantics a
+            # filesystem path does not carry.
+            raise NotImplementedError("create_unix_connection() is not supported on Windows")
         if ssl is None and server_hostname is not None:
             raise ValueError("server_hostname is only meaningful with ssl")
         _check_ssl_timeouts(ssl, ssl_handshake_timeout, ssl_shutdown_timeout)
@@ -297,6 +314,8 @@ class ConnectionOperations(SocketOperations):
         start_serving: bool = True,
         cleanup_socket: bool = True,
     ) -> Server:
+        if sys.platform == "win32":
+            raise NotImplementedError("create_unix_server() is not supported on Windows")
         _check_server_ssl(ssl)
         _check_ssl_timeouts(ssl, ssl_handshake_timeout, ssl_shutdown_timeout)
         if path is not None:
@@ -372,7 +391,7 @@ class ConnectionOperations(SocketOperations):
                 if reuse_address:
                     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 if reuse_port:
-                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                    _set_reuse_port(sock)
                 if keep_alive:
                     sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
                 if af == socket.AF_INET6 and hasattr(socket, "IPPROTO_IPV6"):
@@ -437,7 +456,7 @@ class ConnectionOperations(SocketOperations):
             "type": sock.type,
             "proto": sock.proto,
         }
-        kind = _zuvloop.KIND_PIPE if sock.family == socket.AF_UNIX else _zuvloop.KIND_TCP
+        kind = _zuvloop.KIND_PIPE if sock.family == _AF_UNIX else _zuvloop.KIND_TCP
         fd = sock.fileno()
 
         # anyio - and so httpx, Starlette and FastAPI - reaches for the raw socket
@@ -620,7 +639,7 @@ class ConnectionOperations(SocketOperations):
     ) -> Any:
         if address is None:
             return None
-        if family == socket.AF_UNIX:
+        if family == _AF_UNIX:
             return (family, socket.SOCK_DGRAM, proto, "", address)
         if not isinstance(address, tuple) or len(address) < 2:
             raise TypeError("string or tuple of (host, port) expected")
@@ -920,7 +939,7 @@ class _SubprocessTransport(base_subprocess.BaseSubprocessTransport):
         self.send_signal(signal.SIGTERM)
 
     def kill(self) -> None:
-        self.send_signal(signal.SIGKILL)
+        self.send_signal(_SIGKILL)
 
     def _start(
         self,
@@ -932,7 +951,7 @@ class _SubprocessTransport(base_subprocess.BaseSubprocessTransport):
         bufsize: int,
         **kwargs: Any,
     ) -> None:
-        argv = ["/bin/sh", "-c", args] if shell else [os.fsdecode(arg) for arg in args]
+        argv = [*_SHELL, args] if shell else [os.fsdecode(arg) for arg in args]
         self._proc = Popen(  # type: ignore[assignment]  # a Popen-shaped object, not a Popen
             cast("ConnectionOperations", self._loop),
             argv,

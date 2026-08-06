@@ -4,6 +4,7 @@ import asyncio
 import socket
 import ssl
 import subprocess
+import sys
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import TypedDict, cast
@@ -18,6 +19,11 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from opentelemetry.util.types import AttributeValue
 
 import zuvloop
+
+if sys.platform == "win32":
+    # POSIX throughout - raw pipe descriptors, POSIX signals, /bin utilities -
+    # so they are left uncollected rather than skipped test by test.
+    collect_ignore = ["test_pipes.py", "test_signals.py", "test_subprocess.py"]
 
 
 class ExceptionContext(TypedDict, total=False):

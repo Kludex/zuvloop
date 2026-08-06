@@ -578,12 +578,12 @@ pub fn makeDatagram(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*p
     self.flags |= OPEN;
     uv.setData(self.udp(), self);
 
-    if (uv.uv_udp_open(self.udp(), fd) < 0) {
+    if (uv.uv_udp_open(self.udp(), @intCast(fd)) < 0) {
         // libuv never took the descriptor, so the caller still owns it.
         self.flags &= ~OPEN;
         py.incref(obj);
         uv.uv_close(uv.asHandle(self.udp()), onOpenFailed);
-        return py.errUv(uv.uv_udp_open(self.udp(), fd));
+        return py.errUv(uv.uv_udp_open(self.udp(), @intCast(fd)));
     }
 
     py.incref(obj);

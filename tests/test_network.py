@@ -6,6 +6,7 @@ import os
 import socket
 import ssl
 import struct
+import sys
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -17,6 +18,7 @@ from conftest import running_loop
 from zuvloop._server import Server
 
 pytestmark = pytest.mark.anyio
+requires_unix_sockets = pytest.mark.skipif(sys.platform == "win32", reason="Windows has no Unix sockets")
 
 # What `getaddrinfo` hands back: family, kind, protocol, canonical name, address.
 type AddrInfo = tuple[int, int, int, str, tuple[str, int] | tuple[str, int, int, int]]
@@ -712,6 +714,7 @@ async def test_server_binds_several_hosts() -> None:
         assert len(server.sockets) >= 1
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SO_REUSEPORT")
 async def test_server_reuse_port() -> None:
     loop = running_loop()
     server = await loop.create_server(Echo, "127.0.0.1", 0, reuse_port=True)
@@ -892,6 +895,7 @@ async def test_connect_accepted_socket() -> None:
     listener.close()
 
 
+@requires_unix_sockets
 async def test_unix_sockets_round_trip() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
@@ -906,6 +910,7 @@ async def test_unix_sockets_round_trip() -> None:
         assert not path.exists()
 
 
+@requires_unix_sockets
 async def test_unix_server_cleanup_preserves_a_replacement_path() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
@@ -920,6 +925,7 @@ async def test_unix_server_cleanup_preserves_a_replacement_path() -> None:
         assert path.read_text() == "replacement"
 
 
+@requires_unix_sockets
 async def test_unix_server_cleanup_tolerates_a_missing_path() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
@@ -931,6 +937,7 @@ async def test_unix_server_cleanup_tolerates_a_missing_path() -> None:
         await server.wait_closed()
 
 
+@requires_unix_sockets
 async def test_unix_server_cleanup_tolerates_a_path_unlinked_while_binding() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
@@ -951,6 +958,7 @@ async def test_unix_server_cleanup_tolerates_a_path_unlinked_while_binding() -> 
         path.unlink()
 
 
+@requires_unix_sockets
 async def test_unix_server_closes_its_listeners_when_serving_fails() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
@@ -967,6 +975,7 @@ async def test_unix_server_closes_its_listeners_when_serving_fails() -> None:
         assert not path.exists()
 
 
+@requires_unix_sockets
 async def test_unix_server_closes_its_listener_when_the_cleanup_stat_fails() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
@@ -988,6 +997,7 @@ async def test_unix_server_closes_its_listener_when_the_cleanup_stat_fails() -> 
             await asyncio.open_unix_connection(str(path))
 
 
+@requires_unix_sockets
 async def test_unix_server_rejects_an_unusable_path_before_opening_a_socket() -> None:
     loop = running_loop()
     with pytest.raises(TypeError):
@@ -995,6 +1005,7 @@ async def test_unix_server_rejects_an_unusable_path_before_opening_a_socket() ->
     gc.collect()
 
 
+@requires_unix_sockets
 async def test_unix_server_rejects_conflicting_arguments() -> None:
     loop = running_loop()
     with socket.socket(socket.AF_UNIX) as sock:
@@ -1004,6 +1015,7 @@ async def test_unix_server_rejects_conflicting_arguments() -> None:
         await loop.create_unix_server(Echo)
 
 
+@requires_unix_sockets
 async def test_unix_server_from_an_existing_socket() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
@@ -1019,6 +1031,7 @@ async def test_unix_server_from_an_existing_socket() -> None:
             await writer.wait_closed()
 
 
+@requires_unix_sockets
 async def test_unix_server_rejects_a_bound_path_in_use() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
@@ -1028,6 +1041,7 @@ async def test_unix_server_rejects_a_bound_path_in_use() -> None:
             await loop.create_unix_server(Echo, path)
 
 
+@requires_unix_sockets
 async def test_unix_connection_rejects_conflicting_arguments() -> None:
     loop = running_loop()
     with socket.socket(socket.AF_UNIX) as sock:
@@ -1039,6 +1053,7 @@ async def test_unix_connection_rejects_conflicting_arguments() -> None:
         await loop.create_unix_connection(Collector, "/tmp/x", server_hostname="host")
 
 
+@requires_unix_sockets
 async def test_unix_connection_to_a_missing_path_fails() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
@@ -1046,6 +1061,7 @@ async def test_unix_connection_to_a_missing_path_fails() -> None:
             await loop.create_unix_connection(Collector, Path(directory) / "absent.sock")
 
 
+@requires_unix_sockets
 async def test_unix_connection_from_an_existing_socket() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
@@ -1064,6 +1080,7 @@ async def test_unix_connection_from_an_existing_socket() -> None:
             await protocol.done
 
 
+@requires_unix_sockets
 async def test_unix_connection_rejects_a_tcp_socket() -> None:
     loop = running_loop()
     with socket.socket() as sock:
@@ -1087,6 +1104,7 @@ async def test_binding_a_busy_port_releases_every_socket() -> None:
             await loop.create_server(Echo, "127.0.0.1", port, reuse_address=False)
 
 
+@requires_unix_sockets
 async def test_unix_server_can_start_serving_later() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
@@ -1102,6 +1120,7 @@ async def test_unix_server_can_start_serving_later() -> None:
             await writer.wait_closed()
 
 
+@requires_unix_sockets
 async def test_unix_server_reports_an_unusable_path() -> None:
     loop = running_loop()
     with pytest.raises(OSError):
@@ -1699,6 +1718,7 @@ async def test_create_server_honours_keep_alive(keep_alive: bool | None) -> None
         await server.wait_closed()
 
 
+@requires_unix_sockets
 async def test_binding_a_unix_path_twice_names_the_path() -> None:
     """The check read Linux's EADDRINUSE, so on any other platform it never fired."""
     loop = running_loop()

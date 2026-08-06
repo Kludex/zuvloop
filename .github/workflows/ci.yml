@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.14"]
 
     steps:
@@ -39,6 +39,7 @@ jobs:
       # published artifact - which then raises SIGILL on an older one. Asserted
       # here rather than at release time, where it would be too late.
       - name: Confirm the build defaults to the baseline CPU
+        if: runner.os != 'Windows'
         run: |
           export HATCH_ZIG_PYTHON_INCLUDE="$(uv run python -c 'import sysconfig; print(sysconfig.get_path("include"))')"
           HATCH_ZIG_EXT_SUFFIX=".cpucheck-default.so" zig build -Doptimize=ReleaseFast
@@ -60,9 +61,17 @@ jobs:
         run: uv run mypy
 
       - name: Test
+        if: runner.os != 'Windows'
         run: |
           uv run coverage run -m pytest
           uv run coverage report
+
+      # Windows runs with structured skips - no Unix sockets, POSIX signals or
+      # pipe descriptors - so the 100% branch gate cannot hold there. The POSIX
+      # jobs keep enforcing it.
+      - name: Test
+        if: runner.os == 'Windows'
+        run: uv run pytest
 
 
   # The Zig layer reaches libc through `std.c`, whose shape differs per target,

@@ -429,12 +429,18 @@ fn repr(obj: ?*py.Object) callconv(.c) ?*py.Object {
     return c.PyUnicode_FromFormat("<%s closing>", name);
 }
 
-fn isSocket(fd: uv.OsFd) bool {
+fn isSocket(fd: c_int) bool {
     // getsockopt succeeds only on a socket, and unlike fstat it reaches libc on
     // every platform Zig targets (std.c.fstat is unavailable on Linux).
     var kind: c_int = 0;
-    var len: std.c.socklen_t = @sizeOf(c_int);
-    return std.c.getsockopt(fd, std.c.SOL.SOCKET, std.c.SO.TYPE, &kind, &len) == 0;
+    if (uv.is_windows) {
+        const win32 = @import("win32.zig");
+        var len: c_int = @sizeOf(c_int);
+        return win32.getsockopt(@intCast(fd), std.c.SOL.SOCKET, std.c.SO.TYPE, @ptrCast(&kind), &len) == 0;
+    } else {
+        var len: std.c.socklen_t = @sizeOf(c_int);
+        return std.c.getsockopt(fd, std.c.SOL.SOCKET, std.c.SO.TYPE, &kind, &len) == 0;
+    }
 }
 
 fn takeUvError(status: c_int) ?*py.Object {
@@ -675,11 +681,18 @@ fn maybeResumeProtocol(self: *Transport) void {
     callProtocol(self, self.cb_resume_writing, null);
 }
 
+fn onShutdown(req: ?*uv.Shutdown, status: c_int) callconv(.c) void {
+    _ = status;
+    alloc.free(@as([*]u8, @ptrCast(req.?))[0..uv.uv_req_size(.shutdown)]);
+}
+
+/// Half-closes through `uv_shutdown`, the spelling that also covers Windows,
+/// where the write side of a stream is not a file descriptor to `shutdown()`.
+/// Only called with an empty write queue, so libuv has nothing to drain first.
 fn shutdownWrite(self: *Transport) void {
-    var fd: uv.OsFd = -1;
-    if (uv.uv_fileno(uv.asHandle(self.stream()), &fd) == 0) {
-        _ = std.c.shutdown(fd, std.c.SHUT.WR);
-    }
+    const raw = alloc.alignedAlloc(u8, .@"16", uv.uv_req_size(.shutdown)) catch return;
+    const req: *uv.Shutdown = @ptrCast(raw.ptr);
+    if (uv.uv_shutdown(req, self.stream(), onShutdown) < 0) alloc.free(raw);
 }
 
 // ---------------------------------------------------------------------------
@@ -1078,7 +1091,7 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
     uv.setData(self.stream(), self);
 
     const open_status = if (kind == KIND_TCP)
-        uv.uv_tcp_open(@ptrCast(self.stream()), fd)
+        uv.uv_tcp_open(@ptrCast(self.stream()), @intCast(fd))
     else
         uv.uv_pipe_open(@ptrCast(self.stream()), fd);
     if (open_status < 0) {

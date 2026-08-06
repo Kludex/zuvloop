@@ -4,6 +4,7 @@ import io
 import os
 import signal
 import subprocess
+import sys
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -14,6 +15,13 @@ if TYPE_CHECKING:
 
 _DEVNULL = -3
 _NAMES = ("stdin", "stdout", "stderr")
+
+if sys.platform == "win32":
+    # The signal module has no `SIGKILL` there; libuv accepts the number and
+    # turns it into `TerminateProcess`.
+    _SIGKILL = 9
+else:
+    _SIGKILL = signal.SIGKILL
 
 
 class Popen:
@@ -109,7 +117,7 @@ class Popen:
     def kill(self) -> None:
         # `BaseSubprocessTransport.close()` reaches for this on a child that is
         # still running.
-        self.send_signal(signal.SIGKILL)
+        self.send_signal(_SIGKILL)
 
 
 def _open_stream(index: int, request: Any, child_fds: list[int]) -> tuple[int, int | None]:

@@ -54,6 +54,38 @@ const uv_linux = [_][]const u8{
     "src/unix/random-sysctl-linux.c",
 };
 
+const uv_windows = [_][]const u8{
+    "src/win/async.c",
+    "src/win/core.c",
+    "src/win/detect-wakeup.c",
+    "src/win/dl.c",
+    "src/win/error.c",
+    "src/win/fs-event.c",
+    "src/win/fs.c",
+    "src/win/getaddrinfo.c",
+    "src/win/getnameinfo.c",
+    "src/win/handle.c",
+    "src/win/loop-watcher.c",
+    "src/win/pipe.c",
+    "src/win/poll.c",
+    "src/win/process-stdio.c",
+    "src/win/process.c",
+    "src/win/signal.c",
+    "src/win/snprintf.c",
+    "src/win/stream.c",
+    "src/win/tcp.c",
+    "src/win/thread.c",
+    "src/win/tty.c",
+    "src/win/udp.c",
+    "src/win/util.c",
+    "src/win/winapi.c",
+    "src/win/winsock.c",
+};
+
+const windows_libraries = [_][]const u8{
+    "psapi", "user32", "advapi32", "iphlpapi", "userenv", "ws2_32", "dbghelp", "ole32", "shell32",
+};
+
 pub fn build(b: *std.Build) void {
     // A wheel is built on whatever machine the job landed on, and without a
     // baseline default Zig compiles for that machine's CPU: the published
@@ -95,9 +127,9 @@ pub fn build(b: *std.Build) void {
 
     var uv_files: std.ArrayList([]const u8) = .empty;
     uv_files.appendSlice(b.allocator, &uv_common) catch @panic("OOM");
-    uv_files.appendSlice(b.allocator, &uv_unix) catch @panic("OOM");
     switch (os) {
         .macos, .ios, .watchos, .tvos => {
+            uv_files.appendSlice(b.allocator, &uv_unix) catch @panic("OOM");
             uv_files.appendSlice(b.allocator, &uv_darwin) catch @panic("OOM");
             uv_flags.appendSlice(b.allocator, &.{
                 "-D_DARWIN_UNLIMITED_SELECT=1",
@@ -105,13 +137,22 @@ pub fn build(b: *std.Build) void {
             }) catch @panic("OOM");
         },
         .linux => {
+            uv_files.appendSlice(b.allocator, &uv_unix) catch @panic("OOM");
             uv_files.appendSlice(b.allocator, &uv_linux) catch @panic("OOM");
             uv_flags.appendSlice(b.allocator, &.{
                 "-D_GNU_SOURCE",
                 "-D_POSIX_C_SOURCE=200112",
             }) catch @panic("OOM");
         },
-        else => @panic("unsupported target: zuvloop builds on Linux and macOS"),
+        .windows => {
+            uv_files.appendSlice(b.allocator, &uv_windows) catch @panic("OOM");
+            uv_flags.appendSlice(b.allocator, &.{
+                "-DWIN32_LEAN_AND_MEAN",
+                "-D_WIN32_WINNT=0x0A00",
+                "-D_CRT_DECLARE_NONSTDC_NAMES=0",
+            }) catch @panic("OOM");
+        },
+        else => @panic("unsupported target: zuvloop builds on Linux, macOS and Windows"),
     }
 
     mod.addCSourceFiles(.{
@@ -128,6 +169,20 @@ pub fn build(b: *std.Build) void {
     lib.linker_allow_shlib_undefined = true;
     lib.bundle_compiler_rt = true;
     if (os == .linux) mod.linkSystemLibrary("rt", .{});
+    if (os == .windows) {
+        for (windows_libraries) |name| mod.linkSystemLibrary(name, .{});
+        // A `.pyd` resolves every symbol at link time, so the interpreter's
+        // import library is required - unlike ELF and Mach-O, where the
+        // dynamic loader binds the Python symbols at import.
+        const libdir = b.option([]const u8, "python-libdir", "CPython import library directory") orelse
+            (b.graph.environ_map.get("HATCH_ZIG_PYTHON_LIBDIR") orelse
+                @panic("python-libdir is required on Windows: pass -Dpython-libdir or set HATCH_ZIG_PYTHON_LIBDIR"));
+        const libname = b.option([]const u8, "python-lib", "CPython import library name") orelse
+            (b.graph.environ_map.get("HATCH_ZIG_PYTHON_LIB") orelse
+                @panic("python-lib is required on Windows: pass -Dpython-lib or set HATCH_ZIG_PYTHON_LIB"));
+        mod.addLibraryPath(.{ .cwd_relative = libdir });
+        mod.linkSystemLibrary(libname, .{});
+    }
 
     // Relative to the install prefix, so with the default `zig-out` the module
     // lands beside the Python sources, which is where the build hook looks.

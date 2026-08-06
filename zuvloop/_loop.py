@@ -4,6 +4,7 @@ import asyncio
 import contextvars
 import inspect
 import signal
+import sys
 import threading
 from collections.abc import Callable
 from types import FrameType
@@ -37,7 +38,8 @@ class EventLoop(ConnectionOperations):
             # Installing any Python handler is what makes CPython write the
             # signal number to the wakeup fd; the loop dispatches from there.
             signal.signal(sig, _noop_signal_handler)
-            signal.siginterrupt(sig, False)
+            if sys.platform != "win32":
+                signal.siginterrupt(sig, False)
             self._attach_wakeup_fd()
         except OSError as exc:
             del self._signal_handlers[sig]

@@ -83,7 +83,13 @@ fn get(st: *State, loop: *LoopObject, fd: c_int) py.Error!*Poller {
     const raw = alloc.alignedAlloc(u8, .@"8", size) catch return py.errNoMemory();
     const self: *Poller = @ptrCast(raw.ptr);
     self.* = .{ .loop = loop, .fd = fd };
-    const status = uv.uv_poll_init(st.uvloop, self.uvPoll(), fd);
+    // Python hands over a socket's `fileno()`, which on Windows is the
+    // `SOCKET` itself rather than a CRT descriptor - the plain `uv_poll_init`
+    // would run it through `_get_osfhandle` and reject it.
+    const status = if (uv.is_windows)
+        uv.uv_poll_init_socket(st.uvloop, self.uvPoll(), @intCast(fd))
+    else
+        uv.uv_poll_init(st.uvloop, self.uvPoll(), fd);
     if (status < 0) {
         alloc.free(raw);
         return py.errUv(status);

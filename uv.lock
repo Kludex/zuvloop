@@ -895,7 +895,7 @@ bench = [
     { name = "httptools" },
     { name = "pytest-codspeed" },
     { name = "uvicorn" },
-    { name = "uvloop" },
+    { name = "uvloop", marker = "sys_platform != 'win32'" },
 ]
 dev = [
     { name = "anyio" },
@@ -918,7 +918,7 @@ bench = [
     { name = "httptools" },
     { name = "pytest-codspeed", specifier = ">=5" },
     { name = "uvicorn" },
-    { name = "uvloop", specifier = ">=0.21" },
+    { name = "uvloop", marker = "sys_platform != 'win32'", specifier = ">=0.21" },
 ]
 dev = [
     { name = "anyio", specifier = ">=4.6" },
