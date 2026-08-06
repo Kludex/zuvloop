@@ -381,7 +381,7 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
             if (uv.uv_udp_getpeername(self.udp(), peer.ptr(), &len) < 0 or
                 !addr.same(dest.constPtr(), peer.constPtr()))
             {
-                return py.errValue("Transport is connected; sendto() takes no address");
+                return py.errValue("Transport is connected; sendto() takes no address but the peer's");
             }
         } else {
             dest_ptr = dest.ptr();
