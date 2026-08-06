@@ -122,10 +122,10 @@ pub fn same(a: *const posix.sockaddr, b: *const posix.sockaddr) bool {
         const x: *const posix.sockaddr.in6 = @ptrCast(@alignCast(a));
         const y: *const posix.sockaddr.in6 = @ptrCast(@alignCast(b));
         if (x.port != y.port or !std.mem.eql(u8, &x.addr, &y.addr)) return false;
-        // A zero scope is "unspecified", and the two sides come by it
-        // differently: a caller's two-tuple leaves it zero where the kernel has
-        // resolved one. Only two stated scopes can disagree.
-        return x.scope_id == 0 or y.scope_id == 0 or x.scope_id == y.scope_id;
+        // asyncio compares the caller's tuple against the resolved one, so it
+        // wants the scope stated; matching that is stricter than treating a
+        // zero as a wildcard, and does not let a wrong zone name the peer.
+        return x.scope_id == y.scope_id;
     }
     return false;
 }
