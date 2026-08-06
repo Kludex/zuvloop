@@ -1364,3 +1364,15 @@ def test_an_exit_from_a_read_callback_reaches_the_caller(loop: zuvloop.EventLoop
             loop.run_until_complete(asyncio.sleep(0.3))
     finally:
         right.close()
+
+
+async def test_binding_a_unix_path_twice_names_the_path() -> None:
+    """The check read Linux's EADDRINUSE, so on any other platform it never fired."""
+    loop = running_loop()
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "taken.sock"
+        server = await loop.create_unix_server(Echo, path)
+        async with server:
+            with pytest.raises(OSError, match="already in use") as caught:
+                await loop.create_unix_server(Echo, path)
+            assert str(path) in str(caught.value)
