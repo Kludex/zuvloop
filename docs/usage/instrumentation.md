@@ -4,8 +4,9 @@ zuvloop emits plain [OpenTelemetry](https://opentelemetry.io). Its only runtime
 dependency is `opentelemetry-api` — not the SDK, and nothing vendor-specific.
 
 Until an application installs a provider, OpenTelemetry hands back proxy
-instruments whose methods do nothing. An uninstrumented program pays nothing, so
-there is no flag to turn this off.
+instruments whose methods do nothing and slow-callback timing stays off. Install
+providers before starting the loop; zuvloop checks for them at each
+`run_forever()` entry.
 
 **The measurement happens in Zig. Python only records it.**
 
@@ -58,10 +59,23 @@ The span's duration is reconstructed backwards from the loop's own monotonic
 measurement, so it covers the callback itself rather than the moment it was
 reported.
 
-Set the threshold as you would on any loop:
+Slow callbacks are monitored when the loop run begins with an OpenTelemetry
+tracing or metrics provider installed; asyncio debug mode does not need to be
+enabled. Metrics-only configurations skip span and call-graph construction. Set
+the threshold as you would on any loop:
 
 ```python
 loop.slow_callback_duration = 0.05
+```
+
+Set the threshold to infinity to disable slow-callback monitoring while keeping
+other OpenTelemetry signals enabled. This takes the native fast path and skips
+the per-callback clock reads as well as spans and metrics:
+
+```python
+import math
+
+loop.slow_callback_duration = math.inf
 ```
 
 /// note | Why the gauges are synchronous

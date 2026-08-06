@@ -9,27 +9,57 @@ from opentelemetry.trace import StatusCode
 
 import zuvloop
 from conftest import Telemetry, attribute, collect_contexts, numeric_attribute, running_loop
-from zuvloop._instrumentation import capture_call_graph, metrics_provider_installed, publish_metrics
+from zuvloop._instrumentation import (
+    capture_call_graph,
+    instrumentation_provider_installed,
+    metrics_provider_installed,
+    publish_metrics,
+    tracing_provider_installed,
+)
 
 pytestmark = pytest.mark.anyio
 
 
-async def test_slow_callbacks_are_reported(telemetry: Telemetry) -> None:
+async def test_slow_callbacks_are_reported_without_debug_mode(telemetry: Telemetry) -> None:
     loop = running_loop()
-    loop.set_debug(True)
+    assert not loop.get_debug()
     loop.slow_callback_duration = 0.01
+
+    def slow_callback() -> None:
+        time.sleep(0.05)
+
     try:
-        loop.call_soon(time.sleep, 0.05)
+        loop.call_soon(slow_callback)
         await asyncio.sleep(0.1)
     finally:
-        loop.set_debug(False)
         loop.slow_callback_duration = 0.1
 
-    span = telemetry.spans("zuvloop.slow_callback")[0]
+    span = next(
+        span
+        for span in telemetry.spans("zuvloop.slow_callback")
+        if "slow_callback" in str(attribute(span, "code.callback"))
+    )
     assert span.status.status_code is StatusCode.ERROR
     assert numeric_attribute(span, "duration") >= 0.01
     assert "Handle" in str(attribute(span, "code.callback"))
     assert telemetry.counted("zuvloop.slow_callbacks") >= 1
+
+
+async def test_an_infinite_threshold_disables_slow_callback_reports(telemetry: Telemetry) -> None:
+    loop = running_loop()
+    loop.slow_callback_duration = float("inf")
+
+    def unreported_slow_callback() -> None:
+        time.sleep(0.05)
+
+    try:
+        loop.call_soon(unreported_slow_callback)
+        await asyncio.sleep(0.1)
+    finally:
+        loop.slow_callback_duration = 0.1
+
+    callbacks = [str(attribute(span, "code.callback")) for span in telemetry.spans("zuvloop.slow_callback")]
+    assert not any("unreported_slow_callback" in callback for callback in callbacks)
 
 
 async def test_a_slow_callback_span_covers_the_time_it_took(telemetry: Telemetry) -> None:
@@ -37,14 +67,22 @@ async def test_a_slow_callback_span_covers_the_time_it_took(telemetry: Telemetry
     loop = running_loop()
     loop.set_debug(True)
     loop.slow_callback_duration = 0.01
+
+    def slow_callback() -> None:
+        time.sleep(0.05)
+
     try:
-        loop.call_soon(time.sleep, 0.05)
+        loop.call_soon(slow_callback)
         await asyncio.sleep(0.1)
     finally:
         loop.set_debug(False)
         loop.slow_callback_duration = 0.1
 
-    span = telemetry.spans("zuvloop.slow_callback")[0]
+    span = next(
+        span
+        for span in telemetry.spans("zuvloop.slow_callback")
+        if "slow_callback" in str(attribute(span, "code.callback"))
+    )
     assert span.end_time is not None and span.start_time is not None
     measured = (span.end_time - span.start_time) / 1e9
     assert measured == pytest.approx(numeric_attribute(span, "duration"), abs=1e-6)
@@ -187,9 +225,51 @@ async def test_gauges_reach_the_exporter(telemetry: Telemetry) -> None:
     assert telemetry.counted("zuvloop.callbacks_run") > 0
 
 
-def test_a_real_provider_is_detected(telemetry: Telemetry) -> None:
+def test_real_providers_are_detected(telemetry: Telemetry) -> None:
     # The telemetry fixture installs SDK providers for the whole session.
+    assert instrumentation_provider_installed()
+    assert tracing_provider_installed()
     assert metrics_provider_installed()
+
+
+def test_a_metrics_provider_enables_instrumentation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("zuvloop._instrumentation.tracing_provider_installed", lambda: False)
+    monkeypatch.setattr("zuvloop._instrumentation.metrics_provider_installed", lambda: True)
+    assert instrumentation_provider_installed()
+
+
+def test_no_provider_disables_instrumentation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("zuvloop._instrumentation.tracing_provider_installed", lambda: False)
+    monkeypatch.setattr("zuvloop._instrumentation.metrics_provider_installed", lambda: False)
+    assert not instrumentation_provider_installed()
+
+
+def test_a_noop_tracing_provider_is_not_detected(monkeypatch: pytest.MonkeyPatch) -> None:
+    from opentelemetry.trace import NoOpTracerProvider
+
+    monkeypatch.setattr("zuvloop._instrumentation.trace.get_tracer_provider", lambda: NoOpTracerProvider())
+    assert not tracing_provider_installed()
+
+
+def test_an_unset_proxy_tracing_provider_is_not_detected(monkeypatch: pytest.MonkeyPatch) -> None:
+    from opentelemetry.trace import ProxyTracerProvider
+
+    monkeypatch.setattr("zuvloop._instrumentation.trace.get_tracer_provider", lambda: ProxyTracerProvider())
+    assert not tracing_provider_installed()
+
+
+def test_metrics_only_slow_callbacks_skip_span_construction(
+    telemetry: Telemetry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("zuvloop._instrumentation.tracing_provider_installed", lambda: False)
+
+    captured_call_graphs: list[object] = []
+    monkeypatch.setattr("zuvloop._instrumentation.capture_call_graph", captured_call_graphs.append)
+    zuvloop.Instrumentation().report_slow_callback(object(), 0.2)
+
+    assert captured_call_graphs == []
+    assert telemetry.spans("zuvloop.slow_callback") == []
+    assert telemetry.counted("zuvloop.slow_callbacks") >= 1
 
 
 def test_a_noop_provider_is_not_detected(monkeypatch: pytest.MonkeyPatch) -> None:
