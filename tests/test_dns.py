@@ -169,19 +169,14 @@ async def test_getnameinfo_rejects_a_malformed_address() -> None:
         await loop.getnameinfo("127.0.0.1")  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="\\(host, port\\)"):
         await loop.getnameinfo(("127.0.0.1",))
-    # `gaierror` rather than the bare `OSError` libuv reports for refusing to
-    # parse it - the two are easy to confuse, since one subclasses the other.
     with pytest.raises(socket.gaierror):
         await loop.getnameinfo(("not an address", 80))
 
 
 @pytest.mark.parametrize("host", ["localhost", "example.com", "not a host"])
 async def test_getnameinfo_reports_a_name_it_cannot_use_as_the_stdlib_does(host: str) -> None:
-    """A host that is not a literal is a name the resolver could not find.
-
-    libuv refuses to parse it and reports `EINVAL`, which would surface as a bare
-    `OSError` where the standard library raises `socket.gaierror`.
-    """
+    """libuv refuses to parse a non-literal host and reports `EINVAL`, where the
+    standard library raises `socket.gaierror`."""
     loop = running_loop()
     with pytest.raises(socket.gaierror) as mine:
         await loop.getnameinfo((host, 80))
