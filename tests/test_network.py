@@ -8,13 +8,11 @@ import ssl
 import struct
 import tempfile
 from pathlib import Path
-from typing import cast
 
 import pytest
 
 import zuvloop
 from conftest import running_loop
-from zuvloop import _zuvloop
 from zuvloop._server import Server
 
 pytestmark = pytest.mark.anyio
@@ -1339,11 +1337,16 @@ async def test_aborting_a_backed_up_transport_reports_no_reason() -> None:
         right.close()
 
 
-async def test_force_closing_a_backed_up_transport_keeps_the_reason() -> None:
+async def test_a_reset_peer_is_reported_as_a_reset_not_a_cancellation() -> None:
+    """The other half of it: a real failure has a reason, and that has to survive.
+
+    The writes the close cancels complete after the one that failed, so without
+    care the last cancellation is what the protocol is told.
+    """
     loop = running_loop()
-    left, right = socket.socketpair()
-    left.setblocking(False)
-    right.setblocking(False)
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
     lost: asyncio.Future[BaseException | None] = loop.create_future()
 
     class Watcher(asyncio.Protocol):
@@ -1351,12 +1354,16 @@ async def test_force_closing_a_backed_up_transport_keeps_the_reason() -> None:
             lost.set_result(exc)
 
     try:
-        raw, _protocol = await loop.connect_accepted_socket(Watcher, left)
-        transport = cast("_zuvloop.Transport", raw)
-        for _ in range(16):
-            transport.write(b"x" * (1 << 20))
-        await asyncio.sleep(0)
-        transport._force_close(ZeroDivisionError("the real reason"))
-        assert isinstance(await asyncio.wait_for(lost, 5), ZeroDivisionError)
+        port = listener.getsockname()[1]
+        transport, _protocol = await loop.create_connection(Watcher, "127.0.0.1", port)
+        peer, _address = listener.accept()
+        with peer:
+            # Linger zero, so closing sends a reset rather than a shutdown.
+            peer.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            # Queued first, so the reset has writes of its own to cancel.
+            for _ in range(16):
+                transport.write(b"x" * (1 << 20))
+        reason = await asyncio.wait_for(lost, 5)
+        assert isinstance(reason, ConnectionError)
     finally:
-        right.close()
+        listener.close()
