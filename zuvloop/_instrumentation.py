@@ -7,7 +7,7 @@ from typing import Any
 
 from opentelemetry import metrics, trace
 from opentelemetry.metrics import NoOpMeterProvider
-from opentelemetry.trace import Status, StatusCode
+from opentelemetry.trace import NoOpTracerProvider, ProxyTracerProvider, Status, StatusCode
 
 _NAMESPACE = "zuvloop"
 
@@ -100,6 +100,14 @@ def capture_call_graph(handle: object = None) -> str | None:
     if task is None:
         return None
     return asyncio.format_call_graph(task)
+
+
+def instrumentation_provider_installed() -> bool:
+    """Whether slow callbacks have somewhere to be exported."""
+    provider = trace.get_tracer_provider()
+    if not isinstance(provider, (NoOpTracerProvider, ProxyTracerProvider)):
+        return True
+    return metrics_provider_installed()
 
 
 def metrics_provider_installed() -> bool:

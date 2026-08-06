@@ -58,7 +58,9 @@ The span's duration is reconstructed backwards from the loop's own monotonic
 measurement, so it covers the callback itself rather than the moment it was
 reported.
 
-Set the threshold as you would on any loop:
+Slow callbacks are monitored whenever an OpenTelemetry tracing or metrics
+provider is installed; asyncio debug mode does not need to be enabled. Set the
+threshold as you would on any loop:
 
 ```python
 loop.slow_callback_duration = 0.05

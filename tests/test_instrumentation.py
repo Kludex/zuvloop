@@ -9,20 +9,24 @@ from opentelemetry.trace import StatusCode
 
 import zuvloop
 from conftest import Telemetry, attribute, collect_contexts, numeric_attribute, running_loop
-from zuvloop._instrumentation import capture_call_graph, metrics_provider_installed, publish_metrics
+from zuvloop._instrumentation import (
+    capture_call_graph,
+    instrumentation_provider_installed,
+    metrics_provider_installed,
+    publish_metrics,
+)
 
 pytestmark = pytest.mark.anyio
 
 
-async def test_slow_callbacks_are_reported(telemetry: Telemetry) -> None:
+async def test_slow_callbacks_are_reported_without_debug_mode(telemetry: Telemetry) -> None:
     loop = running_loop()
-    loop.set_debug(True)
+    assert not loop.get_debug()
     loop.slow_callback_duration = 0.01
     try:
         loop.call_soon(time.sleep, 0.05)
         await asyncio.sleep(0.1)
     finally:
-        loop.set_debug(False)
         loop.slow_callback_duration = 0.1
 
     span = telemetry.spans("zuvloop.slow_callback")[0]
@@ -189,7 +193,17 @@ async def test_gauges_reach_the_exporter(telemetry: Telemetry) -> None:
 
 def test_a_real_provider_is_detected(telemetry: Telemetry) -> None:
     # The telemetry fixture installs SDK providers for the whole session.
+    assert instrumentation_provider_installed()
     assert metrics_provider_installed()
+
+
+def test_no_instrumentation_provider_is_detected(monkeypatch: pytest.MonkeyPatch) -> None:
+    from opentelemetry.metrics import NoOpMeterProvider
+    from opentelemetry.trace import NoOpTracerProvider
+
+    monkeypatch.setattr("zuvloop._instrumentation.trace.get_tracer_provider", NoOpTracerProvider)
+    monkeypatch.setattr("zuvloop._instrumentation.metrics.get_meter_provider", NoOpMeterProvider)
+    assert not instrumentation_provider_installed()
 
 
 def test_a_noop_provider_is_not_detected(monkeypatch: pytest.MonkeyPatch) -> None:
