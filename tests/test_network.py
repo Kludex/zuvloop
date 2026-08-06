@@ -413,13 +413,31 @@ async def test_writes_after_write_eof_are_rejected() -> None:
 
 async def test_writes_after_close_are_dropped() -> None:
     """asyncio drops them; only `write_eof()` makes a later write an error."""
-    server, port, _ = await start_echo()
+    server, port, echoes = await start_echo()
     loop = running_loop()
     async with server:
         transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
         transport.close()
         transport.write(b"too late")
         transport.writelines([b"also too late"])
+        assert protocol.done is not None
+        await protocol.done
+        await asyncio.sleep(0.05)
+        # Dropped, not merely accepted without complaint.
+        assert all(bytes(echo.received) == b"" for echo in echoes)
+
+
+async def test_writes_after_write_eof_are_rejected_even_once_closing() -> None:
+    """`write_eof()` is the caller saying there is nothing more, and a close
+    does not turn that back into an accident."""
+    server, port, _ = await start_echo()
+    loop = running_loop()
+    async with server:
+        transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
+        transport.write_eof()
+        transport.close()
+        with pytest.raises(RuntimeError, match="after write_eof"):
+            transport.write(b"too late")
         assert protocol.done is not None
         await protocol.done
 

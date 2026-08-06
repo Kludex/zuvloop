@@ -521,16 +521,18 @@ fn queueWrite(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) py.E
 /// Writes what the socket accepts immediately and queues the rest.
 /// Takes ownership of `views` on every path.
 fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!void {
-    // A closing transport drops what it is given, as asyncio does; only
-    // `write_eof()` makes a later write an error there, and raising for a close
-    // turns an ordinary shutdown race into an exception out of user code.
-    if (self.flags & (CONN_LOST | CLOSING) != 0) {
-        releaseViews(views);
-        return;
-    }
+    // `write_eof()` is the caller saying there is nothing more to send, so a
+    // later write is their mistake and stays an error even once the transport
+    // is closing - which is the order asyncio checks these in. A close on its
+    // own only drops the data: raising there would turn an ordinary shutdown
+    // race into an exception out of code with no reason to guard for it.
     if (self.flags & EOF_WRITTEN != 0) {
         releaseViews(views);
         return py.errRuntime("Cannot call write() after write_eof()");
+    }
+    if (self.flags & (CONN_LOST | CLOSING) != 0) {
+        releaseViews(views);
+        return;
     }
 
     var pending = bufs;
@@ -610,16 +612,18 @@ fn appendPending(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) v
 /// Accepts a write, deferring the syscall to the end of the iteration.
 /// Takes ownership of `views` on every path.
 fn submitWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!void {
-    // A closing transport drops what it is given, as asyncio does; only
-    // `write_eof()` makes a later write an error there, and raising for a close
-    // turns an ordinary shutdown race into an exception out of user code.
-    if (self.flags & (CONN_LOST | CLOSING) != 0) {
-        releaseViews(views);
-        return;
-    }
+    // `write_eof()` is the caller saying there is nothing more to send, so a
+    // later write is their mistake and stays an error even once the transport
+    // is closing - which is the order asyncio checks these in. A close on its
+    // own only drops the data: raising there would turn an ordinary shutdown
+    // race into an exception out of code with no reason to guard for it.
     if (self.flags & EOF_WRITTEN != 0) {
         releaseViews(views);
         return py.errRuntime("Cannot call write() after write_eof()");
+    }
+    if (self.flags & (CONN_LOST | CLOSING) != 0) {
+        releaseViews(views);
+        return;
     }
     appendPending(self, bufs, views);
     // Batching pays off only for consecutive writes from one callback, and a
