@@ -377,14 +377,15 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
         return py.errValue("sendto() requires an address on an unconnected transport");
     }
 
-    // A closing endpoint drops the datagram, as asyncio does. The argument
-    // errors above still raise there while closing, which is why they come
-    // first rather than after this.
-    if (self.flags & (CONN_LOST | CLOSING) != 0) return py.noneRef();
-
     var view: c.Py_buffer = undefined;
     if (c.PyObject_GetBuffer(args[0].?, &view, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
     defer c.PyBuffer_Release(&view);
+
+    // A closing endpoint drops the datagram, as asyncio does. Every argument
+    // error above still raises there while closing, which is why they all come
+    // first rather than after this - a payload that is not a buffer included.
+    if (self.flags & (CONN_LOST | CLOSING) != 0) return py.noneRef();
+
     const buf = uv.Buf{ .base = @ptrCast(view.buf), .len = @intCast(view.len) };
 
     if (self.write_buffer_size == 0) {

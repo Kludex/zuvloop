@@ -172,6 +172,15 @@ async def test_a_closing_endpoint_still_rejects_a_bad_address() -> None:
         transport.sendto(b"hello", ("127.0.0.1", 1234))
 
 
+async def test_a_closing_endpoint_still_rejects_a_payload_that_is_not_a_buffer() -> None:
+    """The payload is an argument too, so a closing endpoint owes the same error
+    for it - asyncio checks the type before it decides to drop anything."""
+    transport, _protocol = await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
+    transport.close()
+    with pytest.raises(TypeError):
+        transport.sendto(123, ("127.0.0.1", 1234))  # type: ignore[arg-type]
+
+
 async def test_the_protocol_can_be_replaced() -> None:
     transport, protocol = await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
     try:

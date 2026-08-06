@@ -520,16 +520,12 @@ fn queueWrite(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) py.E
 
 /// Whether a write may proceed, releasing `views` if it may not.
 ///
-/// `write_eof()` is the caller saying there is nothing more to send, so a later
-/// write is their mistake and stays an error even once the transport is closing
-/// - which is the order asyncio checks these in. A close on its own only drops
-/// the data: raising there would turn an ordinary shutdown race into an
-/// exception out of code with no reason to guard for it.
+/// A close on its own only drops the data: raising there would turn an ordinary
+/// shutdown race into an exception out of code with no reason to guard for it.
+/// `write_eof()` is the caller's own mistake instead, and is rejected by each
+/// entry point before it gets this far - early enough that an empty write, which
+/// never reaches here, is an error too.
 fn acceptsWrite(self: *Transport, views: []c.Py_buffer) py.Error!bool {
-    if (self.flags & EOF_WRITTEN != 0) {
-        releaseViews(views);
-        return py.errRuntime("Cannot call write() after write_eof()");
-    }
     if (self.flags & (CONN_LOST | CLOSING) != 0) {
         releaseViews(views);
         return false;
@@ -854,6 +850,10 @@ fn write(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
     const self = asTransport(self_obj);
     var views = [_]c.Py_buffer{undefined};
     if (c.PyObject_GetBuffer(data, &views[0], c.PyBUF_SIMPLE) < 0) return py.Error.Python;
+    if (self.flags & EOF_WRITTEN != 0) {
+        c.PyBuffer_Release(&views[0]);
+        return py.errRuntime("Cannot call write() after write_eof()");
+    }
     if (views[0].len == 0) {
         c.PyBuffer_Release(&views[0]);
         return py.noneRef();
@@ -865,6 +865,7 @@ fn write(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
 
 fn writelines(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
     const self = asTransport(self_obj);
+    if (self.flags & EOF_WRITTEN != 0) return py.errRuntime("Cannot call writelines() after write_eof()");
     const seq = c.PySequence_Fast(data, "writelines() requires an iterable of buffers") orelse return py.Error.Python;
     defer py.decref(seq);
     const n: usize = @intCast(c.PySequence_Size(seq));

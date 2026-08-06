@@ -398,14 +398,25 @@ async def test_write_eof_waits_for_buffered_writes() -> None:
 
 
 async def test_writes_after_write_eof_are_rejected() -> None:
-    """The one case asyncio does raise for, and the only one left here."""
+    """The one case asyncio does raise for, and the only one left here.
+
+    Including a write of nothing: asyncio rejects the call before it notices
+    there is no data, so an empty write is an error the same as any other. The
+    message names the method that was called, which is how a caller finds it.
+    """
     server, port, _ = await start_echo()
     loop = running_loop()
     async with server:
         transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
         transport.write_eof()
-        with pytest.raises(RuntimeError, match="after write_eof"):
+        with pytest.raises(RuntimeError, match=r"Cannot call write\(\) after write_eof"):
             transport.write(b"too late")
+        with pytest.raises(RuntimeError, match=r"Cannot call write\(\) after write_eof"):
+            transport.write(b"")
+        with pytest.raises(RuntimeError, match=r"Cannot call writelines\(\) after write_eof"):
+            transport.writelines([b"too late"])
+        with pytest.raises(RuntimeError, match=r"Cannot call writelines\(\) after write_eof"):
+            transport.writelines([])
         transport.close()
         assert protocol.done is not None
         await protocol.done
