@@ -1327,10 +1327,12 @@ async def test_aborting_a_backed_up_transport_reports_no_reason() -> None:
 
     try:
         transport, _protocol = await loop.connect_accepted_socket(Watcher, left)
-        # More than the peer's receive buffer, so writes are still queued.
+        # More than the peer's receive buffer, so writes are still queued -
+        # asserted rather than assumed, since it is the whole point of the test.
         for _ in range(16):
             transport.write(b"x" * (1 << 20))
         await asyncio.sleep(0)
+        assert transport.get_write_buffer_size() > 0
         transport.abort()
         assert await asyncio.wait_for(lost, 5) is None
     finally:
@@ -1363,6 +1365,7 @@ async def test_a_reset_peer_is_reported_as_a_reset_not_a_cancellation() -> None:
             # Queued first, so the reset has writes of its own to cancel.
             for _ in range(16):
                 transport.write(b"x" * (1 << 20))
+            assert transport.get_write_buffer_size() > 0
         reason = await asyncio.wait_for(lost, 5)
         assert isinstance(reason, ConnectionError)
     finally:
