@@ -10,7 +10,7 @@ import stat
 import subprocess
 from asyncio import base_subprocess, sslproto, staggered, trsock
 from asyncio.base_events import _interleave_addrinfos  # type: ignore[attr-defined]  # private, not in typeshed
-from collections.abc import Callable, Coroutine, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, cast
 
 from . import _zuvloop
@@ -18,6 +18,8 @@ from ._process import Popen
 from ._server import Server
 from ._sockets import SocketOperations
 
+# What `getaddrinfo` hands back: family, kind, protocol, canonical name, address.
+type _AddrInfo = tuple[int, int, int, str, tuple[str, int] | tuple[str, int, int, int]]
 _SSLArg = ssl_module.SSLContext | bool | None
 
 
@@ -191,9 +193,9 @@ class ConnectionOperations(SocketOperations):
     def _attempt(
         self,
         errors: list[list[OSError]],
-        info: tuple[int, int, int, str, Any],
+        info: _AddrInfo,
         local_addr: tuple[str, int] | None,
-    ) -> Callable[[], Coroutine[Any, Any, socket.socket]]:
+    ) -> Callable[[], Awaitable[socket.socket]]:
         """One attempt, bound to its address, for the race to start when it likes."""
 
         async def run() -> socket.socket:
@@ -204,7 +206,7 @@ class ConnectionOperations(SocketOperations):
     async def _connect_one(
         self,
         errors: list[list[OSError]],
-        info: tuple[int, int, int, str, Any],
+        info: _AddrInfo,
         local_addr: tuple[str, int] | None,
     ) -> socket.socket:
         # The slot is taken before anything is awaited, so the failures come back

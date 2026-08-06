@@ -1315,18 +1315,20 @@ async def test_the_asyncio_server_hook_unregisters_and_closes() -> None:
 async def test_happy_eyeballs_beats_a_black_holed_address() -> None:
     """Without racing, an address on a route that drops costs a full timeout.
 
-    `192.0.2.1` is TEST-NET-1, reserved for documentation, so nothing answers
-    and nothing refuses either - packets simply vanish, which is the case
-    RFC 8305 exists for.
+    The route that drops is arranged here rather than borrowed from the host:
+    whether `192.0.2.1` answers, refuses or vanishes is a property of the
+    machine's routing table, and a refusal would let a sequential connect pass.
     """
     loop = running_loop()
     server, port, _ = await start_echo()
+    black_hole = ("192.0.2.1", port)
     resolved = [
-        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", port)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", black_hole),
         (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)),
     ]
 
-    original = loop.getaddrinfo
+    original_getaddrinfo = loop.getaddrinfo
+    original_sock_connect = loop.sock_connect
 
     async def getaddrinfo(
         host: str | bytes | None, port: str | bytes | int | None, **kwargs: int
@@ -1336,10 +1338,16 @@ async def test_happy_eyeballs_beats_a_black_holed_address() -> None:
         # too would send every attempt to the same place.
         if host == "split":
             return resolved
-        return await original(host, port, **kwargs)
+        return await original_getaddrinfo(host, port, **kwargs)
+
+    async def sock_connect(sock: socket.socket, address: tuple[str, int]) -> None:
+        if address == black_hole:
+            await asyncio.Event().wait()
+        await original_sock_connect(sock, address)
 
     async with server:
         loop.getaddrinfo = getaddrinfo  # type: ignore[method-assign]
+        loop.sock_connect = sock_connect  # type: ignore[method-assign]
         try:
             transport, _protocol = await asyncio.wait_for(
                 loop.create_connection(Collector, "split", port, happy_eyeballs_delay=0.1), 5
@@ -1347,7 +1355,8 @@ async def test_happy_eyeballs_beats_a_black_holed_address() -> None:
             assert transport.get_extra_info("peername")[0] == "127.0.0.1"
             transport.close()
         finally:
-            loop.getaddrinfo = original  # type: ignore[method-assign]
+            loop.getaddrinfo = original_getaddrinfo  # type: ignore[method-assign]
+            loop.sock_connect = original_sock_connect  # type: ignore[method-assign]
 
 
 async def test_all_errors_reports_every_failure() -> None:
@@ -1394,7 +1403,9 @@ async def test_differing_failures_are_reported_together() -> None:
 async def test_identical_failures_are_reported_once() -> None:
     """Two attempts that fail the same way are one complaint, not a list of two."""
     loop = running_loop()
-    original = loop.getaddrinfo
+    original_getaddrinfo = loop.getaddrinfo
+    original_sock_connect = loop.sock_connect
+    attempts = 0
 
     async def getaddrinfo(
         host: str | bytes | None, port: str | bytes | int | None, **kwargs: int
@@ -1402,15 +1413,24 @@ async def test_identical_failures_are_reported_once() -> None:
         if host == "twice-the-same":
             info = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 1))
             return [info, info]
-        return await original(host, port, **kwargs)
+        return await original_getaddrinfo(host, port, **kwargs)
+
+    async def sock_connect(sock: socket.socket, address: tuple[str, int]) -> None:
+        nonlocal attempts
+        attempts += 1
+        await original_sock_connect(sock, address)
 
     loop.getaddrinfo = getaddrinfo  # type: ignore[method-assign]
+    loop.sock_connect = sock_connect  # type: ignore[method-assign]
     try:
         with pytest.raises(ConnectionRefusedError) as caught:
             await loop.create_connection(Collector, "twice-the-same", 1)
+        # One complaint is the right answer only if both attempts really ran.
+        assert attempts == 2
         assert "Multiple exceptions" not in str(caught.value)
     finally:
-        loop.getaddrinfo = original  # type: ignore[method-assign]
+        loop.getaddrinfo = original_getaddrinfo  # type: ignore[method-assign]
+        loop.sock_connect = original_sock_connect  # type: ignore[method-assign]
 
 
 async def test_a_socket_that_cannot_be_created_is_still_reported(monkeypatch: pytest.MonkeyPatch) -> None:
