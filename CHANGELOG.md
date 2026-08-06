@@ -47,5 +47,6 @@ First release. A libuv event loop for CPython 3.14, written in Zig.
 - OpenTelemetry spans and metrics, sampled natively, with no runtime dependency
   on an SDK.
 - Wheels for macOS and Linux, x86-64 and arm64, glibc and musl.
-- 88 of CPython's 92 `test_asyncio` loop conformance tests pass; the four skips
-  are white-box tests of CPython's own internals.
+- 88 of CPython's 92 `test_asyncio` loop conformance tests pass. Three of the
+  four skips are white-box tests of CPython's own internals, which no loop
+  outside the standard library can satisfy; the fourth the suite skips itself.

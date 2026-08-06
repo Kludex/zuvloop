@@ -38,8 +38,12 @@ through `std.c`, whose shape differs per target, so code that builds on your
 machine can still fail elsewhere:
 
 ```console
+$ export HATCH_ZIG_PYTHON_INCLUDE="$(uv run python -c 'import sysconfig; print(sysconfig.get_path("include"))')"
 $ zig build -Dtarget=x86_64-linux-gnu
 ```
+
+The build takes the Python headers from that variable, which the wheel hook
+normally sets for you - without it `zig build` stops and says so.
 
 Benchmarks run through CodSpeed on every commit. They are noisy, and a CodSpeed
 regression on its own does not block a change.
