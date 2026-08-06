@@ -230,14 +230,14 @@ def test_no_provider_disables_instrumentation(monkeypatch: pytest.MonkeyPatch) -
 def test_a_noop_tracing_provider_is_not_detected(monkeypatch: pytest.MonkeyPatch) -> None:
     from opentelemetry.trace import NoOpTracerProvider
 
-    monkeypatch.setattr("zuvloop._instrumentation.trace.get_tracer_provider", NoOpTracerProvider)
+    monkeypatch.setattr("zuvloop._instrumentation.trace.get_tracer_provider", lambda: NoOpTracerProvider())
     assert not tracing_provider_installed()
 
 
 def test_an_unset_proxy_tracing_provider_is_not_detected(monkeypatch: pytest.MonkeyPatch) -> None:
     from opentelemetry.trace import ProxyTracerProvider
 
-    monkeypatch.setattr("zuvloop._instrumentation.trace.get_tracer_provider", ProxyTracerProvider)
+    monkeypatch.setattr("zuvloop._instrumentation.trace.get_tracer_provider", lambda: ProxyTracerProvider())
     assert not tracing_provider_installed()
 
 
