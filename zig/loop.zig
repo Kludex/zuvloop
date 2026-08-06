@@ -261,7 +261,7 @@ fn runReady(self: *LoopObject) void {
     while (remaining != 0) : (remaining -= 1) {
         const obj = st.ready.pop() orelse break;
         const h: *Handle = @ptrCast(@alignCast(obj));
-        if (st.debug or st.slow_callback_monitoring) {
+        if ((st.debug or st.slow_callback_monitoring) and st.slow_callback_duration < std.math.inf(f64)) {
             const started = uv.uv_hrtime();
             handlemod.run(h);
             const elapsed = @as(f64, @floatFromInt(uv.uv_hrtime() - started)) / 1e9;

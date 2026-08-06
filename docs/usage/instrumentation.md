@@ -68,6 +68,16 @@ the threshold as you would on any loop:
 loop.slow_callback_duration = 0.05
 ```
 
+Set the threshold to infinity to disable slow-callback monitoring while keeping
+other OpenTelemetry signals enabled. This takes the native fast path and skips
+the per-callback clock reads as well as spans and metrics:
+
+```python
+import math
+
+loop.slow_callback_duration = math.inf
+```
+
 /// note | Why the gauges are synchronous
 
 They are pushed from the loop's timer rather than pulled by an observable
