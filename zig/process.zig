@@ -48,7 +48,7 @@ const SpawnArgs = struct {
     /// Offsets rather than pointers, because appending can move the buffer.
     argv_at: std.ArrayListUnmanaged(usize) = .empty,
     envp_at: std.ArrayListUnmanaged(usize) = .empty,
-    stdio: [3]uv.StdioContainer = @splat(.{ .flags = uv.StdioFlags.ignore, .data = .{ .fd = -1 } }),
+    stdio: std.ArrayListUnmanaged(uv.StdioContainer) = .empty,
 
     fn deinit(self: *SpawnArgs) void {
         self.storage.deinit(alloc);
@@ -56,6 +56,7 @@ const SpawnArgs = struct {
         self.envp.deinit(alloc);
         self.argv_at.deinit(alloc);
         self.envp_at.deinit(alloc);
+        self.stdio.deinit(alloc);
     }
 
     /// Turns the recorded offsets into the null-terminated pointer array
@@ -217,9 +218,10 @@ fn optionalString(args: *SpawnArgs, value: ?*py.Object) py.Error!?usize {
 
 /// `loop._spawn_process(file, args, env, cwd, stdio, flags, uid, gid, on_exit)`
 ///
-/// `stdio` is a three-element sequence of descriptors for the child's stdin,
-/// stdout and stderr; -1 leaves one closed. They are created in Python, which is
-/// where the rest of the socket and pipe setup lives.
+/// `stdio` is a sequence of descriptors the child inherits, each at the index it
+/// occupies here; -1 leaves that one closed. The first three are stdin, stdout
+/// and stderr, and anything past them is a `pass_fds` entry. They are created in
+/// Python, which is where the rest of the socket and pipe setup lives.
 pub fn spawnProcess(self_obj: *py.Object, args_in: []const ?*py.Object) py.Error!*py.Object {
     try py.expectArgs(args_in, 9, "_spawn_process");
     const loop = loopmod.asLoop(self_obj);
@@ -249,15 +251,18 @@ pub fn spawnProcess(self_obj: *py.Object, args_in: []const ?*py.Object) py.Error
     const file = spawn.at(file_at);
     const cwd: ?[*:0]const u8 = if (cwd_at) |offset| spawn.at(offset) else null;
 
-    var i: usize = 0;
-    while (i < 3) : (i += 1) {
-        const item = c.PySequence_GetItem(args_in[4].?, @intCast(i)) orelse return py.Error.Python;
+    const stdio_count = c.PySequence_Size(args_in[4].?);
+    if (stdio_count < 0) return py.Error.Python;
+    spawn.stdio.ensureTotalCapacity(alloc, @intCast(stdio_count)) catch return py.errNoMemory();
+    var i: c.Py_ssize_t = 0;
+    while (i < stdio_count) : (i += 1) {
+        const item = c.PySequence_GetItem(args_in[4].?, i) orelse return py.Error.Python;
         defer py.decref(item);
         const fd = try py.asCInt(item);
-        spawn.stdio[i] = if (fd < 0)
+        spawn.stdio.appendAssumeCapacity(if (fd < 0)
             .{ .flags = uv.StdioFlags.ignore, .data = .{ .fd = -1 } }
         else
-            .{ .flags = uv.StdioFlags.inherit_fd, .data = .{ .fd = fd } };
+            .{ .flags = uv.StdioFlags.inherit_fd, .data = .{ .fd = fd } });
     }
 
     const obj = c.PyType_GenericAlloc(process_type, 0) orelse return py.Error.Python;
@@ -281,8 +286,8 @@ pub fn spawnProcess(self_obj: *py.Object, args_in: []const ?*py.Object) py.Error
     options.env = if (has_env) spawn.envp.items.ptr else null;
     options.cwd = cwd;
     options.flags = @intCast(try py.asCInt(args_in[5].?));
-    options.stdio_count = 3;
-    options.stdio = &spawn.stdio;
+    options.stdio_count = @intCast(spawn.stdio.items.len);
+    options.stdio = spawn.stdio.items.ptr;
     options.uid = @intCast(try py.asCInt(args_in[6].?));
     options.gid = @intCast(try py.asCInt(args_in[7].?));
 

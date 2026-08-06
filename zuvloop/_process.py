@@ -47,8 +47,6 @@ class Popen:
             raise ValueError("startupinfo is not supported by zuvloop's subprocess transport")
         if creationflags:
             raise ValueError("creationflags is not supported by zuvloop's subprocess transport")
-        if pass_fds:
-            raise ValueError("pass_fds is not supported by zuvloop's subprocess transport")
         if unsupported:
             name = next(iter(unsupported))
             raise ValueError(f"{name} is not supported by zuvloop's subprocess transport")
@@ -75,7 +73,7 @@ class Popen:
                 args,
                 None if env is None else [f"{k}={v}" for k, v in env.items()],
                 None if cwd is None else os.fspath(cwd),
-                child_fds,
+                _stdio(child_fds, pass_fds),
                 flags,
                 0,
                 0,
@@ -110,6 +108,22 @@ class Popen:
         # `BaseSubprocessTransport.close()` reaches for this on a child that is
         # still running.
         self.send_signal(signal.SIGKILL)
+
+
+def _stdio(child_fds: list[int], pass_fds: Sequence[int]) -> list[int]:
+    """The descriptors the child inherits, each at the index it will hold there.
+
+    A `pass_fds` entry keeps its own number, so it sits at that index and the gap
+    before it is left closed. The three standard streams have already claimed
+    0, 1 and 2, and a `pass_fds` naming one of those is what it already is.
+    """
+    stdio = list(child_fds)
+    for fd in sorted(set(pass_fds)):
+        if fd < len(stdio):
+            continue
+        stdio.extend([-1] * (fd - len(stdio)))
+        stdio.append(fd)
+    return stdio
 
 
 def _open_stream(index: int, request: Any, child_fds: list[int]) -> tuple[int, int | None]:
