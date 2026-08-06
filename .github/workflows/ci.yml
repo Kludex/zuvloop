@@ -132,8 +132,8 @@ jobs:
           if ! LC_ALL=C grep -qa 'index out of bounds' "$imported"; then
             echo "::error::$imported carries no bounds-check panic message. Either it is not the" \
                  "ReleaseSafe build - check where the build step installed it - or the Zig this" \
-                 "workflow pins no longer words that panic the same way, in which case the string" \
-                 "above is what needs updating."
+                 "workflow pins no longer uses that wording for the panic, in which case the" \
+                 "string above is what needs updating."
             exit 1
           fi
 
