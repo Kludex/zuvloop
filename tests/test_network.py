@@ -1306,3 +1306,15 @@ async def test_the_asyncio_server_hook_unregisters_and_closes() -> None:
     loop._stop_serving(sock)
 
     assert sock.fileno() == -1
+
+
+async def test_binding_a_unix_path_twice_names_the_path() -> None:
+    """The check read Linux's EADDRINUSE, so on any other platform it never fired."""
+    loop = running_loop()
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "taken.sock"
+        server = await loop.create_unix_server(Echo, path)
+        async with server:
+            with pytest.raises(OSError, match="already in use") as caught:
+                await loop.create_unix_server(Echo, path)
+            assert str(path) in str(caught.value)
