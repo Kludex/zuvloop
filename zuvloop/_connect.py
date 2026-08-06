@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import os
 import signal
 import socket
@@ -157,7 +158,7 @@ class ConnectionOperations(SocketOperations):
 
     # -- servers -----------------------------------------------------------
 
-    async def create_server(  # type: ignore[override]  # no keep_alive argument
+    async def create_server(  # type: ignore[override]  # typeshed overloads host/port/sock
         self,
         protocol_factory: Callable[[], asyncio.BaseProtocol],
         host: str | Sequence[str] | None = None,
@@ -170,6 +171,7 @@ class ConnectionOperations(SocketOperations):
         ssl: _SSLArg = None,
         reuse_address: bool | None = None,
         reuse_port: bool | None = None,
+        keep_alive: bool | None = None,
         ssl_handshake_timeout: float | None = None,
         ssl_shutdown_timeout: float | None = None,
         start_serving: bool = True,
@@ -179,7 +181,7 @@ class ConnectionOperations(SocketOperations):
         if host is not None or port is not None:
             if sock is not None:
                 raise ValueError("host/port and sock can not be specified at the same time")
-            sockets = await self._bind_tcp(host, port, family, flags, reuse_address, reuse_port)
+            sockets = await self._bind_tcp(host, port, family, flags, reuse_address, reuse_port, keep_alive)
         elif sock is None:
             raise ValueError("Neither host/port nor sock were specified")
         else:
@@ -219,7 +221,9 @@ class ConnectionOperations(SocketOperations):
                 sock.bind(path)
             except OSError as exc:
                 sock.close()
-                if exc.errno == 98 or isinstance(exc, FileExistsError):  # pragma: no cover - platform dependent
+                # 98 is Linux's EADDRINUSE and 48 is this platform's, so the
+                # number has to come from the platform rather than the source.
+                if exc.errno == errno.EADDRINUSE or isinstance(exc, FileExistsError):
                     raise OSError(exc.errno, f"Address {path!r} is already in use") from None
                 raise
             sock.setblocking(False)
@@ -255,6 +259,7 @@ class ConnectionOperations(SocketOperations):
         flags: int,
         reuse_address: bool | None,
         reuse_port: bool | None,
+        keep_alive: bool | None,
     ) -> list[socket.socket]:
         hosts: Sequence[str | None]
         if host is None or isinstance(host, str):
@@ -281,6 +286,8 @@ class ConnectionOperations(SocketOperations):
                     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 if reuse_port:
                     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                if keep_alive:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
                 if af == socket.AF_INET6 and hasattr(socket, "IPPROTO_IPV6"):
                     sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, True)
                 sock.setblocking(False)
