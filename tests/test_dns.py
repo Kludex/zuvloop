@@ -163,12 +163,15 @@ async def test_getnameinfo_handles_ipv6() -> None:
 
 
 async def test_getnameinfo_rejects_a_malformed_address() -> None:
+    """A bad argument stays the caller's mistake; only the host is the resolver's."""
     loop = running_loop()
     with pytest.raises(TypeError, match="must be a tuple"):
         await loop.getnameinfo("127.0.0.1")  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="\\(host, port\\)"):
         await loop.getnameinfo(("127.0.0.1",))
-    with pytest.raises(OSError):
+    # `gaierror` rather than the bare `OSError` libuv reports for refusing to
+    # parse it - the two are easy to confuse, since one subclasses the other.
+    with pytest.raises(socket.gaierror):
         await loop.getnameinfo(("not an address", 80))
 
 
@@ -185,12 +188,3 @@ async def test_getnameinfo_reports_a_name_it_cannot_use_as_the_stdlib_does(host:
     with pytest.raises(socket.gaierror) as theirs:
         socket.getnameinfo((host, 80), 0)
     assert mine.value.args == theirs.value.args
-
-
-async def test_getnameinfo_keeps_the_callers_own_mistakes() -> None:
-    """Only the resolver's answer is rewritten; a bad argument stays a bad argument."""
-    loop = running_loop()
-    with pytest.raises(TypeError, match="must be a tuple"):
-        await loop.getnameinfo("not a tuple")  # type: ignore[arg-type]
-    with pytest.raises(TypeError, match="\\(host, port\\)"):
-        await loop.getnameinfo(("host",))
