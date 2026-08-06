@@ -20,9 +20,9 @@ transport.sendto(b"payload", ("127.0.0.1", 9999))  # unconnected
 transport.sendto(b"payload")                       # connected, via remote_addr
 ```
 
-An endpoint created with `remote_addr` is connected: `sendto()` takes no address,
-and passing one raises `ValueError`. An endpoint without it requires an address
-on every send.
+An endpoint created with `remote_addr` is connected: `sendto()` needs no address,
+and accepts one only if it names the peer already connected to - any other raises
+`ValueError`. An endpoint without `remote_addr` requires an address on every send.
 
 A datagram the kernel accepts outright goes out through `uv_udp_try_send` without
 allocating a request.

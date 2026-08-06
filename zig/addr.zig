@@ -121,7 +121,11 @@ pub fn same(a: *const posix.sockaddr, b: *const posix.sockaddr) bool {
     if (a.family == AF_INET6) {
         const x: *const posix.sockaddr.in6 = @ptrCast(@alignCast(a));
         const y: *const posix.sockaddr.in6 = @ptrCast(@alignCast(b));
-        return x.port == y.port and std.mem.eql(u8, &x.addr, &y.addr) and x.scope_id == y.scope_id;
+        if (x.port != y.port or !std.mem.eql(u8, &x.addr, &y.addr)) return false;
+        // A zero scope is "unspecified", and the two sides come by it
+        // differently: a caller's two-tuple leaves it zero where the kernel has
+        // resolved one. Only two stated scopes can disagree.
+        return x.scope_id == 0 or y.scope_id == 0 or x.scope_id == y.scope_id;
     }
     return false;
 }
