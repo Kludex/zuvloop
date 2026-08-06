@@ -7,8 +7,8 @@ import socket
 import ssl
 import struct
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -17,6 +17,9 @@ from conftest import running_loop
 from zuvloop._server import Server
 
 pytestmark = pytest.mark.anyio
+
+# What `getaddrinfo` hands back: family, kind, protocol, canonical name, address.
+type AddrInfo = tuple[int, int, int, str, tuple[str, int] | tuple[str, int, int, int]]
 
 
 class Echo(asyncio.Protocol):
@@ -1325,7 +1328,9 @@ async def test_happy_eyeballs_beats_a_black_holed_address() -> None:
 
     original = loop.getaddrinfo
 
-    async def getaddrinfo(host: Any, port: Any, **kwargs: Any) -> Any:
+    async def getaddrinfo(
+        host: str | bytes | None, port: str | bytes | int | None, **kwargs: int
+    ) -> Sequence[AddrInfo]:
         # Only the made-up name is answered from the list. `sock_connect`
         # resolves the address it is handed, and answering that from the list
         # too would send every attempt to the same place.
@@ -1366,7 +1371,9 @@ async def test_differing_failures_are_reported_together() -> None:
     loop = running_loop()
     original = loop.getaddrinfo
 
-    async def getaddrinfo(host: Any, port: Any, **kwargs: Any) -> Any:
+    async def getaddrinfo(
+        host: str | bytes | None, port: str | bytes | int | None, **kwargs: int
+    ) -> Sequence[AddrInfo]:
         if host == "two-ways-to-fail":
             # Both refuse at once, and the address is in the message, so the two
             # complaints differ - which is the case that cannot be folded.
@@ -1389,7 +1396,9 @@ async def test_identical_failures_are_reported_once() -> None:
     loop = running_loop()
     original = loop.getaddrinfo
 
-    async def getaddrinfo(host: Any, port: Any, **kwargs: Any) -> Any:
+    async def getaddrinfo(
+        host: str | bytes | None, port: str | bytes | int | None, **kwargs: int
+    ) -> Sequence[AddrInfo]:
         if host == "twice-the-same":
             info = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 1))
             return [info, info]
@@ -1402,3 +1411,38 @@ async def test_identical_failures_are_reported_once() -> None:
         assert "Multiple exceptions" not in str(caught.value)
     finally:
         loop.getaddrinfo = original  # type: ignore[method-assign]
+
+
+async def test_a_socket_that_cannot_be_created_is_still_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Creating the socket fails for real - EMFILE, a family the kernel refuses.
+
+    An attempt that failed without recording anything leaves nothing to raise at
+    the end, which surfaced as an `IndexError` rather than the actual problem.
+    """
+    loop = running_loop()
+    real = socket.socket
+
+    def refuse(*args: int, **kwargs: int) -> socket.socket:
+        raise OSError(24, "Too many open files")
+
+    monkeypatch.setattr(socket, "socket", refuse)
+    with pytest.raises(OSError, match="Too many open files"):
+        await loop.create_connection(Collector, "127.0.0.1", 1)
+
+    monkeypatch.setattr(socket, "socket", real)
+    assert socket.socket is real
+
+
+async def test_every_failure_is_reported_when_a_socket_cannot_be_created(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`all_errors` needs something to group; an empty group is a ValueError."""
+    loop = running_loop()
+
+    def refuse(*args: int, **kwargs: int) -> socket.socket:
+        raise OSError(24, "Too many open files")
+
+    monkeypatch.setattr(socket, "socket", refuse)
+    with pytest.raises(ExceptionGroup) as caught:
+        await loop.create_connection(Collector, "127.0.0.1", 1, all_errors=True)
+    assert [str(exc) for exc in caught.value.exceptions] == ["[Errno 24] Too many open files"]

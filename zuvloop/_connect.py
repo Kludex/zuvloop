@@ -150,7 +150,8 @@ class ConnectionOperations(SocketOperations):
         if interleave:
             infos = _interleave_addrinfos(infos, interleave)
 
-        errors: list[OSError] = []
+        # One slot per address, filled in the order they were tried.
+        errors: list[list[OSError]] = []
         winner: socket.socket | None = None
         if happy_eyeballs_delay is None:
             for info in infos:
@@ -173,19 +174,22 @@ class ConnectionOperations(SocketOperations):
 
         if winner is not None:
             return winner
+        flattened = [exc for slot in errors for exc in slot]
         if all_errors:
-            raise ExceptionGroup("create_connection failed", errors)
-        if len(errors) == 1:
-            raise errors[0]
+            raise ExceptionGroup("create_connection failed", flattened)
+        if len(flattened) == 1:
+            raise flattened[0]
+        if not flattened:  # pragma: no cover - every attempt records its failure
+            raise OSError("Multiple exceptions: (no error was recorded)")
         # All the same complaint reads better as one of them than as a list.
-        model = str(errors[0])
-        if all(str(exc) == model for exc in errors):
-            raise errors[0]
-        raise OSError(f"Multiple exceptions: {', '.join(str(exc) for exc in errors)}")
+        model = str(flattened[0])
+        if all(str(exc) == model for exc in flattened):
+            raise flattened[0]
+        raise OSError(f"Multiple exceptions: {', '.join(str(exc) for exc in flattened)}")
 
     def _attempt(
         self,
-        errors: list[OSError],
+        errors: list[list[OSError]],
         info: tuple[int, int, int, str, Any],
         local_addr: tuple[str, int] | None,
     ) -> Callable[[], Coroutine[Any, Any, socket.socket]]:
@@ -198,12 +202,25 @@ class ConnectionOperations(SocketOperations):
 
     async def _connect_one(
         self,
-        errors: list[OSError],
+        errors: list[list[OSError]],
         info: tuple[int, int, int, str, Any],
         local_addr: tuple[str, int] | None,
     ) -> socket.socket:
+        # The slot is taken before anything is awaited, so the failures come back
+        # in the order the addresses were tried rather than the order they lost -
+        # which under a race is whatever the network decided that time.
+        mine: list[OSError] = []
+        errors.append(mine)
         af, kind, proto, _canon, address = info
-        sock = socket.socket(af, kind, proto)
+        try:
+            # This raises for real - EMFILE, an address family the kernel will
+            # not give - and an attempt that failed without recording anything
+            # leaves nothing to report at the end.
+            sock = socket.socket(af, kind, proto)
+        except OSError as exc:
+            mine.append(exc)
+            raise
+
         try:
             sock.setblocking(False)
             if local_addr is not None:
@@ -216,7 +233,7 @@ class ConnectionOperations(SocketOperations):
             await self.sock_connect(sock, address)
         except OSError as exc:
             sock.close()
-            errors.append(exc)
+            mine.append(exc)
             raise
         except BaseException:
             sock.close()
