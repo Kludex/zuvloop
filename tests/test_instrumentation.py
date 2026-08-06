@@ -23,13 +23,21 @@ async def test_slow_callbacks_are_reported_without_debug_mode(telemetry: Telemet
     loop = running_loop()
     assert not loop.get_debug()
     loop.slow_callback_duration = 0.01
+
+    def slow_callback() -> None:
+        time.sleep(0.05)
+
     try:
-        loop.call_soon(time.sleep, 0.05)
+        loop.call_soon(slow_callback)
         await asyncio.sleep(0.1)
     finally:
         loop.slow_callback_duration = 0.1
 
-    span = telemetry.spans("zuvloop.slow_callback")[0]
+    span = next(
+        span
+        for span in telemetry.spans("zuvloop.slow_callback")
+        if "slow_callback" in str(attribute(span, "code.callback"))
+    )
     assert span.status.status_code is StatusCode.ERROR
     assert numeric_attribute(span, "duration") >= 0.01
     assert "Handle" in str(attribute(span, "code.callback"))
@@ -41,14 +49,22 @@ async def test_a_slow_callback_span_covers_the_time_it_took(telemetry: Telemetry
     loop = running_loop()
     loop.set_debug(True)
     loop.slow_callback_duration = 0.01
+
+    def slow_callback() -> None:
+        time.sleep(0.05)
+
     try:
-        loop.call_soon(time.sleep, 0.05)
+        loop.call_soon(slow_callback)
         await asyncio.sleep(0.1)
     finally:
         loop.set_debug(False)
         loop.slow_callback_duration = 0.1
 
-    span = telemetry.spans("zuvloop.slow_callback")[0]
+    span = next(
+        span
+        for span in telemetry.spans("zuvloop.slow_callback")
+        if "slow_callback" in str(attribute(span, "code.callback"))
+    )
     assert span.end_time is not None and span.start_time is not None
     measured = (span.end_time - span.start_time) / 1e9
     assert measured == pytest.approx(numeric_attribute(span, "duration"), abs=1e-6)
