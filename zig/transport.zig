@@ -227,7 +227,7 @@ fn callProtocol(self: *Transport, callback: ?*py.Object, arg: ?*py.Object) void 
 /// was copied when the transport was created, so contextvars set before the
 /// connection existed stay visible inside `data_received`. libuv calls straight
 /// into us with no context entered, so it is entered here instead.
-fn callInContext(self: *Transport, callback: ?*py.Object, arg: ?*py.Object) void {
+fn callInContext(self: *Transport, callback: ?*py.Object, arg: ?*py.Object, comptime failed: [:0]const u8) void {
     const cb = callback orelse return;
     const context = self.context;
     if (context) |ctx| {
@@ -249,9 +249,25 @@ fn callInContext(self: *Transport, callback: ?*py.Object, arg: ?*py.Object) void
     // asyncio: reporting it and carrying on would hand the same protocol the
     // next chunk after it has already said it cannot cope.
     if (failure) |exc| {
-        loopmod.callExceptionHandler(loopmod.asLoop(self.loop.?), "Fatal error: protocol callback failed", exc, @ptrCast(self));
+        // Except for the two that are not the connection's business. Asking to
+        // leave is answered by the loop, which stops and re-raises where the
+        // caller of `run_forever` can see it.
+        const loop = loopmod.asLoop(self.loop.?);
+        if (isExit(exc)) {
+            c.PyErr_SetRaisedException(exc);
+            loopmod.captureFatal(loop);
+            forceClose(self, null);
+            return;
+        }
+        loopmod.callExceptionHandler(loop, failed, exc, @ptrCast(self));
         forceClose(self, exc);
     }
+}
+
+fn isExit(exc: *py.Object) bool {
+    const kind: *py.Object = @ptrCast(py.typeOf(exc));
+    return c.PyType_IsSubtype(@ptrCast(kind), @ptrCast(c.PyExc_SystemExit)) != 0 or
+        c.PyType_IsSubtype(@ptrCast(kind), @ptrCast(c.PyExc_KeyboardInterrupt)) != 0;
 }
 
 fn reportError(self: *Transport, comptime message: [:0]const u8) void {
@@ -375,7 +391,7 @@ fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) vo
                 return;
             };
             defer py.decref(n);
-            callInContext(self, self.cb_buffer_updated, n);
+            callInContext(self, self.cb_buffer_updated, n, "Fatal error: protocol.buffer_updated() call failed.");
             return;
         }
         adjustReadSize(self, @intCast(nread));
@@ -395,7 +411,7 @@ fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) vo
             };
         };
         defer py.decref(data);
-        callInContext(self, self.cb_data_received, data);
+        callInContext(self, self.cb_data_received, data, "Fatal error: protocol.data_received() call failed.");
         return;
     }
     py.clear(&self.read_bytes);

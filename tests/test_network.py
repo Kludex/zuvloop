@@ -1338,3 +1338,29 @@ async def test_a_raising_read_callback_closes_the_connection() -> None:
     finally:
         loop.set_exception_handler(None)
         right.close()
+
+
+@pytest.mark.anyio(None)
+def test_an_exit_from_a_read_callback_reaches_the_caller(loop: zuvloop.EventLoop) -> None:
+    """Asking to leave is the loop's business, not the connection's.
+
+    A read callback that raises is otherwise fatal to the transport and reported
+    to the exception handler - which for `KeyboardInterrupt` would mean the
+    caller of `run_forever` never learns why the program was asked to stop.
+    """
+    loop.set_exception_handler(lambda _loop, _context: None)
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+
+    class Interrupt(asyncio.Protocol):
+        def data_received(self, data: bytes) -> None:
+            raise KeyboardInterrupt("stop")
+
+    try:
+        loop.run_until_complete(loop.connect_accepted_socket(Interrupt, left))
+        right.send(b"go")
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_until_complete(asyncio.sleep(0.3))
+    finally:
+        right.close()

@@ -339,7 +339,7 @@ pub fn noteTimerCancelled(self: *LoopObject) void {
     }
 }
 
-fn captureFatal(self: *LoopObject) void {
+pub fn captureFatal(self: *LoopObject) void {
     const st = self.state();
     const exc = c.PyErr_GetRaisedException();
     if (st.fatal == null) st.fatal = exc else py.xdecref(exc);
