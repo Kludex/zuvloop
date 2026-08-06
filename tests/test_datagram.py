@@ -310,6 +310,32 @@ async def test_ipv6_endpoints_round_trip() -> None:
         transport.close()
 
 
+async def test_a_connected_v6_endpoint_tells_the_scope_apart() -> None:
+    """The scope is part of what names an IPv6 peer, so a different one names a
+    different peer. asyncio compares the caller's tuple against the resolved
+    address, which states the scope rather than leaving a zero to mean any."""
+    loop = running_loop()
+    try:
+        server, _echo = await loop.create_datagram_endpoint(Echo, local_addr=("::1", 0))
+    except OSError:  # pragma: no cover - host without IPv6 loopback
+        pytest.skip("no IPv6 loopback")
+    try:
+        host, port = server.get_extra_info("sockname")[:2]
+        client, protocol = await loop.create_datagram_endpoint(
+            Collector, remote_addr=(host, port), family=socket.AF_INET6
+        )
+        try:
+            client.sendto(b"v6", (host, port, 0, 0))
+            assert protocol.done is not None
+            assert await asyncio.wait_for(protocol.done, 2) == b"re:v6"
+            with pytest.raises(ValueError, match="connected"):
+                client.sendto(b"v6", (host, port, 0, 1))
+        finally:
+            client.close()
+    finally:
+        server.close()
+
+
 async def test_a_cancelled_setup_closes_the_socket(monkeypatch: pytest.MonkeyPatch) -> None:
     # With the waiter never resolved, the setup stays parked exactly where a
     # cancellation has to unwind it.
