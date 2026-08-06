@@ -241,6 +241,19 @@ async def test_an_unsupported_popen_argument_is_rejected() -> None:
         await asyncio.create_subprocess_exec("/bin/echo", stdout=PIPE, preexec_fn=lambda: None)
 
 
+async def test_default_popen_arguments_are_accepted() -> None:
+    process = await asyncio.create_subprocess_exec(
+        "/bin/echo",
+        "defaults",
+        stdout=PIPE,
+        startupinfo=None,
+        creationflags=0,
+        pass_fds=(),
+    )
+    stdout, _stderr = await process.communicate()
+    assert stdout == b"defaults\n"
+
+
 async def test_signalling_an_exited_child_is_a_no_op() -> None:
     loop = running_loop()
 
