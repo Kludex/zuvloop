@@ -48,6 +48,45 @@ jobs:
           uv run coverage report
 
 
+  # The Zig layer reaches libc through `std.c`, whose shape differs per target,
+  # and the tests only ever run on the host. Two bugs have shipped that a
+  # compile for the other target would have caught on the way in.
+  cross-compile:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-linux-gnu
+          - aarch64-linux-gnu
+          - x86_64-linux-musl
+          - aarch64-linux-musl
+          - x86_64-macos
+          - aarch64-macos
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --python 3.14 --group dev
+
+      # The headers are the host's, which is enough: this compiles the Zig, and
+      # what differs between targets is `std.c`, not `Python.h`.
+      - name: Compile for ${{ matrix.target }}
+        run: |
+          HATCH_ZIG_PYTHON_INCLUDE="$(uv run python -c 'import sysconfig; print(sysconfig.get_path("include"))')" \
+            zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast
+
+
   benchmarks:
     runs-on: ubuntu-latest
     permissions:
