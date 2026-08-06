@@ -110,6 +110,11 @@ def tracing_provider_installed() -> bool:
     return not isinstance(provider, (NoOpTracerProvider, ProxyTracerProvider))
 
 
+def instrumentation_provider_installed() -> bool:
+    """Whether slow callbacks have somewhere to be exported."""
+    return tracing_provider_installed() or metrics_provider_installed()
+
+
 def metrics_provider_installed() -> bool:
     """Whether the application has installed a real meter provider.
 

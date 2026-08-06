@@ -21,7 +21,7 @@ The key features are:
 - **Fast**: Scheduling, timers, sockets, and DNS run in native code, driven by [libuv](https://libuv.org) — the same engine behind Node.js. Up to **6x faster than asyncio** and faster than [uvloop](https://github.com/MagicStack/uvloop) on every benchmark below.
 - **Drop-in**: One line to switch. Everything is standard `asyncio` — same `Task` objects, same protocols, same APIs.
 - **Fully typed**: Ships type hints for everything and passes **strict mypy**. Your editor will love it. ✨
-- **Observable**: Built-in [OpenTelemetry](https://opentelemetry.io) instrumentation — slow-callback spans, unhandled-exception spans, and loop metrics, with no vendor-specific setup.
+- **Observable**: Built-in [OpenTelemetry](https://opentelemetry.io) instrumentation — slow-callback spans, unhandled-exception spans, loop metrics. Zero cost until you turn it on.
 - **Modern**: Built for Python 3.14, including the new asyncio introspection tools (`python -m asyncio ps`, call graphs, and friends).
 
 ## Performance
@@ -97,10 +97,9 @@ That's it. That's the migration. 🎉
 ## Observability
 
 zuvloop emits plain OpenTelemetry. The only runtime dependency is `opentelemetry-api` — not the
-SDK, nothing vendor-specific. Slow callbacks are always timed with two native clock reads, so a
-provider installed while the loop is already running receives subsequent events. Until then the
-OpenTelemetry instruments are no-ops, and Python reporting runs only for callbacks that exceed the
-threshold.
+SDK, nothing vendor-specific. Configure providers before starting the loop; zuvloop checks for them
+at each `run_forever()` entry. Until then the instruments are no-ops and slow-callback timing stays
+off.
 
 Anything that speaks OpenTelemetry can collect it. For example, with
 <a href="https://logfire.pydantic.dev" target="_blank">Logfire</a>:

@@ -11,6 +11,7 @@ import zuvloop
 from conftest import Telemetry, attribute, collect_contexts, numeric_attribute, running_loop
 from zuvloop._instrumentation import (
     capture_call_graph,
+    instrumentation_provider_installed,
     metrics_provider_installed,
     publish_metrics,
     tracing_provider_installed,
@@ -42,34 +43,6 @@ async def test_slow_callbacks_are_reported_without_debug_mode(telemetry: Telemet
     assert numeric_attribute(span, "duration") >= 0.01
     assert "Handle" in str(attribute(span, "code.callback"))
     assert telemetry.counted("zuvloop.slow_callbacks") >= 1
-
-
-async def test_tracing_enabled_during_a_loop_run_receives_later_slow_callbacks(
-    telemetry: Telemetry, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    tracing_enabled = False
-    monkeypatch.setattr("zuvloop._instrumentation.tracing_provider_installed", lambda: tracing_enabled)
-    loop = running_loop()
-    loop.slow_callback_duration = 0.01
-
-    def before_tracing() -> None:
-        time.sleep(0.03)
-
-    def after_tracing() -> None:
-        time.sleep(0.03)
-
-    try:
-        loop.call_soon(before_tracing)
-        await asyncio.sleep(0.06)
-        tracing_enabled = True
-        loop.call_soon(after_tracing)
-        await asyncio.sleep(0.06)
-    finally:
-        loop.slow_callback_duration = 0.1
-
-    callbacks = [str(attribute(span, "code.callback")) for span in telemetry.spans("zuvloop.slow_callback")]
-    assert not any("before_tracing" in callback for callback in callbacks)
-    assert any("after_tracing" in callback for callback in callbacks)
 
 
 async def test_a_slow_callback_span_covers_the_time_it_took(telemetry: Telemetry) -> None:
@@ -237,8 +210,21 @@ async def test_gauges_reach_the_exporter(telemetry: Telemetry) -> None:
 
 def test_real_providers_are_detected(telemetry: Telemetry) -> None:
     # The telemetry fixture installs SDK providers for the whole session.
+    assert instrumentation_provider_installed()
     assert tracing_provider_installed()
     assert metrics_provider_installed()
+
+
+def test_a_metrics_provider_enables_instrumentation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("zuvloop._instrumentation.tracing_provider_installed", lambda: False)
+    monkeypatch.setattr("zuvloop._instrumentation.metrics_provider_installed", lambda: True)
+    assert instrumentation_provider_installed()
+
+
+def test_no_provider_disables_instrumentation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("zuvloop._instrumentation.tracing_provider_installed", lambda: False)
+    monkeypatch.setattr("zuvloop._instrumentation.metrics_provider_installed", lambda: False)
+    assert not instrumentation_provider_installed()
 
 
 def test_a_noop_tracing_provider_is_not_detected(monkeypatch: pytest.MonkeyPatch) -> None:
