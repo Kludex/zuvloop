@@ -388,3 +388,43 @@ async def test_resolving_a_cancelled_waiter_is_a_no_op() -> None:
     waiter.cancel()
     _connect._set_result_unless_done(waiter)
     assert waiter.cancelled()
+
+
+async def test_pausing_reading_stops_delivery_until_resumed() -> None:
+    """asyncio implements both; uvloop has neither, and inheriting the stubs
+    from `asyncio.Transport` made them raise here."""
+    loop = running_loop()
+    raw, protocol = await loop.create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
+    receiver = cast("_zuvloop.DatagramTransport", raw)
+    address = receiver.get_extra_info("sockname")
+    sender, _sender_protocol = await loop.create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
+    control, control_protocol = await loop.create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
+    control_address = control.get_extra_info("sockname")
+    try:
+        receiver.pause_reading()
+        sender.sendto(b"while paused", address)
+        # An endpoint that is not paused, sent to afterwards: once its datagram
+        # arrives the loop has been round, so the receiver's silence is the
+        # pause rather than a clock that had not run out.
+        sender.sendto(b"unpaused", control_address)
+        assert control_protocol.done is not None
+        assert await asyncio.wait_for(control_protocol.done, 2) == b"unpaused"
+        assert protocol.received == []
+
+        receiver.resume_reading()
+        assert protocol.done is not None
+        assert await asyncio.wait_for(protocol.done, 2) == b"while paused"
+    finally:
+        control.close()
+        sender.close()
+        receiver.close()
+
+
+async def test_pausing_reading_after_close_is_rejected() -> None:
+    raw, _protocol = await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
+    transport = cast("_zuvloop.DatagramTransport", raw)
+    transport.close()
+    with pytest.raises(RuntimeError, match="after close"):
+        transport.pause_reading()
+    with pytest.raises(RuntimeError, match="after close"):
+        transport.resume_reading()

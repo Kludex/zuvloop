@@ -520,6 +520,29 @@ fn adoptSocketView(self_obj: *py.Object, view: *py.Object) py.Error!*py.Object {
     return py.noneRef();
 }
 
+/// `pause_reading()`: stop delivering datagrams until reading resumes.
+///
+/// A datagram endpoint that is not reading leaves what arrives in the socket's
+/// receive buffer, and the kernel drops from there once it fills. That is what
+/// asyncio's does too; uvloop's has no such method at all.
+fn pauseReading(self_obj: *py.Object) py.Error!*py.Object {
+    const self = asDatagram(self_obj);
+    if (self.flags & CLOSING != 0) return py.errRuntime("Cannot pause_reading() after close()");
+    if (self.flags & READING != 0) {
+        _ = uv.uv_udp_recv_stop(self.udp());
+        self.flags &= ~READING;
+    }
+    return py.noneRef();
+}
+
+/// `resume_reading()`: deliver datagrams again.
+fn resumeReading(self_obj: *py.Object) py.Error!*py.Object {
+    const self = asDatagram(self_obj);
+    if (self.flags & CLOSING != 0) return py.errRuntime("Cannot resume_reading() after close()");
+    try startReceiving(self);
+    return py.noneRef();
+}
+
 fn startReceivingMethod(self_obj: *py.Object) py.Error!*py.Object {
     const self = asDatagram(self_obj);
     startReceiving(self) catch {
@@ -663,6 +686,8 @@ var methods = [_]c.PyMethodDef{
     py.methodNoArgs("get_protocol", getProtocol, "Return the current protocol."),
     py.methodO("set_protocol", setProtocol, "Replace the current protocol."),
     py.methodO("_adopt_socket_view", adoptSocketView, "Track the socket object mirroring libuv's descriptor."),
+    py.methodNoArgs("pause_reading", pauseReading, "Stop delivering datagrams."),
+    py.methodNoArgs("resume_reading", resumeReading, "Deliver datagrams again."),
     py.methodNoArgs("_start_receiving", startReceivingMethod, "Begin delivering datagrams."),
     py.methodKw("sendto", sendto, "Send a datagram to an address."),
     py.methodNoArgs("get_write_buffer_size", getWriteBufferSize, "Return the number of bytes queued."),
