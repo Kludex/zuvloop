@@ -164,9 +164,8 @@ class ConnectionOperations(SocketOperations):
                 except OSError:
                     continue
         else:
-            # Each attempt starts `happy_eyeballs_delay` after the last, and the
-            # first to connect wins - so an address on a broken route costs that
-            # delay rather than a full connect timeout. RFC 8305.
+            # RFC 8305: an address on a broken route costs the delay rather
+            # than a full connect timeout.
             winner = (
                 await staggered.staggered_race(
                     (self._attempt(errors, info, local_addr) for info in infos),
@@ -209,16 +208,14 @@ class ConnectionOperations(SocketOperations):
         info: _AddrInfo,
         local_addr: tuple[str, int] | None,
     ) -> socket.socket:
-        # The slot is taken before anything is awaited, so the failures come back
-        # in the order the addresses were tried rather than the order they lost -
-        # which under a race is whatever the network decided that time.
+        # Taken before anything is awaited, so failures come back in the order
+        # the addresses were tried rather than the order they lost.
         mine: list[OSError] = []
         errors.append(mine)
         af, kind, proto, _canon, address = info
         try:
-            # This raises for real - EMFILE, an address family the kernel will
-            # not give - and an attempt that failed without recording anything
-            # leaves nothing to report at the end.
+            # Raises for real - EMFILE, a family the kernel will not give -
+            # since an attempt recording nothing leaves nothing to report.
             sock = socket.socket(af, kind, proto)
         except OSError as exc:
             mine.append(exc)

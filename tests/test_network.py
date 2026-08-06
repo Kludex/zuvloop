@@ -1315,9 +1315,8 @@ async def test_the_asyncio_server_hook_unregisters_and_closes() -> None:
 async def test_happy_eyeballs_beats_a_black_holed_address() -> None:
     """Without racing, an address on a route that drops costs a full timeout.
 
-    The route that drops is arranged here rather than borrowed from the host:
-    whether `192.0.2.1` answers, refuses or vanishes is a property of the
-    machine's routing table, and a refusal would let a sequential connect pass.
+    The drop is arranged rather than borrowed from the host, whose routing table
+    might refuse instead - which a sequential connect would pass.
     """
     loop = running_loop()
     server, port, _ = await start_echo()
@@ -1333,9 +1332,8 @@ async def test_happy_eyeballs_beats_a_black_holed_address() -> None:
     async def getaddrinfo(
         host: str | bytes | None, port: str | bytes | int | None, **kwargs: int
     ) -> Sequence[AddrInfo]:
-        # Only the made-up name is answered from the list. `sock_connect`
-        # resolves the address it is handed, and answering that from the list
-        # too would send every attempt to the same place.
+        # `sock_connect` resolves the address it is handed, so answering that
+        # from the list too would send every attempt to the same place.
         if host == "split":
             return resolved
         return await original_getaddrinfo(host, port, **kwargs)
@@ -1384,8 +1382,8 @@ async def test_differing_failures_are_reported_together() -> None:
         host: str | bytes | None, port: str | bytes | int | None, **kwargs: int
     ) -> Sequence[AddrInfo]:
         if host == "two-ways-to-fail":
-            # Both refuse at once, and the address is in the message, so the two
-            # complaints differ - which is the case that cannot be folded.
+            # The address is in the message, so the two complaints differ -
+            # the case that cannot be folded.
             return [
                 (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 1)),
                 (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 1, 0, 0)),
@@ -1434,11 +1432,8 @@ async def test_identical_failures_are_reported_once() -> None:
 
 
 async def test_a_socket_that_cannot_be_created_is_still_reported(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Creating the socket fails for real - EMFILE, a family the kernel refuses.
-
-    An attempt that failed without recording anything leaves nothing to raise at
-    the end, which surfaced as an `IndexError` rather than the actual problem.
-    """
+    """An attempt recording nothing left nothing to raise, surfacing as an
+    `IndexError` rather than the EMFILE that caused it."""
     loop = running_loop()
     real = socket.socket
 
