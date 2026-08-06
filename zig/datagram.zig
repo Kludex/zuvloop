@@ -372,14 +372,14 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
     var dest: addr.Storage = .{};
     var dest_ptr: ?*const std.posix.sockaddr = null;
     if (target) |t| {
-        try addr.fromPython(self.family, t, &dest);
+        const dest_len = try addr.fromPython(self.family, t, &dest);
         if (self.flags & CONNECTED != 0) {
             // Naming the address it is already connected to is allowed, as it is
             // for asyncio; naming a different one is not.
             var peer: addr.Storage = .{};
             var len: c_int = @sizeOf(addr.Storage);
             if (uv.uv_udp_getpeername(self.udp(), peer.ptr(), &len) < 0 or
-                !addr.same(dest.constPtr(), peer.constPtr()))
+                !addr.same(dest.constPtr(), dest_len, peer.constPtr(), len))
             {
                 return py.errValue("Transport is connected; sendto() takes no address but the peer's");
             }

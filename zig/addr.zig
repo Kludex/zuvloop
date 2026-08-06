@@ -23,12 +23,16 @@ pub const AF_INET: c_int = posix.AF.INET;
 pub const AF_INET6: c_int = posix.AF.INET6;
 pub const AF_UNIX: c_int = posix.AF.UNIX;
 
+const UN_BASE = @offsetOf(posix.sockaddr.un, "path");
+
 fn tupleItem(t: *py.Object, i: c.Py_ssize_t) py.Error!*py.Object {
     return c.PyTuple_GetItem(t, i) orelse py.Error.Python;
 }
 
-/// Fills `out` from `(host, port[, flowinfo, scopeid])` or a filesystem path.
-pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!void {
+/// Fills `out` from `(host, port[, flowinfo, scopeid])` or a filesystem path,
+/// and returns the length that describes it - which for `AF_UNIX` is the only
+/// thing that tells an abstract name from a shorter one padded with zeros.
+pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!c_int {
     out.* = .{};
     if (family == AF_UNIX) {
         var path: [*c]const u8 = undefined;
@@ -45,7 +49,7 @@ pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!vo
         if (len >= un.path.len) return py.errValue("AF_UNIX path too long");
         un.family = @intCast(AF_UNIX);
         @memcpy(un.path[0..@intCast(len)], path[0..@intCast(len)]);
-        return;
+        return @intCast(UN_BASE + @as(usize, @intCast(len)));
     }
 
     if (c.PyTuple_Check(address) == 0) return py.errType("address must be a tuple");
@@ -71,10 +75,11 @@ pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!vo
         try py.errUvIfNeg(uv.uv_ip6_addr(host, port, sin6));
         if (size >= 3) sin6.flowinfo = @intCast(try py.asCInt(try tupleItem(address, 2)));
         if (size >= 4) sin6.scope_id = @intCast(try py.asCInt(try tupleItem(address, 3)));
-        return;
+        return @sizeOf(posix.sockaddr.in6);
     }
     const sin: *posix.sockaddr.in = @ptrCast(out);
     try py.errUvIfNeg(uv.uv_ip4_addr(host, port, sin));
+    return @sizeOf(posix.sockaddr.in);
 }
 
 /// Builds the tuple `socket.getsockname()` would return for `sa`.
@@ -111,8 +116,23 @@ pub fn toPython(sa: *const posix.sockaddr) py.Error!*py.Object {
 /// A byte comparison would not do: the platforms disagree about padding, and on
 /// the BSDs `sockaddr_in` carries an `sin_len` that the two sides need not have
 /// filled in the same way. Only the fields that identify the peer are read.
-pub fn same(a: *const posix.sockaddr, b: *const posix.sockaddr) bool {
+/// The bytes that name an `AF_UNIX` socket, as the kernel distinguishes them.
+///
+/// An abstract name - Linux only, first byte zero - is exactly as long as the
+/// reported length says, so `\0foo` and `\0foo\0` are different sockets. A
+/// pathname ends at its terminator instead, which matters because the two sides
+/// need not agree on whether the length counts it.
+fn unixName(sa: *const posix.sockaddr, len: c_int) []const u8 {
+    const un: *const posix.sockaddr.un = @ptrCast(@alignCast(sa));
+    if (len <= UN_BASE) return un.path[0..0];
+    const n = @min(@as(usize, @intCast(len)) - UN_BASE, un.path.len);
+    if (un.path[0] == 0) return un.path[0..n];
+    return un.path[0 .. std.mem.indexOfScalar(u8, un.path[0..n], 0) orelse n];
+}
+
+pub fn same(a: *const posix.sockaddr, a_len: c_int, b: *const posix.sockaddr, b_len: c_int) bool {
     if (a.family != b.family) return false;
+    if (a.family == AF_UNIX) return std.mem.eql(u8, unixName(a, a_len), unixName(b, b_len));
     if (a.family == AF_INET) {
         const x: *const posix.sockaddr.in = @ptrCast(@alignCast(a));
         const y: *const posix.sockaddr.in = @ptrCast(@alignCast(b));
@@ -126,14 +146,6 @@ pub fn same(a: *const posix.sockaddr, b: *const posix.sockaddr) bool {
         // wants the scope stated; matching that is stricter than treating a
         // zero as a wildcard, and does not let a wrong zone name the peer.
         return x.scope_id == y.scope_id;
-    }
-    if (a.family == AF_UNIX) {
-        const x: *const posix.sockaddr.un = @ptrCast(@alignCast(a));
-        const y: *const posix.sockaddr.un = @ptrCast(@alignCast(b));
-        // The whole padded array rather than up to the first zero: both sides
-        // come from a zeroed `Storage`, and stopping at a zero would make every
-        // Linux abstract socket - whose name begins with one - compare equal.
-        return std.mem.eql(u8, &x.path, &y.path);
     }
     return false;
 }

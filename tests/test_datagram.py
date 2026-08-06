@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import shutil
 import socket
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 
@@ -14,6 +17,17 @@ from zuvloop import _connect, _zuvloop
 pytestmark = pytest.mark.anyio
 
 Address = tuple[str, int] | str
+
+
+@contextlib.contextmanager
+def unix_socket_dir() -> Iterator[Path]:
+    """pytest's `tmp_path` overruns the length a unix socket path may have, and
+    binding leaves the path behind - closing the socket does not unlink it."""
+    directory = tempfile.mkdtemp()
+    try:
+        yield Path(directory)
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 class Echo(asyncio.DatagramProtocol):
@@ -350,56 +364,55 @@ async def test_reuse_port_is_rejected_where_it_does_not_exist(monkeypatch: pytes
 
 async def test_unix_datagram_endpoints_round_trip() -> None:
     loop = running_loop()
-    # pytest's tmp_path overruns the length a unix socket path may have.
-    directory = tempfile.mkdtemp()
-    server_path = str(Path(directory) / "s")
-    client_path = str(Path(directory) / "c")
-    server, _echo = await loop.create_datagram_endpoint(Echo, local_addr=server_path, family=socket.AF_UNIX)
-    client, protocol = await loop.create_datagram_endpoint(Collector, local_addr=client_path, family=socket.AF_UNIX)
-    try:
-        client.sendto(b"unix", server_path)
-        assert protocol.done is not None
-        assert await asyncio.wait_for(protocol.done, 2) == b"re:unix"
-    finally:
-        client.close()
-        server.close()
+    with unix_socket_dir() as directory:
+        server_path = str(directory / "s")
+        client_path = str(directory / "c")
+        server, _echo = await loop.create_datagram_endpoint(Echo, local_addr=server_path, family=socket.AF_UNIX)
+        client, protocol = await loop.create_datagram_endpoint(Collector, local_addr=client_path, family=socket.AF_UNIX)
+        try:
+            client.sendto(b"unix", server_path)
+            assert protocol.done is not None
+            assert await asyncio.wait_for(protocol.done, 2) == b"re:unix"
+        finally:
+            client.close()
+            server.close()
 
 
 async def test_a_connected_unix_endpoint_accepts_the_path_it_is_connected_to() -> None:
     """`same()` reads the fields that identify the peer, which for AF_UNIX is the
     path - without it a connected endpoint refused the very peer it was given."""
     loop = running_loop()
-    directory = tempfile.mkdtemp()
-    server_path = str(Path(directory) / "s")
-    client_path = str(Path(directory) / "c")
-    server, _echo = await loop.create_datagram_endpoint(Echo, local_addr=server_path, family=socket.AF_UNIX)
-    client, protocol = await loop.create_datagram_endpoint(
-        Collector, local_addr=client_path, remote_addr=server_path, family=socket.AF_UNIX
-    )
-    try:
-        client.sendto(b"unix", server_path)
-        assert protocol.done is not None
-        assert await asyncio.wait_for(protocol.done, 2) == b"re:unix"
-    finally:
-        client.close()
-        server.close()
+    with unix_socket_dir() as directory:
+        server_path = str(directory / "s")
+        client_path = str(directory / "c")
+        server, _echo = await loop.create_datagram_endpoint(Echo, local_addr=server_path, family=socket.AF_UNIX)
+        client, protocol = await loop.create_datagram_endpoint(
+            Collector, local_addr=client_path, remote_addr=server_path, family=socket.AF_UNIX
+        )
+        try:
+            client.sendto(b"unix", server_path)
+            assert protocol.done is not None
+            assert await asyncio.wait_for(protocol.done, 2) == b"re:unix"
+        finally:
+            client.close()
+            server.close()
 
 
 async def test_a_connected_unix_endpoint_rejects_a_different_path() -> None:
     loop = running_loop()
-    directory = tempfile.mkdtemp()
-    server_path = str(Path(directory) / "s")
-    client_path = str(Path(directory) / "c")
-    server, _echo = await loop.create_datagram_endpoint(Echo, local_addr=server_path, family=socket.AF_UNIX)
-    client, _protocol = await loop.create_datagram_endpoint(
-        Collector, local_addr=client_path, remote_addr=server_path, family=socket.AF_UNIX
-    )
-    try:
-        with pytest.raises(ValueError, match="connected"):
-            client.sendto(b"unix", str(Path(directory) / "other"))
-    finally:
-        client.close()
-        server.close()
+    with unix_socket_dir() as directory:
+        server_path = str(directory / "s")
+        client_path = str(directory / "c")
+        server, _echo = await loop.create_datagram_endpoint(Echo, local_addr=server_path, family=socket.AF_UNIX)
+        client, _protocol = await loop.create_datagram_endpoint(
+            Collector, local_addr=client_path, remote_addr=server_path, family=socket.AF_UNIX
+        )
+        try:
+            with pytest.raises(ValueError, match="connected"):
+                client.sendto(b"unix", str(directory / "other"))
+        finally:
+            client.close()
+            server.close()
 
 
 async def test_an_endpoint_from_a_connected_socket_accepts_its_peer() -> None:

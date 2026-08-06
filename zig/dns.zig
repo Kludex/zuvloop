@@ -481,7 +481,7 @@ pub fn getnameinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
     try loopmod.checkClosed(loop.state());
 
     var storage: addr.Storage = .{};
-    try addr.fromPython(0, args[0].?, &storage);
+    _ = try addr.fromPython(0, args[0].?, &storage);
     const flags = try py.asCInt(args[1].?);
 
     const req = try allocRequest(loop, .getnameinfo);
