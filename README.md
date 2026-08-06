@@ -54,7 +54,7 @@ for address literals.
 ## Requirements
 
 - Python 3.14+
-- Linux or macOS
+- Linux, macOS or Windows
 
 ## Installation
 
