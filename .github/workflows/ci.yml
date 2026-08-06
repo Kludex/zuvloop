@@ -90,7 +90,13 @@ jobs:
         run: |
           imported=$(uv run python -c 'import zuvloop._zuvloop as ext; print(ext.__file__)')
           echo "importing $imported"
-          LC_ALL=C grep -qa 'index out of bounds' "$imported"
+          if ! LC_ALL=C grep -qa 'index out of bounds' "$imported"; then
+            echo "::error::$imported carries no bounds-check panic message. Either it is not the" \
+                 "ReleaseSafe build - check where the build step installed it - or the Zig this" \
+                 "workflow pins no longer words that panic the same way, in which case the string" \
+                 "above is what needs updating."
+            exit 1
+          fi
 
       - name: Test
         run: uv run pytest
