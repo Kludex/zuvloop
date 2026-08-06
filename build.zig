@@ -55,7 +55,12 @@ const uv_linux = [_][]const u8{
 };
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    // A wheel is built on whatever machine the job landed on, and without a
+    // baseline default Zig compiles for that machine's CPU: the published
+    // manylinux wheel carried AVX2, BMI and MOVBE, so it would raise SIGILL on
+    // anything older than Haswell. Which instructions it needed depended on the
+    // runner. `-Dcpu=native` is still there for a build meant for one machine.
+    const target = b.standardTargetOptions(.{ .default_target = .{ .cpu_model = .baseline } });
     const optimize = b.standardOptimizeOption(.{});
 
     // hatch-ziglang passes the building interpreter through the environment, so a
