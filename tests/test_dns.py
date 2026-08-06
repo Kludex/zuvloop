@@ -163,10 +163,23 @@ async def test_getnameinfo_handles_ipv6() -> None:
 
 
 async def test_getnameinfo_rejects_a_malformed_address() -> None:
+    """A bad argument stays the caller's mistake; only the host is the resolver's."""
     loop = running_loop()
     with pytest.raises(TypeError, match="must be a tuple"):
         await loop.getnameinfo("127.0.0.1")  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="\\(host, port\\)"):
         await loop.getnameinfo(("127.0.0.1",))
-    with pytest.raises(OSError):
+    with pytest.raises(socket.gaierror):
         await loop.getnameinfo(("not an address", 80))
+
+
+@pytest.mark.parametrize("host", ["localhost", "example.com", "not a host"])
+async def test_getnameinfo_reports_a_name_it_cannot_use_as_the_stdlib_does(host: str) -> None:
+    """libuv refuses to parse a non-literal host and reports `EINVAL`, where the
+    standard library raises `socket.gaierror`."""
+    loop = running_loop()
+    with pytest.raises(socket.gaierror) as mine:
+        await loop.getnameinfo((host, 80))
+    with pytest.raises(socket.gaierror) as theirs:
+        socket.getnameinfo((host, 80), 0)
+    assert mine.value.args == theirs.value.args
