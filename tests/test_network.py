@@ -1340,6 +1340,70 @@ async def test_a_raising_read_callback_closes_the_connection() -> None:
         right.close()
 
 
+async def test_aborting_a_backed_up_transport_reports_no_reason() -> None:
+    """Cancelled writes are not the reason a transport closed.
+
+    Closing the handle completes everything still queued with `ECANCELED`, and
+    treating those as failures overwrites whatever reason was already recorded -
+    so `abort()`, which has none, would arrive as `OSError(89)`.
+    """
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    lost: asyncio.Future[BaseException | None] = loop.create_future()
+
+    class Watcher(asyncio.Protocol):
+        def connection_lost(self, exc: BaseException | None) -> None:
+            lost.set_result(exc)
+
+    try:
+        transport, _protocol = await loop.connect_accepted_socket(Watcher, left)
+        # More than the peer's receive buffer, so writes are still queued -
+        # asserted rather than assumed, since it is the whole point of the test.
+        for _ in range(16):
+            transport.write(b"x" * (1 << 20))
+        await asyncio.sleep(0)
+        assert transport.get_write_buffer_size() > 0
+        transport.abort()
+        assert await asyncio.wait_for(lost, 5) is None
+    finally:
+        right.close()
+
+
+async def test_a_reset_peer_is_reported_as_a_reset_not_a_cancellation() -> None:
+    """The other half of it: a real failure has a reason, and that has to survive.
+
+    The writes the close cancels complete after the one that failed, so without
+    care the last cancellation is what the protocol is told.
+    """
+    loop = running_loop()
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(8)
+    lost: asyncio.Future[BaseException | None] = loop.create_future()
+
+    class Watcher(asyncio.Protocol):
+        def connection_lost(self, exc: BaseException | None) -> None:
+            lost.set_result(exc)
+
+    try:
+        port = listener.getsockname()[1]
+        transport, _protocol = await loop.create_connection(Watcher, "127.0.0.1", port)
+        peer, _address = listener.accept()
+        with peer:
+            # Linger zero, so closing sends a reset rather than a shutdown.
+            peer.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            # Queued first, so the reset has writes of its own to cancel.
+            for _ in range(16):
+                transport.write(b"x" * (1 << 20))
+            assert transport.get_write_buffer_size() > 0
+        reason = await asyncio.wait_for(lost, 5)
+        assert isinstance(reason, ConnectionError)
+    finally:
+        listener.close()
+
+
 async def test_a_protocol_that_closes_from_pause_writing_is_not_resumed() -> None:
     """Giving up in `pause_writing` is a normal way to shed a slow peer.
 

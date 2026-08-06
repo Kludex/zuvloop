@@ -501,7 +501,12 @@ fn onWritten(req: ?*uv.Write, status: c_int) callconv(.c) void {
     alloc.free(@as([*]u8, @ptrCast(wr))[0..wr.total]);
 
     if (status < 0) {
-        forceClose(self, takeUvError(status));
+        // Closing the handle completes everything still queued with ECANCELED,
+        // and so does a sibling request failing. The reason for the close is
+        // already recorded by then, and this is not it. `OPEN` is cleared
+        // immediately before `uv_close` on both teardown paths, so it separates
+        // a real write failure from libuv tidying up after one.
+        if (self.flags & OPEN != 0) forceClose(self, takeUvError(status));
         return;
     }
     maybeResumeProtocol(self);
