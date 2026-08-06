@@ -127,5 +127,13 @@ pub fn same(a: *const posix.sockaddr, b: *const posix.sockaddr) bool {
         // zero as a wildcard, and does not let a wrong zone name the peer.
         return x.scope_id == y.scope_id;
     }
+    if (a.family == AF_UNIX) {
+        const x: *const posix.sockaddr.un = @ptrCast(@alignCast(a));
+        const y: *const posix.sockaddr.un = @ptrCast(@alignCast(b));
+        // The whole padded array rather than up to the first zero: both sides
+        // come from a zeroed `Storage`, and stopping at a zero would make every
+        // Linux abstract socket - whose name begins with one - compare equal.
+        return std.mem.eql(u8, &x.path, &y.path);
+    }
     return false;
 }

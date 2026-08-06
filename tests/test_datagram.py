@@ -365,6 +365,64 @@ async def test_unix_datagram_endpoints_round_trip() -> None:
         server.close()
 
 
+async def test_a_connected_unix_endpoint_accepts_the_path_it_is_connected_to() -> None:
+    """`same()` reads the fields that identify the peer, which for AF_UNIX is the
+    path - without it a connected endpoint refused the very peer it was given."""
+    loop = running_loop()
+    directory = tempfile.mkdtemp()
+    server_path = str(Path(directory) / "s")
+    client_path = str(Path(directory) / "c")
+    server, _echo = await loop.create_datagram_endpoint(Echo, local_addr=server_path, family=socket.AF_UNIX)
+    client, protocol = await loop.create_datagram_endpoint(
+        Collector, local_addr=client_path, remote_addr=server_path, family=socket.AF_UNIX
+    )
+    try:
+        client.sendto(b"unix", server_path)
+        assert protocol.done is not None
+        assert await asyncio.wait_for(protocol.done, 2) == b"re:unix"
+    finally:
+        client.close()
+        server.close()
+
+
+async def test_a_connected_unix_endpoint_rejects_a_different_path() -> None:
+    loop = running_loop()
+    directory = tempfile.mkdtemp()
+    server_path = str(Path(directory) / "s")
+    client_path = str(Path(directory) / "c")
+    server, _echo = await loop.create_datagram_endpoint(Echo, local_addr=server_path, family=socket.AF_UNIX)
+    client, _protocol = await loop.create_datagram_endpoint(
+        Collector, local_addr=client_path, remote_addr=server_path, family=socket.AF_UNIX
+    )
+    try:
+        with pytest.raises(ValueError, match="connected"):
+            client.sendto(b"unix", str(Path(directory) / "other"))
+    finally:
+        client.close()
+        server.close()
+
+
+async def test_an_endpoint_from_a_connected_socket_accepts_its_peer() -> None:
+    """A `sock` that is already connected makes the endpoint connected too, with
+    no `remote_addr` involved."""
+    server, _echo, address = await start_echo()
+    host, port = address[0], address[1]
+    assert isinstance(host, str) and isinstance(port, int)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.connect((host, port))
+    client, protocol = await running_loop().create_datagram_endpoint(Collector, sock=sock)
+    try:
+        client.sendto(b"hello", (host, port))
+        assert protocol.done is not None
+        assert await asyncio.wait_for(protocol.done, 2) == b"re:hello"
+        with pytest.raises(ValueError, match="connected"):
+            client.sendto(b"hello", (host, port + 1))
+    finally:
+        client.close()
+        server.close()
+
+
 async def test_several_datagrams_arrive_in_turn() -> None:
     server, _echo, address = await start_echo()
     client, protocol = await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
