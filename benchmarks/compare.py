@@ -21,7 +21,6 @@ import statistics
 import sys
 import time
 from collections.abc import Callable, Coroutine
-from typing import Any
 
 import uvloop
 
@@ -132,13 +131,15 @@ def bulk(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
     """16 MiB in one direction, with flow control engaged."""
     chunk = b"x" * 65536
     total = 16 << 20
-    sinks: list[Any] = []
+    # `create_connection` returns on the client's connect; the server's protocol
+    # is built when the loop accepts, which need not have happened yet.
+    accepted: asyncio.Future[Sink] = loop.create_future()
 
     class Sink(asyncio.Protocol):
         def __init__(self) -> None:
             self.received = 0
-            self.done = loop.create_future()
-            sinks.append(self)
+            self.done: asyncio.Future[None] = loop.create_future()
+            accepted.set_result(self)
 
         def data_received(self, data: bytes) -> None:
             self.received += len(data)
@@ -149,15 +150,17 @@ def bulk(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
     port = server.sockets[0].getsockname()[1]
 
     async def once() -> None:
-        sinks.clear()
+        nonlocal accepted
+        accepted = loop.create_future()
         transport, _protocol = await loop.create_connection(asyncio.Protocol, "127.0.0.1", port)
+        sink = await accepted
         sent = 0
         while sent < total:
             transport.write(chunk)
             sent += len(chunk)
             if transport.get_write_buffer_size() > (4 << 20):
                 await asyncio.sleep(0)
-        await sinks[0].done
+        await sink.done
         transport.close()
 
     return _driver(loop, once)
@@ -236,7 +239,7 @@ def _noop() -> None:
     pass
 
 
-def _driver(loop: asyncio.AbstractEventLoop, once: Callable[[], Coroutine[Any, Any, None]]) -> Callable[[], None]:
+def _driver(loop: asyncio.AbstractEventLoop, once: Callable[[], Coroutine[None, None, None]]) -> Callable[[], None]:
     return lambda: loop.run_until_complete(once())
 
 
