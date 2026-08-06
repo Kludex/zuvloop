@@ -266,6 +266,14 @@ pub fn asIsize(o: *Object) Error!c.Py_ssize_t {
     return v;
 }
 
+/// Like `asIsize`, but a value too wide saturates rather than raising, so a
+/// caller with its own range to enforce reports that range instead of the width.
+pub fn asIsizeClamped(o: *Object) Error!c.Py_ssize_t {
+    const v = c.PyNumber_AsSsize_t(o, null);
+    if (v == -1 and c.PyErr_Occurred() != null) return Error.Python;
+    return v;
+}
+
 pub fn asCInt(o: *Object) Error!c_int {
     const v = c.PyLong_AsLong(o);
     if (v == -1 and c.PyErr_Occurred() != null) return Error.Python;

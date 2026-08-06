@@ -53,10 +53,14 @@ pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!vo
     if (size < 2) return py.errType("address tuple must be (host, port)");
 
     const host_obj = try tupleItem(address, 0);
-    const port = try py.asCInt(try tupleItem(address, 1));
+    // Read wide and saturating, then narrow: converting to `c_int` first would
+    // refuse a port above `INT_MAX` with an error about the width of the type,
+    // before the range check below ever saw it.
+    const port_value = try py.asIsizeClamped(try tupleItem(address, 1));
     // `uv_ip4_addr` stores `htons(port)`, which truncates rather than complains:
     // a port of 70000 would quietly address 4464. The standard library rejects it.
-    if (port < 0 or port > 65535) return py.errOverflow("port must be 0-65535");
+    if (port_value < 0 or port_value > 65535) return py.errOverflow("port must be 0-65535");
+    const port: c_int = @intCast(port_value);
 
     var host_buf: [256]u8 = undefined;
     const host: [*:0]const u8 = blk: {

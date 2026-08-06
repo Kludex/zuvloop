@@ -375,12 +375,13 @@ async def test_resolving_a_cancelled_waiter_is_a_no_op() -> None:
     assert waiter.cancelled()
 
 
-@pytest.mark.parametrize("port", [-1, 65536, 70000])
+@pytest.mark.parametrize("port", [-1, 65536, 70000, 2**31, 2**63, 2**64])
 async def test_an_out_of_range_port_is_rejected(port: int) -> None:
     """`uv_ip4_addr` stores `htons(port)`, so 70000 would address 4464 instead.
 
     The standard library refuses the address rather than sending it somewhere
-    else, and `socket.sendto` raises `OverflowError` for it.
+    else, and `socket.sendto` raises `OverflowError` for it - for every port out
+    of range, including the ones too wide for the C types it is converted through.
     """
     transport, _protocol = await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
     try:
