@@ -30,8 +30,8 @@ fn tupleItem(t: *py.Object, i: c.Py_ssize_t) py.Error!*py.Object {
 }
 
 /// Fills `out` from `(host, port[, flowinfo, scopeid])` or a filesystem path,
-/// and returns the length that describes it - which for `AF_UNIX` is the only
-/// thing that tells an abstract name from a shorter one padded with zeros.
+/// returning its length - the only thing that tells an abstract `AF_UNIX` name
+/// from a shorter one padded with zeros.
 pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!c_int {
     out.* = .{};
     if (family == AF_UNIX) {
@@ -120,15 +120,12 @@ pub fn toPython(sa: *const posix.sockaddr) py.Error!*py.Object {
 
 /// Whether two addresses name the same endpoint.
 ///
-/// A byte comparison would not do: the platforms disagree about padding, and on
-/// the BSDs `sockaddr_in` carries an `sin_len` that the two sides need not have
-/// filled in the same way. Only the fields that identify the peer are read.
-/// The bytes that name an `AF_UNIX` socket, as the kernel distinguishes them.
-///
-/// An abstract name - Linux only, first byte zero - is exactly as long as the
-/// reported length says, so `\0foo` and `\0foo\0` are different sockets. A
-/// pathname ends at its terminator instead, which matters because the two sides
-/// need not agree on whether the length counts it.
+/// Only the fields that identify the peer are read: a byte comparison would trip
+/// over padding, and over the `sin_len` the BSDs carry.
+/// The bytes that name an `AF_UNIX` socket, as the kernel distinguishes them: an
+/// abstract name is as long as the reported length says, so `\0foo` and `\0foo\0`
+/// differ, while a pathname ends at its terminator - which the two sides need not
+/// agree on counting.
 fn unixName(sa: *const posix.sockaddr, len: c_int) []const u8 {
     const un: *const posix.sockaddr.un = @ptrCast(@alignCast(sa));
     if (len <= UN_BASE) return un.path[0..0];
@@ -149,9 +146,8 @@ pub fn same(a: *const posix.sockaddr, a_len: c_int, b: *const posix.sockaddr, b_
         const x: *const posix.sockaddr.in6 = @ptrCast(@alignCast(a));
         const y: *const posix.sockaddr.in6 = @ptrCast(@alignCast(b));
         if (x.port != y.port or !std.mem.eql(u8, &x.addr, &y.addr)) return false;
-        // asyncio compares the caller's tuple against the resolved one, so it
-        // wants the scope stated; matching that is stricter than treating a
-        // zero as a wildcard, and does not let a wrong zone name the peer.
+        // asyncio compares tuples, so it wants the scope stated rather than
+        // treating a zero as a wildcard.
         return x.scope_id == y.scope_id;
     }
     return false;

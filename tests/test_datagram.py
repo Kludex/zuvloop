@@ -21,8 +21,8 @@ Address = tuple[str, int] | str
 
 @contextlib.contextmanager
 def unix_socket_dir() -> Iterator[Path]:
-    """pytest's `tmp_path` overruns the length a unix socket path may have, and
-    binding leaves the path behind - closing the socket does not unlink it."""
+    """`tmp_path` overruns the length a unix socket path may have, and binding
+    leaves the path behind - closing the socket does not unlink it."""
     directory = tempfile.mkdtemp()
     try:
         yield Path(directory)
@@ -311,9 +311,8 @@ async def test_ipv6_endpoints_round_trip() -> None:
 
 
 async def test_a_connected_v6_endpoint_tells_the_scope_apart() -> None:
-    """The scope is part of what names an IPv6 peer, so a different one names a
-    different peer. asyncio compares the caller's tuple against the resolved
-    address, which states the scope rather than leaving a zero to mean any."""
+    """The scope is part of what names an IPv6 peer, so a different one is a
+    different peer."""
     loop = running_loop()
     try:
         server, _echo = await loop.create_datagram_endpoint(Echo, local_addr=("::1", 0))
@@ -405,8 +404,7 @@ async def test_unix_datagram_endpoints_round_trip() -> None:
 
 
 async def test_a_connected_unix_endpoint_accepts_the_path_it_is_connected_to() -> None:
-    """`same()` reads the fields that identify the peer, which for AF_UNIX is the
-    path - without it a connected endpoint refused the very peer it was given."""
+    """For AF_UNIX the path is what identifies the peer."""
     loop = running_loop()
     with unix_socket_dir() as directory:
         server_path = str(directory / "s")
@@ -442,8 +440,7 @@ async def test_a_connected_unix_endpoint_rejects_a_different_path() -> None:
 
 
 async def test_an_endpoint_from_a_connected_socket_accepts_its_peer() -> None:
-    """A `sock` that is already connected makes the endpoint connected too, with
-    no `remote_addr` involved."""
+    """A connected `sock` makes the endpoint connected, with no `remote_addr`."""
     server, _echo, address = await start_echo()
     host, port = address[0], address[1]
     assert isinstance(host, str) and isinstance(port, int)

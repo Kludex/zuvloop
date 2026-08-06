@@ -374,8 +374,8 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
     if (target) |t| {
         const dest_len = try addr.fromPython(self.family, t, &dest);
         if (self.flags & CONNECTED != 0) {
-            // Naming the address it is already connected to is allowed, as it is
-            // for asyncio; naming a different one is not.
+            // Naming the peer is allowed, as it is for asyncio; naming anything
+            // else is not.
             var peer: addr.Storage = .{};
             var len: c_int = @sizeOf(addr.Storage);
             if (uv.uv_udp_getpeername(self.udp(), peer.ptr(), &len) < 0 or
