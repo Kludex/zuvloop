@@ -90,6 +90,25 @@ async def test_the_environment_and_directory_are_passed_through() -> None:
     assert stdout.rstrip().endswith(b"/tmp")
 
 
+async def test_an_empty_environment_is_not_the_absence_of_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`env={}` asks for a child with no variables; only `env=None` asks for ours."""
+    monkeypatch.setenv("ZUV_INHERITED", "from the parent")
+
+    process = await asyncio.create_subprocess_exec(
+        "/usr/bin/env", stdout=PIPE, stderr=asyncio.subprocess.DEVNULL, env={}
+    )
+    stdout, _stderr = await process.communicate()
+    assert stdout == b""
+    assert process.returncode == 0
+
+    inherited = await asyncio.create_subprocess_exec(
+        "/usr/bin/env", stdout=PIPE, stderr=asyncio.subprocess.DEVNULL, env=None
+    )
+    stdout, _stderr = await inherited.communicate()
+    assert b"ZUV_INHERITED=from the parent" in stdout
+    assert inherited.returncode == 0
+
+
 async def test_the_transport_exposes_the_process() -> None:
     loop = running_loop()
 
