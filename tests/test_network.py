@@ -1329,3 +1329,35 @@ async def test_serve_forever_twice_is_rejected() -> None:
         first.cancel()
         with pytest.raises(asyncio.CancelledError):
             await first
+
+
+async def test_closing_a_server_releases_serve_forever() -> None:
+    """`close()` is the only signal a caller inside `serve_forever` can get."""
+    loop = running_loop()
+    server, _port, _ = await start_echo()
+    task = loop.create_task(server.serve_forever())
+    await asyncio.sleep(0.02)
+    server.close()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+
+
+async def test_cancelling_serve_forever_waits_for_its_connections() -> None:
+    """asyncio closes and waits before re-raising, so "stopped" means stopped."""
+    loop = running_loop()
+    server, port, _ = await start_echo()
+    task = loop.create_task(server.serve_forever())
+    await asyncio.sleep(0.02)
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    await asyncio.sleep(0.02)
+
+    task.cancel()
+    stopping = asyncio.ensure_future(task)
+    await asyncio.sleep(0.05)
+    assert not stopping.done()  # still seeing the connection out
+
+    writer.close()
+    await writer.wait_closed()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(stopping, 5)
+    assert reader is not None

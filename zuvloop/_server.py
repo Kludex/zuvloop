@@ -102,6 +102,13 @@ class Server(asyncio.AbstractServer):
             self._wakeup()
 
     def close(self) -> None:
+        # Whoever is inside `serve_forever` is waiting on this and has no other
+        # way to learn the server has gone.
+        serving_forever = self._serving_forever
+        if serving_forever is not None and not serving_forever.done():
+            self._serving_forever = None
+            serving_forever.cancel()
+
         sockets = self._sockets
         if sockets is None:
             return
@@ -166,9 +173,17 @@ class Server(asyncio.AbstractServer):
         self._serving_forever = self._loop.create_future()
         try:
             await self._serving_forever
+        except asyncio.CancelledError:
+            # Whether the cancellation came from `close()` or from the caller,
+            # the connections still up are the server's to see out before it can
+            # honestly say it has stopped.
+            try:
+                self.close()
+                await self.wait_closed()
+            finally:
+                raise
         finally:
             self._serving_forever = None
-            self.close()
 
     async def __aenter__(self) -> Server:
         return self
