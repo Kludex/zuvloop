@@ -81,6 +81,17 @@ jobs:
           HATCH_ZIG_EXT_SUFFIX="$(uv run python -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')" \
             zig build -Doptimize=ReleaseSafe
 
+      # The job is only a gate if the checked build is the one imported. Were
+      # the install path to move, pytest would quietly exercise the wheel's
+      # `ReleaseFast` binary and this would still be green. `ReleaseSafe` keeps
+      # the panic messages the checks raise; `ReleaseFast` has no checks to
+      # raise them.
+      - name: Confirm the checks are in the binary under test
+        run: |
+          imported=$(uv run python -c 'import zuvloop._zuvloop as ext; print(ext.__file__)')
+          echo "importing $imported"
+          LC_ALL=C grep -qa 'index out of bounds' "$imported"
+
       - name: Test
         run: uv run pytest
 
