@@ -663,6 +663,10 @@ fn maybePauseProtocol(self: *Transport) void {
 }
 
 fn maybeResumeProtocol(self: *Transport) void {
+    // A protocol that closed the transport from inside `pause_writing` - giving
+    // up rather than buffering more - would otherwise be told to resume writing
+    // to a connection that is already gone.
+    if (self.flags & (CLOSING | CONN_LOST) != 0) return;
     if (self.flags & PROTOCOL_PAUSED == 0) return;
     if (bufferedBytes(self) > self.low_water) return;
     self.flags &= ~PROTOCOL_PAUSED;

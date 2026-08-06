@@ -1340,6 +1340,49 @@ async def test_a_raising_read_callback_closes_the_connection() -> None:
         right.close()
 
 
+async def test_a_protocol_that_closes_from_pause_writing_is_not_resumed() -> None:
+    """Giving up in `pause_writing` is a normal way to shed a slow peer.
+
+    The buffered count then drops to zero as the queue is discarded, and a
+    resume computed from that alone tells the protocol to write to a connection
+    that has already gone.
+    """
+    loop = running_loop()
+    loop.set_exception_handler(lambda _loop, _context: None)
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    events: list[str] = []
+    lost: asyncio.Future[None] = loop.create_future()
+
+    class Impatient(asyncio.Protocol):
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            self.transport = transport
+
+        def pause_writing(self) -> None:
+            events.append("pause")
+            self.transport.abort()  # type: ignore[attr-defined]
+
+        def resume_writing(self) -> None:
+            events.append("resume")  # pragma: no cover - the assertion is that this never runs
+
+        def connection_lost(self, exc: BaseException | None) -> None:
+            events.append("lost")
+            lost.set_result(None)
+
+    try:
+        transport, _protocol = await loop.connect_accepted_socket(Impatient, left)
+        transport.set_write_buffer_limits(high=1024, low=512)
+        # One write is already past the high-water mark, so it pauses and the
+        # protocol aborts from inside that call.
+        transport.write(b"z" * (1 << 20))
+        await asyncio.wait_for(lost, 5)
+        assert events == ["pause", "lost"]
+    finally:
+        loop.set_exception_handler(None)
+        right.close()
+
+
 @pytest.mark.anyio(None)
 def test_an_exit_from_a_read_callback_reaches_the_caller(loop: zuvloop.EventLoop) -> None:
     """Asking to leave is the loop's business, not the connection's.
