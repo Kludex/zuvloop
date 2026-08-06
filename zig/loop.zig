@@ -49,6 +49,7 @@ pub const State = struct {
     closed: bool = false,
     stopping: bool = false,
     debug: bool = false,
+    slow_callback_monitoring: bool = false,
     idle_active: bool = false,
     timer_active: bool = false,
     sampler_active: bool = false,
@@ -260,7 +261,7 @@ fn runReady(self: *LoopObject) void {
     while (remaining != 0) : (remaining -= 1) {
         const obj = st.ready.pop() orelse break;
         const h: *Handle = @ptrCast(@alignCast(obj));
-        if (st.debug) {
+        if ((st.debug or st.slow_callback_monitoring) and st.slow_callback_duration < std.math.inf(f64)) {
             const started = uv.uv_hrtime();
             handlemod.run(h);
             const elapsed = @as(f64, @floatFromInt(uv.uv_hrtime() - started)) / 1e9;
@@ -560,6 +561,11 @@ fn getDebug(self_obj: *py.Object) py.Error!*py.Object {
 
 fn setDebug(self_obj: *py.Object, value: *py.Object) py.Error!*py.Object {
     asLoop(self_obj).state().debug = try py.isTrue(value);
+    return py.noneRef();
+}
+
+fn setSlowCallbackMonitoring(self_obj: *py.Object, value: *py.Object) py.Error!*py.Object {
+    asLoop(self_obj).state().slow_callback_monitoring = try py.isTrue(value);
     return py.noneRef();
 }
 
@@ -961,6 +967,7 @@ var methods = [_]c.PyMethodDef{
     py.methodNoArgs("is_closed", isClosed, "Return True once the loop is closed."),
     py.methodNoArgs("get_debug", getDebug, "Return the debug mode flag."),
     py.methodO("set_debug", setDebug, "Set the debug mode flag."),
+    py.methodO("_set_slow_callback_monitoring", setSlowCallbackMonitoring, "Enable slow callback monitoring."),
     py.methodO("_timer_handle_cancelled", timerHandleCancelled, "Compatibility no-op."),
     py.methodNoArgs("_metrics", metrics, "Return a snapshot of loop and libuv counters."),
     py.method("_start_metrics", startMetrics, "Sample loop counters on a native timer."),

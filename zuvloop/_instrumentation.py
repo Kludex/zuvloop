@@ -7,7 +7,7 @@ from typing import Any
 
 from opentelemetry import metrics, trace
 from opentelemetry.metrics import NoOpMeterProvider
-from opentelemetry.trace import Status, StatusCode
+from opentelemetry.trace import NoOpTracerProvider, ProxyTracerProvider, Status, StatusCode
 
 _NAMESPACE = "zuvloop"
 
@@ -50,6 +50,8 @@ class Instrumentation:
     def report_slow_callback(self, handle: object, duration: float) -> None:
         _counter("slow_callbacks", "Callbacks that exceeded slow_callback_duration").add(1)
         _histogram("callback_duration", "Duration of slow callbacks", "s").record(duration)
+        if not tracing_provider_installed():
+            return
 
         # The loop timed the callback with a monotonic clock, so the span is
         # reconstructed backwards from now rather than started after the fact.
@@ -100,6 +102,17 @@ def capture_call_graph(handle: object = None) -> str | None:
     if task is None:
         return None
     return asyncio.format_call_graph(task)
+
+
+def tracing_provider_installed() -> bool:
+    """Whether the application has installed a real tracing provider."""
+    provider = trace.get_tracer_provider()
+    return not isinstance(provider, (NoOpTracerProvider, ProxyTracerProvider))
+
+
+def instrumentation_provider_installed() -> bool:
+    """Whether slow callbacks have somewhere to be exported."""
+    return tracing_provider_installed() or metrics_provider_installed()
 
 
 def metrics_provider_installed() -> bool:

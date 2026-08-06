@@ -1468,6 +1468,21 @@ async def test_every_failure_is_reported_when_a_socket_cannot_be_created(
     assert [str(exc) for exc in caught.value.exceptions] == ["[Errno 24] Too many open files"]
 
 
+@pytest.mark.parametrize("keep_alive", [None, False, True])
+async def test_create_server_honours_keep_alive(keep_alive: bool | None) -> None:
+    """asyncio sets SO_KEEPALIVE on each bound socket; this used to be a TypeError."""
+    loop = running_loop()
+    server = await loop.create_server(Echo, "127.0.0.1", 0, keep_alive=keep_alive)
+    try:
+        raw = socket.socket(fileno=os.dup(server.sockets[0].fileno()))
+        with raw:
+            enabled = raw.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE)
+        assert bool(enabled) is bool(keep_alive)
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
 async def test_binding_a_unix_path_twice_names_the_path() -> None:
     """The check read Linux's EADDRINUSE, so on any other platform it never fired."""
     loop = running_loop()
