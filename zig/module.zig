@@ -18,6 +18,7 @@ var methods = [_]c.PyMethodDef{
 
 fn exec(module: ?*py.Object) callconv(.c) c_int {
     const m = module orelse return -1;
+    py.initConstants() catch return -1;
     handle.register(m) catch return -1;
     loop.register(m) catch return -1;
     datagram.register(m) catch return -1;

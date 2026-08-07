@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import sys
 import tempfile
 from pathlib import Path
 from typing import cast
@@ -12,6 +13,7 @@ from conftest import running_loop
 from zuvloop import _connect, _zuvloop
 
 pytestmark = pytest.mark.anyio
+requires_unix_sockets = pytest.mark.skipif(sys.platform == "win32", reason="Windows has no Unix sockets")
 
 Address = tuple[str, int] | str
 
@@ -232,13 +234,24 @@ async def test_an_unbound_endpoint_can_be_created_from_a_family() -> None:
         server.close()
 
 
-async def test_broadcast_and_reuse_port_are_applied() -> None:
+async def test_broadcast_is_applied() -> None:
     transport, _protocol = await running_loop().create_datagram_endpoint(
-        Collector, local_addr=("127.0.0.1", 0), allow_broadcast=True, reuse_port=True
+        Collector, local_addr=("127.0.0.1", 0), allow_broadcast=True
     )
     try:
         sock = transport.get_extra_info("socket")
         assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST) != 0
+    finally:
+        transport.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SO_REUSEPORT")
+async def test_reuse_port_is_applied() -> None:
+    transport, _protocol = await running_loop().create_datagram_endpoint(
+        Collector, local_addr=("127.0.0.1", 0), reuse_port=True
+    )
+    try:
+        sock = transport.get_extra_info("socket")
         assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT) != 0
     finally:
         transport.close()
@@ -333,6 +346,7 @@ async def test_reuse_port_is_rejected_where_it_does_not_exist(monkeypatch: pytes
         await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0), reuse_port=True)
 
 
+@requires_unix_sockets
 async def test_unix_datagram_endpoints_round_trip() -> None:
     loop = running_loop()
     # pytest's tmp_path overruns the length a unix socket path may have.

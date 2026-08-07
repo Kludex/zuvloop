@@ -7,6 +7,51 @@ const uv = @import("uv.zig");
 pub const Object = c.PyObject;
 pub const Ref = *Object;
 
+/// The interpreter's singletons and exception types, captured through function
+/// calls in `initConstants`. Referencing the DLL's data symbols directly would
+/// need cross-library data imports, which the linker's auto-import machinery
+/// does not fix up for this extension on Windows - every read would fault.
+var none_object: *Object = undefined;
+var true_object: *Object = undefined;
+var false_object: *Object = undefined;
+pub var exc_system_exit: *Object = undefined;
+pub var exc_keyboard_interrupt: *Object = undefined;
+pub var exc_runtime_error: *Object = undefined;
+pub var exc_value_error: *Object = undefined;
+pub var exc_type_error: *Object = undefined;
+pub var exc_overflow_error: *Object = undefined;
+pub var exc_not_implemented_error: *Object = undefined;
+pub var exc_os_error: *Object = undefined;
+pub var exc_process_lookup_error: *Object = undefined;
+
+/// Must run before anything else touches this module; `exec` calls it first.
+/// Re-executing overwrites the previous round's references rather than keeping
+/// them - like every cached global in this module. Skipping the re-fetch would
+/// hold pointers into a finalized interpreter across Py_Finalize/Py_Initialize,
+/// which is a crash; overwriting costs a bounded leak on a same-interpreter
+/// re-import, which is what CPython itself does with its static caches.
+pub fn initConstants() Error!void {
+    none_object = c.Py_GetConstantBorrowed(c.Py_CONSTANT_NONE) orelse return Error.Python;
+    true_object = c.Py_GetConstantBorrowed(c.Py_CONSTANT_TRUE) orelse return Error.Python;
+    false_object = c.Py_GetConstantBorrowed(c.Py_CONSTANT_FALSE) orelse return Error.Python;
+    const builtins = c.PyImport_ImportModule("builtins") orelse return Error.Python;
+    defer decref(builtins);
+    const wanted = .{
+        .{ "SystemExit", &exc_system_exit },
+        .{ "KeyboardInterrupt", &exc_keyboard_interrupt },
+        .{ "RuntimeError", &exc_runtime_error },
+        .{ "ValueError", &exc_value_error },
+        .{ "TypeError", &exc_type_error },
+        .{ "OverflowError", &exc_overflow_error },
+        .{ "NotImplementedError", &exc_not_implemented_error },
+        .{ "OSError", &exc_os_error },
+        .{ "ProcessLookupError", &exc_process_lookup_error },
+    };
+    inline for (wanted) |entry| {
+        entry[1].* = c.PyObject_GetAttrString(builtins, entry[0]) orelse return Error.Python;
+    }
+}
+
 pub inline fn incref(o: anytype) void {
     c.Py_INCREF(@ptrCast(o));
 }
@@ -31,7 +76,7 @@ pub inline fn newref(o: ?*Object) ?*Object {
 }
 
 pub inline fn none() *Object {
-    return @ptrCast(&c._Py_NoneStruct);
+    return none_object;
 }
 
 pub inline fn noneRef() *Object {
@@ -45,7 +90,7 @@ pub inline fn isNone(o: ?*Object) bool {
 }
 
 pub inline fn boolRef(v: bool) *Object {
-    const o: *Object = if (v) @ptrCast(&c._Py_TrueStruct) else @ptrCast(&c._Py_FalseStruct);
+    const o: *Object = if (v) true_object else false_object;
     incref(o);
     return o;
 }
@@ -125,23 +170,23 @@ pub fn err(exc: *Object, comptime msg: [:0]const u8) Error {
 }
 
 pub fn errRuntime(comptime msg: [:0]const u8) Error {
-    return err(@ptrCast(c.PyExc_RuntimeError), msg);
+    return err(exc_runtime_error, msg);
 }
 
 pub fn errValue(comptime msg: [:0]const u8) Error {
-    return err(@ptrCast(c.PyExc_ValueError), msg);
+    return err(exc_value_error, msg);
 }
 
 pub fn errType(comptime msg: [:0]const u8) Error {
-    return err(@ptrCast(c.PyExc_TypeError), msg);
+    return err(exc_type_error, msg);
 }
 
 pub fn errOverflow(comptime msg: [:0]const u8) Error {
-    return err(@ptrCast(c.PyExc_OverflowError), msg);
+    return err(exc_overflow_error, msg);
 }
 
 pub fn errNotImplemented(comptime msg: [:0]const u8) Error {
-    return err(@ptrCast(c.PyExc_NotImplementedError), msg);
+    return err(exc_not_implemented_error, msg);
 }
 
 pub fn errNoMemory() Error {
@@ -155,7 +200,7 @@ pub fn errUv(status: c_int) Error {
     const msg = uv.strerror(status, &buf);
     const args = c.Py_BuildValue("is", uv.toErrno(status), msg.ptr) orelse return Error.Python;
     defer decref(args);
-    c.PyErr_SetObject(@ptrCast(c.PyExc_OSError), args);
+    c.PyErr_SetObject(exc_os_error, args);
     return Error.Python;
 }
 
@@ -261,7 +306,7 @@ pub fn asF64(o: *Object) Error!f64 {
 }
 
 pub fn asIsize(o: *Object) Error!c.Py_ssize_t {
-    const v = c.PyNumber_AsSsize_t(o, @ptrCast(c.PyExc_OverflowError));
+    const v = c.PyNumber_AsSsize_t(o, exc_overflow_error);
     if (v == -1 and c.PyErr_Occurred() != null) return Error.Python;
     return v;
 }

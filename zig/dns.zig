@@ -4,6 +4,7 @@
 //! libuv keeps resolution off the Python thread pool entirely.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const py = @import("py.zig");
 const c = py.c;
 const uv = @import("uv.zig");
@@ -12,6 +13,10 @@ const loopmod = @import("loop.zig");
 const LoopObject = loopmod.LoopObject;
 
 const posix = std.posix;
+
+/// `std.c`'s resolver surface has holes on Windows targets, so the same shapes
+/// come from `win32.zig` there.
+const netdb = if (builtin.os.tag == .windows) @import("win32.zig") else std.c;
 
 /// libc's own parser rather than Zig's: what it accepts has to match what
 /// `getaddrinfo` would have accepted, since the two answer the same calls.
@@ -35,7 +40,7 @@ const Request = struct {
     kind: uv.ReqType,
     prev: ?*Request = null,
     next: ?*Request = null,
-    hints: std.c.addrinfo = std.mem.zeroes(std.c.addrinfo),
+    hints: netdb.addrinfo = std.mem.zeroes(netdb.addrinfo),
     host: [max_host]u8 = undefined,
     service: [32]u8 = undefined,
 
@@ -129,7 +134,7 @@ fn copyZ(dst: []u8, value: *py.Object, what: [:0]const u8) py.Error!?[*:0]const 
         dst[rendered.len] = 0;
         return @ptrCast(dst.ptr);
     } else {
-        _ = c.PyErr_Format(@ptrCast(c.PyExc_TypeError), "%s must be str, bytes, int or None", what.ptr);
+        _ = c.PyErr_Format(py.exc_type_error, "%s must be str, bytes, int or None", what.ptr);
         return py.Error.Python;
     }
     if (@as(usize, @intCast(len)) >= dst.len) return py.errValue("value too long");
@@ -155,15 +160,15 @@ fn settle(future: *py.Object, method: ?*py.Object, value: *py.Object) void {
 /// The member if this platform has it, and a stand-in if it does not: glibc
 /// carries no `EAI_BADHINTS` or `EAI_PROTOCOL`, and the codes are not the same
 /// numbers across platforms either.
-inline fn eai(comptime name: [:0]const u8, comptime fallback: std.c.EAI) std.c.EAI {
-    return if (@hasField(std.c.EAI, name)) @field(std.c.EAI, name) else fallback;
+inline fn eai(comptime name: [:0]const u8, comptime fallback: netdb.EAI) netdb.EAI {
+    return if (@hasField(netdb.EAI, name)) @field(netdb.EAI, name) else fallback;
 }
 
 /// libuv reports resolver failures with codes of its own; `socket.gaierror`
 /// carries the platform's `EAI_*`, which is what callers written against the
 /// standard library compare against. Anything that is not a resolver failure -
 /// a cancellation, an out-of-memory - is left to `OSError`.
-fn resolverError(status: c_int) ?std.c.EAI {
+fn resolverError(status: c_int) ?netdb.EAI {
     return switch (status) {
         uv.EAI_ADDRFAMILY => eai("ADDRFAMILY", .FAIL),
         uv.EAI_AGAIN => .AGAIN,
@@ -185,23 +190,23 @@ fn resolverError(status: c_int) ?std.c.EAI {
 /// Builds the exception the standard library would have raised for `status`.
 fn resolverException(status: c_int) ?*py.Object {
     if (resolverError(status)) |code| {
-        return c.PyObject_CallFunction(gaierror, "is", @intFromEnum(code), std.c.gai_strerror(code));
+        return c.PyObject_CallFunction(gaierror, "is", @intFromEnum(code), netdb.gai_strerror(code));
     }
     var buf: [128]u8 = undefined;
     const msg = uv.strerror(status, &buf);
-    return c.PyObject_CallFunction(@ptrCast(c.PyExc_OSError), "is", uv.toErrno(status), msg.ptr);
+    return c.PyObject_CallFunction(py.exc_os_error, "is", uv.toErrno(status), msg.ptr);
 }
 
 /// Raises `socket.gaierror` for a code the platform's resolver produced itself.
-fn raisePlatformError(code: std.c.EAI) py.Error {
+fn raisePlatformError(code: netdb.EAI) py.Error {
     // `EAI_SYSTEM` says only that the real error is in `errno`, so the standard
     // library reports that instead - `set_gaierror` in CPython's socketmodule
     // hands it straight to `PyErr_SetFromErrno`. Windows has no such code.
-    if (@hasField(std.c.EAI, "SYSTEM") and code == eai("SYSTEM", .FAIL)) {
-        _ = c.PyErr_SetFromErrno(@ptrCast(c.PyExc_OSError));
+    if (@hasField(netdb.EAI, "SYSTEM") and code == eai("SYSTEM", .FAIL)) {
+        _ = c.PyErr_SetFromErrno(py.exc_os_error);
         return py.Error.Python;
     }
-    const exc = c.PyObject_CallFunction(gaierror, "is", @intFromEnum(code), std.c.gai_strerror(code)) orelse
+    const exc = c.PyObject_CallFunction(gaierror, "is", @intFromEnum(code), netdb.gai_strerror(code)) orelse
         return py.Error.Python;
     c.PyErr_SetRaisedException(exc);
     return py.Error.Python;
@@ -241,7 +246,7 @@ fn cachedEnum(cache: []?*py.Object, ctor: ?*py.Object, value: c_int) ?*py.Object
     return member;
 }
 
-fn buildResults(res: ?*std.c.addrinfo) py.Error!*py.Object {
+fn buildResults(res: ?*netdb.addrinfo) py.Error!*py.Object {
     const list = c.PyList_New(0) orelse return py.Error.Python;
     errdefer py.decref(list);
     var node = res;
@@ -272,7 +277,7 @@ fn buildResults(res: ?*std.c.addrinfo) py.Error!*py.Object {
     return list;
 }
 
-fn onAddrInfo(req: ?*uv.GetAddrInfo, status: c_int, res: ?*std.c.addrinfo) callconv(.c) void {
+fn onAddrInfo(req: ?*uv.GetAddrInfo, status: c_int, res: ?*netdb.addrinfo) callconv(.c) void {
     const self: *Request = @ptrCast(@alignCast(uv.getData(req.?)));
     const st = self.state;
     if (loopmod.isReaping(st)) {
@@ -344,9 +349,9 @@ fn onNameInfo(req: ?*uv.GetNameInfo, status: c_int, hostname: ?[*:0]const u8, se
 /// flag beyond the ones that cannot change the answer for a literal. The result
 /// is built through `buildResults`, so it is rendered by the same code as the
 /// libc path rather than by a second implementation of the same formatting.
-fn resolveLiteral(hints: *const std.c.addrinfo, host: ?[*:0]const u8, service: ?[*:0]const u8) ?*py.Object {
+fn resolveLiteral(hints: *const netdb.addrinfo, host: ?[*:0]const u8, service: ?[*:0]const u8) ?*py.Object {
     const flags: u32 = @bitCast(hints.flags);
-    const ignorable: u32 = @bitCast(std.c.AI{ .NUMERICHOST = true, .NUMERICSERV = true, .PASSIVE = true });
+    const ignorable: u32 = @bitCast(netdb.AI{ .NUMERICHOST = true, .NUMERICSERV = true, .PASSIVE = true });
     if (flags & ~ignorable != 0) return null;
 
     const protocol: c_int = switch (hints.socktype) {
@@ -388,7 +393,7 @@ fn resolveLiteral(hints: *const std.c.addrinfo, host: ?[*:0]const u8, service: ?
 }
 
 fn finishLiteral(family: c_int, socktype: c_int, protocol: c_int, sa: *posix.sockaddr) ?*py.Object {
-    var node = std.mem.zeroes(std.c.addrinfo);
+    var node = std.mem.zeroes(netdb.addrinfo);
     node.family = family;
     node.socktype = socktype;
     node.protocol = protocol;
@@ -399,15 +404,15 @@ fn finishLiteral(family: c_int, socktype: c_int, protocol: c_int, sa: *posix.soc
     };
 }
 
-fn resolveNumeric(hints: *const std.c.addrinfo, host: ?[*:0]const u8, service: ?[*:0]const u8) ?*py.Object {
+fn resolveNumeric(hints: *const netdb.addrinfo, host: ?[*:0]const u8, service: ?[*:0]const u8) ?*py.Object {
     if (hints.flags.CANONNAME) return null;
     var numeric = hints.*;
     numeric.flags.NUMERICHOST = true;
     numeric.flags.NUMERICSERV = true;
 
-    var res: ?*std.c.addrinfo = null;
-    if (std.c.getaddrinfo(host, service, &numeric, &res) != @as(std.c.EAI, @enumFromInt(0))) return null;
-    defer if (res) |list| std.c.freeaddrinfo(list);
+    var res: ?*netdb.addrinfo = null;
+    if (netdb.getaddrinfo(host, service, &numeric, &res) != @as(netdb.EAI, @enumFromInt(0))) return null;
+    defer if (res) |list| netdb.freeaddrinfo(list);
     return buildResults(res) catch {
         c.PyErr_Clear();
         return null;
@@ -424,7 +429,7 @@ pub fn getaddrinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
     // nothing is allocated or linked into the loop's outstanding list.
     var host_buf: [max_host]u8 = undefined;
     var service_buf: [32]u8 = undefined;
-    var hints = std.mem.zeroes(std.c.addrinfo);
+    var hints = std.mem.zeroes(netdb.addrinfo);
     const host = try copyZ(&host_buf, args[0].?, "host");
     const service = try copyZ(&service_buf, args[1].?, "port");
     hints.family = try py.asCInt(args[2].?);
@@ -443,10 +448,10 @@ pub fn getaddrinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
     // matching `socket.getaddrinfo` means letting the platform answer rather than
     // picking one. Neither looks anything up, so this cannot block the loop.
     if (host) |name| if (name[0] == 0) {
-        var res: ?*std.c.addrinfo = null;
-        const rc = std.c.getaddrinfo(name, service, &hints, &res);
-        if (rc != @as(std.c.EAI, @enumFromInt(0))) return raisePlatformError(rc);
-        defer if (res) |first| std.c.freeaddrinfo(first);
+        var res: ?*netdb.addrinfo = null;
+        const rc = netdb.getaddrinfo(name, service, &hints, &res);
+        if (rc != @as(netdb.EAI, @enumFromInt(0))) return raisePlatformError(rc);
+        defer if (res) |first| netdb.freeaddrinfo(first);
         const list = try buildResults(res);
         defer py.decref(list);
         const future = c.PyObject_CallMethodNoArgs(@ptrCast(loop), str_create_future) orelse return py.Error.Python;
@@ -484,7 +489,7 @@ pub fn getnameinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
     addr.fromPython(0, args[0].?, &storage) catch |e| {
         // Only the host is the resolver's to report; a bad tuple or port keeps
         // its own exception, and those are not `OSError`.
-        if (c.PyErr_ExceptionMatches(@ptrCast(c.PyExc_OSError)) == 0) return e;
+        if (c.PyErr_ExceptionMatches(py.exc_os_error) == 0) return e;
         c.PyErr_Clear();
         return raisePlatformError(eai("NONAME", .FAIL));
     };

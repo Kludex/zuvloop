@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const win32 = @import("win32.zig");
 
 pub const Loop = opaque {};
 pub const Handle = opaque {};
@@ -30,10 +31,18 @@ pub const GetAddrInfo = opaque {};
 pub const GetNameInfo = opaque {};
 pub const UdpSend = opaque {};
 
-pub const OsSock = c_int;
+pub const is_windows = builtin.os.tag == .windows;
+
+/// `std.c`'s resolver declarations are holes on Windows targets, so the shapes
+/// come from `win32.zig` there.
+pub const AddrInfo = if (is_windows) win32.addrinfo else std.c.addrinfo;
+
+pub const OsSock = if (is_windows) win32.SOCKET else c_int;
 pub const File = c_int;
-pub const OsFd = c_int;
-pub const Pid = std.c.pid_t;
+pub const OsFd = if (is_windows) std.os.windows.HANDLE else c_int;
+pub const Pid = if (is_windows) c_int else std.c.pid_t;
+pub const Uid = if (is_windows) u8 else std.c.uid_t;
+pub const Gid = if (is_windows) u8 else std.c.gid_t;
 
 pub const HandleType = enum(c_uint) {
     unknown = 0,
@@ -86,14 +95,36 @@ pub const UDP_REUSEADDR: c_uint = 4;
 pub const UDP_MMSG_CHUNK: c_uint = 8;
 pub const UDP_MMSG_FREE: c_uint = 16;
 
-pub const Buf = extern struct {
+/// `uv_buf_t` mirrors the platform's scatter-gather element: `iovec` on POSIX
+/// and `WSABUF` on Windows - whose fields are in the opposite order, and whose
+/// length is 32-bit, so no single buffer above 4 GiB can be expressed there.
+pub const Buf = if (is_windows) extern struct {
+    len: c_ulong,
+    base: [*]u8,
+
+    /// The largest single buffer `WSABUF` can carry.
+    pub const max_len: usize = std.math.maxInt(c_ulong);
+
+    pub fn init(base: [*]u8, len: usize) Buf {
+        return .{ .base = base, .len = @intCast(len) };
+    }
+} else extern struct {
     base: [*]u8,
     len: usize,
+
+    pub const max_len: usize = std.math.maxInt(usize);
 
     pub fn init(base: [*]u8, len: usize) Buf {
         return .{ .base = base, .len = len };
     }
 };
+
+/// A descriptor from Python, as the socket `uv_*_open` takes. On Windows that
+/// is the `SOCKET` itself; sign-extending keeps -1 equal to `INVALID_SOCKET`,
+/// so a bad descriptor fails in libuv instead of tripping a cast.
+pub inline fn asSock(fd: c_int) OsSock {
+    return if (is_windows) @bitCast(@as(isize, fd)) else fd;
+}
 
 pub const Metrics = extern struct {
     loop_count: u64,
@@ -115,6 +146,7 @@ pub const StdioFlags = struct {
 pub const ProcessFlags = struct {
     pub const setuid: c_uint = 1;
     pub const setgid: c_uint = 2;
+    pub const windows_verbatim_arguments: c_uint = 4;
     pub const detached: c_uint = 8;
 };
 
@@ -135,14 +167,20 @@ pub const ProcessOptions = extern struct {
     flags: c_uint,
     stdio_count: c_int,
     stdio: ?[*]StdioContainer,
-    uid: std.c.uid_t,
-    gid: std.c.gid_t,
+    uid: Uid,
+    gid: Gid,
 };
 
-/// libuv maps system errors to their negated errno, so the values are derived
-/// per-target rather than hard-coded.
-fn negErrno(comptime e: std.c.E) c_int {
-    return -@as(c_int, @intCast(@intFromEnum(e)));
+/// On POSIX libuv maps system errors to their negated errno, so the values are
+/// derived per-target rather than hard-coded. On Windows no errno corresponds,
+/// and libuv assigns each error a fixed code of its own; those are mirrored
+/// from `uv/errno.h`, which never changes a value once assigned.
+fn negErrno(comptime e: anytype) c_int {
+    return -@as(c_int, @intCast(@intFromEnum(@field(std.c.E, @tagName(e)))));
+}
+
+fn uvErr(comptime windows_code: c_int, comptime e: anytype) c_int {
+    return if (is_windows) windows_code else negErrno(e);
 }
 
 pub const EOF: c_int = -4095;
@@ -162,18 +200,17 @@ pub const EAI_SOCKTYPE: c_int = -3011;
 pub const EAI_BADHINTS: c_int = -3013;
 pub const EAI_PROTOCOL: c_int = -3014;
 
-pub const EAGAIN = negErrno(.AGAIN);
-pub const ECANCELED = negErrno(.CANCELED);
-pub const EINVAL = negErrno(.INVAL);
-pub const ENOSYS = negErrno(.NOSYS);
-pub const EBADF = negErrno(.BADF);
-pub const ENOTCONN = negErrno(.NOTCONN);
-pub const EISCONN = negErrno(.ISCONN);
-pub const EALREADY = negErrno(.ALREADY);
-pub const EINPROGRESS = negErrno(.INPROGRESS);
-pub const EPIPE = negErrno(.PIPE);
-pub const ECONNRESET = negErrno(.CONNRESET);
-pub const ENOBUFS = negErrno(.NOBUFS);
+pub const EAGAIN = uvErr(-4088, .AGAIN);
+pub const ECANCELED = uvErr(-4081, .CANCELED);
+pub const EINVAL = uvErr(-4071, .INVAL);
+pub const ENOSYS = uvErr(-4054, .NOSYS);
+pub const EBADF = uvErr(-4083, .BADF);
+pub const ENOTCONN = uvErr(-4053, .NOTCONN);
+pub const EISCONN = uvErr(-4069, .ISCONN);
+pub const EALREADY = uvErr(-4084, .ALREADY);
+pub const EPIPE = uvErr(-4047, .PIPE);
+pub const ECONNRESET = uvErr(-4077, .CONNRESET);
+pub const ENOBUFS = uvErr(-4060, .NOBUFS);
 pub const EAI_CANCELED: c_int = -3003;
 
 pub const CloseCb = *const fn (?*Handle) callconv(.c) void;
@@ -190,7 +227,7 @@ pub const WriteCb = *const fn (?*Write, c_int) callconv(.c) void;
 pub const ConnectCb = *const fn (?*Connect, c_int) callconv(.c) void;
 pub const ShutdownCb = *const fn (?*Shutdown, c_int) callconv(.c) void;
 pub const ConnectionCb = *const fn (?*Stream, c_int) callconv(.c) void;
-pub const GetAddrInfoCb = *const fn (?*GetAddrInfo, c_int, ?*std.c.addrinfo) callconv(.c) void;
+pub const GetAddrInfoCb = *const fn (?*GetAddrInfo, c_int, ?*AddrInfo) callconv(.c) void;
 pub const GetNameInfoCb = *const fn (?*GetNameInfo, c_int, ?[*:0]const u8, ?[*:0]const u8) callconv(.c) void;
 pub const UdpSendCb = *const fn (?*UdpSend, c_int) callconv(.c) void;
 pub const UdpRecvCb = *const fn (?*Udp, isize, *const Buf, ?*const std.posix.sockaddr, c_uint) callconv(.c) void;
@@ -294,8 +331,8 @@ pub extern fn uv_udp_recv_start(handle: *Udp, alloc_cb: AllocCb, recv_cb: UdpRec
 pub extern fn uv_udp_recv_stop(handle: *Udp) c_int;
 pub extern fn uv_udp_set_broadcast(handle: *Udp, on: c_int) c_int;
 
-pub extern fn uv_getaddrinfo(loop: *Loop, req: *GetAddrInfo, cb: ?GetAddrInfoCb, node: ?[*:0]const u8, service: ?[*:0]const u8, hints: ?*const std.c.addrinfo) c_int;
-pub extern fn uv_freeaddrinfo(ai: ?*std.c.addrinfo) void;
+pub extern fn uv_getaddrinfo(loop: *Loop, req: *GetAddrInfo, cb: ?GetAddrInfoCb, node: ?[*:0]const u8, service: ?[*:0]const u8, hints: ?*const AddrInfo) c_int;
+pub extern fn uv_freeaddrinfo(ai: ?*AddrInfo) void;
 pub extern fn uv_getnameinfo(loop: *Loop, req: *GetNameInfo, cb: ?GetNameInfoCb, addr: *const std.posix.sockaddr, flags: c_int) c_int;
 pub extern fn uv_ip4_addr(ip: [*:0]const u8, port: c_int, addr: *std.posix.sockaddr.in) c_int;
 pub extern fn uv_ip6_addr(ip: [*:0]const u8, port: c_int, addr: *std.posix.sockaddr.in6) c_int;
@@ -342,6 +379,79 @@ pub fn errName(err: c_int, buf: []u8) [:0]const u8 {
 }
 
 /// Maps a libuv status back to the errno the Python layer should raise with.
+///
+/// On Windows the status is one of libuv's own fixed codes, and the value
+/// handed to `OSError` has to be one CPython's exception mapping recognises:
+/// Winsock codes for socket errors - which is what the `socket` module itself
+/// raises there - and the CRT's errno values for the rest.
 pub fn toErrno(err: c_int) c_int {
-    return -err;
+    if (!is_windows) return -err;
+    return switch (err) {
+        -4093 => 7, // E2BIG
+        -4092 => 13, // EACCES
+        -4091 => 10048, // EADDRINUSE -> WSAEADDRINUSE
+        -4090 => 10049, // EADDRNOTAVAIL -> WSAEADDRNOTAVAIL
+        -4089 => 10047, // EAFNOSUPPORT -> WSAEAFNOSUPPORT
+        -4088 => 10035, // EAGAIN -> WSAEWOULDBLOCK
+        -4084 => 10037, // EALREADY -> WSAEALREADY
+        -4083 => 9, // EBADF
+        -4082 => 16, // EBUSY
+        -4081 => 105, // ECANCELED
+        -4080 => 42, // ECHARSET -> EILSEQ
+        -4079 => 10053, // ECONNABORTED -> WSAECONNABORTED
+        -4078 => 10061, // ECONNREFUSED -> WSAECONNREFUSED
+        -4077 => 10054, // ECONNRESET -> WSAECONNRESET
+        -4076 => 10039, // EDESTADDRREQ -> WSAEDESTADDRREQ
+        -4075 => 17, // EEXIST
+        -4074 => 14, // EFAULT
+        -4073 => 10065, // EHOSTUNREACH -> WSAEHOSTUNREACH
+        -4072 => 4, // EINTR
+        -4071 => 22, // EINVAL
+        -4070 => 5, // EIO
+        -4069 => 10056, // EISCONN -> WSAEISCONN
+        -4068 => 21, // EISDIR
+        -4067 => 114, // ELOOP
+        -4066 => 24, // EMFILE
+        -4065 => 10040, // EMSGSIZE -> WSAEMSGSIZE
+        -4064 => 38, // ENAMETOOLONG
+        -4063 => 10050, // ENETDOWN -> WSAENETDOWN
+        -4062 => 10051, // ENETUNREACH -> WSAENETUNREACH
+        -4061 => 23, // ENFILE
+        -4060 => 10055, // ENOBUFS -> WSAENOBUFS
+        -4059 => 19, // ENODEV
+        -4058 => 2, // ENOENT
+        -4057 => 12, // ENOMEM
+        -4056 => 10050, // ENONET -> WSAENETDOWN
+        -4055 => 28, // ENOSPC
+        -4054 => 40, // ENOSYS
+        -4053 => 10057, // ENOTCONN -> WSAENOTCONN
+        -4052 => 20, // ENOTDIR
+        -4051 => 41, // ENOTEMPTY
+        -4050 => 10038, // ENOTSOCK -> WSAENOTSOCK
+        -4049 => 129, // ENOTSUP
+        -4048 => 1, // EPERM
+        -4047 => 32, // EPIPE
+        -4046 => 134, // EPROTO
+        -4045 => 10043, // EPROTONOSUPPORT -> WSAEPROTONOSUPPORT
+        -4044 => 10041, // EPROTOTYPE -> WSAEPROTOTYPE
+        -4043 => 30, // EROFS
+        -4042 => 10058, // ESHUTDOWN -> WSAESHUTDOWN
+        -4041 => 29, // ESPIPE
+        -4040 => 3, // ESRCH
+        -4039 => 10060, // ETIMEDOUT -> WSAETIMEDOUT
+        -4038 => 139, // ETXTBSY
+        -4037 => 18, // EXDEV
+        -4036 => 27, // EFBIG
+        -4035 => 10042, // ENOPROTOOPT -> WSAENOPROTOOPT
+        -4034 => 34, // ERANGE
+        -4033 => 6, // ENXIO
+        -4032 => 31, // EMLINK
+        -4030 => 5, // EREMOTEIO -> EIO
+        -4027 => 42, // EILSEQ
+        -4026 => 132, // EOVERFLOW
+        -4025 => 10044, // ESOCKTNOSUPPORT -> WSAESOCKTNOSUPPORT
+        -4022 => 8, // ENOEXEC
+        -4024 => 120, // ENODATA
+        else => 22, // EINVAL for anything with no Windows analogue
+    };
 }

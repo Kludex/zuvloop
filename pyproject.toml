@@ -18,6 +18,7 @@ classifiers = [
     "Framework :: AsyncIO",
     "Intended Audience :: Developers",
     "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Zig",
@@ -35,9 +36,10 @@ dev = [
     "mypy>=1.13",
     "opentelemetry-sdk>=1.23",
     "pytest>=8.3",
+    "pytest-timeout>=2.3",
     "ruff>=0.8",
 ]
-bench = ["aiohttp", "httptools", "pytest-codspeed>=5", "uvicorn", "uvloop>=0.21"]
+bench = ["aiohttp", "httptools", "pytest-codspeed>=5", "uvicorn", "uvloop>=0.21; sys_platform != 'win32'"]
 docs = ["zensical"]
 
 [tool.hatch.build.targets.wheel]
@@ -117,4 +119,10 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
     "@overload",
+]
+# Windows-only branches: the Windows CI job runs the suite without the
+# coverage gate, so these are asserted by tests there rather than counted here.
+exclude_also = [
+    'if sys\.platform == "win32":',
+    'if sys\.platform != "win32":',
 ]

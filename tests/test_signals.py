@@ -4,6 +4,7 @@ import asyncio
 import gc
 import os
 import signal
+import sys
 import threading
 import weakref
 
@@ -12,7 +13,7 @@ import pytest
 import zuvloop
 from conftest import running_loop
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals throughout")]
 
 
 async def test_a_signal_reaches_its_handler() -> None:

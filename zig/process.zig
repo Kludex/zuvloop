@@ -97,7 +97,7 @@ fn reserve(sequence: *py.Object, what: [:0]const u8) py.Error!usize {
         } else if (c.PyBytes_Check(item) != 0) {
             len = c.PyBytes_Size(item);
         } else {
-            _ = c.PyErr_Format(@ptrCast(c.PyExc_TypeError), "%s must contain str or bytes", what.ptr);
+            _ = c.PyErr_Format(py.exc_type_error, "%s must contain str or bytes", what.ptr);
             return py.Error.Python;
         }
         total += @as(usize, @intCast(len)) + 1;
@@ -197,7 +197,7 @@ fn getReturncode(self_obj: *py.Object) py.Error!*py.Object {
 fn sendSignal(self_obj: *py.Object, signum: *py.Object) py.Error!*py.Object {
     const self = asProcess(self_obj);
     if (self.flags & EXITED != 0) {
-        c.PyErr_SetString(@ptrCast(c.PyExc_ProcessLookupError), "process already exited");
+        c.PyErr_SetString(py.exc_process_lookup_error, "process already exited");
         return py.Error.Python;
     }
     try py.errUvIfNeg(uv.uv_process_kill(self.handle(), try py.asCInt(signum)));
@@ -342,11 +342,11 @@ var methods = [_]c.PyMethodDef{
 };
 
 var slots = [_]c.PyType_Slot{
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @constCast(@ptrCast(&dealloc)) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @constCast(@ptrCast(&traverse)) },
-    .{ .slot = c.Py_tp_clear, .pfunc = @constCast(@ptrCast(&clear_)) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
+    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&clear_)) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
-    .{ .slot = c.Py_tp_doc, .pfunc = @constCast(@ptrCast("A libuv-backed child process.")) },
+    .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("A libuv-backed child process.")) },
     .{ .slot = 0, .pfunc = null },
 };
 
@@ -368,4 +368,5 @@ pub fn register(module: *py.Object) py.Error!void {
     if (c.PyModule_AddIntConstant(module, "PROCESS_DETACHED", uv.ProcessFlags.detached) < 0) return py.Error.Python;
     if (c.PyModule_AddIntConstant(module, "PROCESS_SETUID", uv.ProcessFlags.setuid) < 0) return py.Error.Python;
     if (c.PyModule_AddIntConstant(module, "PROCESS_SETGID", uv.ProcessFlags.setgid) < 0) return py.Error.Python;
+    if (c.PyModule_AddIntConstant(module, "PROCESS_WINDOWS_VERBATIM", uv.ProcessFlags.windows_verbatim_arguments) < 0) return py.Error.Python;
 }

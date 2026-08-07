@@ -194,7 +194,7 @@ fn onRecv(
     if (flags & uv.UDP_PARTIAL != 0) {
         // The datagram did not fit and the tail is gone; reporting the prefix
         // would be worse than reporting the loss.
-        const exc = c.PyObject_CallFunction(@ptrCast(c.PyExc_OSError), "s", "datagram truncated") orelse {
+        const exc = c.PyObject_CallFunction(py.exc_os_error, "s", "datagram truncated") orelse {
             c.PyErr_Clear();
             return;
         };
@@ -382,6 +382,10 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
     var view: c.Py_buffer = undefined;
     if (c.PyObject_GetBuffer(args[0].?, &view, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
     defer c.PyBuffer_Release(&view);
+    if (@as(usize, @intCast(view.len)) > uv.Buf.max_len) {
+        c.PyBuffer_Release(&view);
+        return py.errOverflow("a single datagram above 4 GiB cannot be sent on Windows");
+    }
     const buf = uv.Buf{ .base = @ptrCast(view.buf), .len = @intCast(view.len) };
 
     if (self.write_buffer_size == 0) {
@@ -578,12 +582,12 @@ pub fn makeDatagram(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*p
     self.flags |= OPEN;
     uv.setData(self.udp(), self);
 
-    if (uv.uv_udp_open(self.udp(), fd) < 0) {
+    if (uv.uv_udp_open(self.udp(), uv.asSock(fd)) < 0) {
         // libuv never took the descriptor, so the caller still owns it.
         self.flags &= ~OPEN;
         py.incref(obj);
         uv.uv_close(uv.asHandle(self.udp()), onOpenFailed);
-        return py.errUv(uv.uv_udp_open(self.udp(), fd));
+        return py.errUv(uv.uv_udp_open(self.udp(), uv.asSock(fd)));
     }
 
     py.incref(obj);
@@ -686,11 +690,11 @@ var methods = [_]c.PyMethodDef{
 };
 
 var slots = [_]c.PyType_Slot{
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @constCast(@ptrCast(&dealloc)) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @constCast(@ptrCast(&traverse)) },
-    .{ .slot = c.Py_tp_clear, .pfunc = @constCast(@ptrCast(&clear_)) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
+    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&clear_)) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
-    .{ .slot = c.Py_tp_doc, .pfunc = @constCast(@ptrCast("A libuv-backed datagram transport.")) },
+    .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("A libuv-backed datagram transport.")) },
     .{ .slot = 0, .pfunc = null },
 };
 
