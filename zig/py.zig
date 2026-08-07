@@ -24,13 +24,13 @@ pub var exc_not_implemented_error: *Object = undefined;
 pub var exc_os_error: *Object = undefined;
 pub var exc_process_lookup_error: *Object = undefined;
 
-var constants_ready = false;
-
 /// Must run before anything else touches this module; `exec` calls it first.
-/// Re-executing the module - a fresh import after a `sys.modules` purge - must
-/// not re-fetch, or every round would leak one reference per cached object.
+/// Re-executing overwrites the previous round's references rather than keeping
+/// them - like every cached global in this module. Skipping the re-fetch would
+/// hold pointers into a finalized interpreter across Py_Finalize/Py_Initialize,
+/// which is a crash; overwriting costs a bounded leak on a same-interpreter
+/// re-import, which is what CPython itself does with its static caches.
 pub fn initConstants() Error!void {
-    if (constants_ready) return;
     none_object = c.Py_GetConstantBorrowed(c.Py_CONSTANT_NONE) orelse return Error.Python;
     true_object = c.Py_GetConstantBorrowed(c.Py_CONSTANT_TRUE) orelse return Error.Python;
     false_object = c.Py_GetConstantBorrowed(c.Py_CONSTANT_FALSE) orelse return Error.Python;
@@ -50,7 +50,6 @@ pub fn initConstants() Error!void {
     inline for (wanted) |entry| {
         entry[1].* = c.PyObject_GetAttrString(builtins, entry[0]) orelse return Error.Python;
     }
-    constants_ready = true;
 }
 
 pub inline fn incref(o: anytype) void {
