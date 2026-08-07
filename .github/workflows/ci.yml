@@ -32,10 +32,6 @@ jobs:
           enable-cache: true
 
       - name: Install
-        env:
-          # Temporary while bringing Windows up: keep the safety checks in the
-          # binary under test so a fault traps with a message.
-          HATCH_ZIG_BUILD_MODE: ${{ runner.os == 'Windows' && 'ReleaseSafe' || 'ReleaseFast' }}
         run: uv sync --python ${{ matrix.python-version }} --group dev --group bench
 
       # Temporary while bringing Windows up: stages the crash seen in pytest.
