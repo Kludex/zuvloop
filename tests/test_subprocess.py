@@ -316,3 +316,44 @@ async def test_a_raw_descriptor_number_can_be_handed_to_the_child(tmp_path: Path
     finally:
         os.close(fd)
     assert target.read_bytes() == b"by number\n"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="the posix_spawn path is Linux-only")
+async def test_linux_spawns_without_copying_the_parent() -> None:
+    """The child must arrive by CLONE_VFORK, not a page-table-copying fork.
+
+    The posix_spawn path falls back to fork silently, so every other test in
+    this file passes either way; only tracing the syscall proves the fast path
+    is still taken. Requires strace and a glibc with addclosefrom_np (2.34).
+    """
+    import shutil
+
+    if shutil.which("strace") is None:
+        pytest.skip("strace is not installed")
+    libc = os.confstr("CS_GNU_LIBC_VERSION")
+    if libc is not None and libc.startswith("glibc"):
+        if tuple(int(part) for part in libc.split()[1].split(".")[:2]) < (2, 34):
+            pytest.skip("posix_spawn_file_actions_addclosefrom_np needs glibc 2.34")
+    else:
+        pytest.skip("not glibc, the posix_spawn path falls back to fork")
+
+    child = (
+        "import asyncio, zuvloop\n"
+        "async def main():\n"
+        "    p = await asyncio.create_subprocess_exec('/bin/true')\n"
+        "    await p.wait()\n"
+        "asyncio.run(main(), loop_factory=zuvloop.new_event_loop)\n"
+    )
+    traced = await asyncio.create_subprocess_exec(
+        "strace",
+        "-f",
+        "-e",
+        "trace=clone,clone3",
+        sys.executable,
+        "-c",
+        child,
+        stderr=PIPE,
+    )
+    _stdout, stderr = await asyncio.wait_for(traced.communicate(), 60)
+    assert traced.returncode == 0, stderr.decode()
+    assert b"CLONE_VFORK" in stderr, stderr.decode()

@@ -34,6 +34,12 @@ jobs:
       - name: Install
         run: uv sync --python ${{ matrix.python-version }} --group dev --group bench
 
+      # The posix_spawn path falls back to fork silently, so only the strace
+      # test can catch it regressing; make sure that test never skips here.
+      - name: Install strace
+        if: runner.os == 'Linux'
+        run: which strace || (sudo apt-get update -qq && sudo apt-get install -y -qq strace)
+
       # A wheel is compiled on whichever machine the job landed on, so a build
       # that defaults to that machine's CPU bakes its instruction set into a
       # published artifact - which then raises SIGILL on an older one. Asserted
