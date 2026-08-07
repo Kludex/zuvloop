@@ -382,6 +382,10 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
     var view: c.Py_buffer = undefined;
     if (c.PyObject_GetBuffer(args[0].?, &view, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
     defer c.PyBuffer_Release(&view);
+    if (@as(usize, @intCast(view.len)) > uv.Buf.max_len) {
+        c.PyBuffer_Release(&view);
+        return py.errOverflow("a single datagram above 4 GiB cannot be sent on Windows");
+    }
     const buf = uv.Buf{ .base = @ptrCast(view.buf), .len = @intCast(view.len) };
 
     if (self.write_buffer_size == 0) {

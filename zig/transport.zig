@@ -331,7 +331,10 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
         if (target) |t| {
             defer py.decref(t);
             if (c.PyObject_GetBuffer(t, &self.view, c.PyBUF_WRITABLE) == 0) {
-                buf.* = .{ .base = @ptrCast(self.view.buf), .len = @intCast(self.view.len) };
+                // A short read is always allowed, so a buffer wider than the
+                // platform's vector element is simply not filled past it.
+                const avail = @min(@as(usize, @intCast(self.view.len)), uv.Buf.max_len);
+                buf.* = uv.Buf.init(@ptrCast(self.view.buf), avail);
                 return;
             }
         }
@@ -896,6 +899,10 @@ fn write(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
     const self = asTransport(self_obj);
     var views = [_]c.Py_buffer{undefined};
     if (c.PyObject_GetBuffer(data, &views[0], c.PyBUF_SIMPLE) < 0) return py.Error.Python;
+    if (@as(usize, @intCast(views[0].len)) > uv.Buf.max_len) {
+        c.PyBuffer_Release(&views[0]);
+        return py.errOverflow("a single buffer above 4 GiB cannot be written on Windows");
+    }
     if (views[0].len == 0) {
         c.PyBuffer_Release(&views[0]);
         return py.noneRef();
@@ -931,6 +938,10 @@ fn writelines(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
         if (acquired < 0) {
             releaseViews(views[0..filled]);
             return py.Error.Python;
+        }
+        if (@as(usize, @intCast(views[filled].len)) > uv.Buf.max_len) {
+            releaseViews(views[0 .. filled + 1]);
+            return py.errOverflow("a single buffer above 4 GiB cannot be written on Windows");
         }
         bufs[filled] = .{ .base = @ptrCast(views[filled].buf), .len = @intCast(views[filled].len) };
     }

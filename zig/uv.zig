@@ -102,12 +102,17 @@ pub const Buf = if (is_windows) extern struct {
     len: c_ulong,
     base: [*]u8,
 
+    /// The largest single buffer `WSABUF` can carry.
+    pub const max_len: usize = std.math.maxInt(c_ulong);
+
     pub fn init(base: [*]u8, len: usize) Buf {
         return .{ .base = base, .len = @intCast(len) };
     }
 } else extern struct {
     base: [*]u8,
     len: usize,
+
+    pub const max_len: usize = std.math.maxInt(usize);
 
     pub fn init(base: [*]u8, len: usize) Buf {
         return .{ .base = base, .len = len };
