@@ -451,6 +451,9 @@ async def test_a_drain_returns_when_the_high_water_mark_is_zero() -> None:
         await server.wait_closed()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; nothing pauses the protocol"
+)
 async def test_a_write_from_pause_writing_is_still_sent() -> None:
     """Flushing runs protocol code, which may write again while the flush is in
     progress. Those writes have to be picked up rather than left behind."""
@@ -505,6 +508,9 @@ async def test_a_write_from_pause_writing_is_still_sent() -> None:
         await server.wait_closed()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; nothing pauses the protocol"
+)
 async def test_pause_writing_cannot_overfill_a_reentrant_batch() -> None:
     """A full batch flush calls Python before the outer write claims its slot."""
     loop = running_loop()
@@ -1638,6 +1644,9 @@ async def test_a_reset_peer_is_reported_as_a_reset_not_a_cancellation() -> None:
         listener.close()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; nothing pauses the protocol"
+)
 async def test_a_protocol_that_closes_from_pause_writing_is_not_resumed() -> None:
     """Giving up in `pause_writing` is a normal way to shed a slow peer.
 
@@ -1709,9 +1718,13 @@ async def test_create_server_honours_keep_alive(keep_alive: bool | None) -> None
     loop = running_loop()
     server = await loop.create_server(Echo, "127.0.0.1", 0, keep_alive=keep_alive)
     try:
-        raw = socket.socket(fileno=os.dup(server.sockets[0].fileno()))
-        with raw:
+        # A view rather than a duplicate: os.dup works on CRT descriptors,
+        # which a Windows SOCKET is not.
+        raw = socket.socket(fileno=server.sockets[0].fileno())
+        try:
             enabled = raw.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE)
+        finally:
+            raw.detach()
         assert bool(enabled) is bool(keep_alive)
     finally:
         server.close()

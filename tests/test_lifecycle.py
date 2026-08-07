@@ -219,6 +219,9 @@ def test_pending_flush_does_not_retain_an_abandoned_loop() -> None:
     assert transport_ref() is None
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; none is left in flight"
+)
 def test_in_flight_write_does_not_retain_an_abandoned_loop() -> None:
     loop = zuvloop.new_event_loop()
     left, right = socket.socketpair()
