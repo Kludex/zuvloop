@@ -80,11 +80,9 @@ fn get(st: *State, loop: *LoopObject, fd: c_int) py.Error!*Poller {
     if (st.pollers.get(fd)) |p| return p;
 
     const size = poll_offset + uv.uv_handle_size(.poll);
-    std.debug.print("[poller] get fd={d} size={d}\n", .{ fd, size });
     const raw = alloc.alignedAlloc(u8, .@"8", size) catch return py.errNoMemory();
     const self: *Poller = @ptrCast(raw.ptr);
     self.* = .{ .loop = loop, .fd = fd };
-    std.debug.print("[poller] allocated at {*}\n", .{self});
     // Python hands over a socket's `fileno()`, which on Windows is the
     // `SOCKET` itself rather than a CRT descriptor - the plain `uv_poll_init`
     // would run it through `_get_osfhandle` and reject it.
@@ -92,7 +90,6 @@ fn get(st: *State, loop: *LoopObject, fd: c_int) py.Error!*Poller {
         uv.uv_poll_init_socket(st.uvloop, self.uvPoll(), @intCast(fd))
     else
         uv.uv_poll_init(st.uvloop, self.uvPoll(), fd);
-    std.debug.print("[poller] uv_poll_init status={d}\n", .{status});
     if (status < 0) {
         alloc.free(raw);
         return py.errUv(status);
@@ -102,7 +99,6 @@ fn get(st: *State, loop: *LoopObject, fd: c_int) py.Error!*Poller {
         uv.uv_close(uv.asHandle(self.uvPoll()), onClosed);
         return py.errNoMemory();
     };
-    std.debug.print("[poller] registered\n", .{});
     return self;
 }
 
@@ -117,10 +113,7 @@ fn rearm(st: *State, self: *Poller) py.Error!void {
         destroy(self);
         return;
     }
-    std.debug.print("[poller] uv_poll_start events={d}\n", .{events});
-    const started = uv.uv_poll_start(self.uvPoll(), events, onPoll);
-    std.debug.print("[poller] uv_poll_start status={d}\n", .{started});
-    try py.errUvIfNeg(started);
+    try py.errUvIfNeg(uv.uv_poll_start(self.uvPoll(), events, onPoll));
 }
 
 fn add(self_obj: *py.Object, args: []const ?*py.Object, comptime writer: bool) py.Error!*py.Object {
@@ -131,9 +124,7 @@ fn add(self_obj: *py.Object, args: []const ?*py.Object, comptime writer: bool) p
     const fd = try py.asFd(args[0].?);
 
     const poller = try get(st, loop, fd);
-    std.debug.print("[poller] creating handle\n", .{});
     const h = try handlemod.create(handlemod.handle_type.?, self_obj, args[1].?, args[2..], null);
-    std.debug.print("[poller] handle created\n", .{});
     const slot = if (writer) &poller.writer else &poller.reader;
     // The slot has to name the new handle before the old one is released; see
     // `destroy`. The `defer` also covers the error path out of `rearm`.
