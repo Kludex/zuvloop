@@ -55,6 +55,6 @@ pub extern "c" fn getaddrinfo(
     service: ?[*:0]const u8,
     hints: ?*const addrinfo,
     res: *?*addrinfo,
-) EAI;
-pub extern "c" fn freeaddrinfo(ai: ?*addrinfo) void;
-pub extern "c" fn getsockopt(sock: SOCKET, level: c_int, optname: c_int, optval: [*]u8, optlen: *c_int) c_int;
+) callconv(.winapi) EAI;
+pub extern "c" fn freeaddrinfo(ai: ?*addrinfo) callconv(.winapi) void;
+pub extern "c" fn getsockopt(sock: SOCKET, level: c_int, optname: c_int, optval: [*]u8, optlen: *c_int) callconv(.winapi) c_int;

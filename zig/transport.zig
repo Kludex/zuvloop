@@ -690,7 +690,12 @@ fn onShutdown(req: ?*uv.Shutdown, status: c_int) callconv(.c) void {
 /// where the write side of a stream is not a file descriptor to `shutdown()`.
 /// Only called with an empty write queue, so libuv has nothing to drain first.
 fn shutdownWrite(self: *Transport) void {
-    const raw = alloc.alignedAlloc(u8, .@"16", uv.uv_req_size(.shutdown)) catch return;
+    // Failing to allocate closes the connection outright: skipping the
+    // half-close silently would leave the peer waiting for an EOF forever.
+    const raw = alloc.alignedAlloc(u8, .@"16", uv.uv_req_size(.shutdown)) catch {
+        forceClose(self, null);
+        return;
+    };
     const req: *uv.Shutdown = @ptrCast(raw.ptr);
     if (uv.uv_shutdown(req, self.stream(), onShutdown) < 0) alloc.free(raw);
 }

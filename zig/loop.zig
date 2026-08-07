@@ -889,7 +889,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
         if (needs_close) {
             st.ready.deinit();
             st.timers.deinit();
-            }
+        }
         // The flush list owns one Python reference per transport regardless of
         // how the loop reached deallocation, including partially completed
         // explicit close paths.

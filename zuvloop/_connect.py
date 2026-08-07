@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, cast
 
 from . import _zuvloop
-from ._process import Popen
+from ._process import _SIGKILL, Popen
 from ._server import Server
 from ._sockets import SocketOperations
 
@@ -25,15 +25,12 @@ _SSLArg = ssl_module.SSLContext | bool | None
 
 if sys.platform == "win32":
     # No `AF_UNIX` in the socket module there; a value no family equals keeps
-    # the comparisons meaningful. `SIGKILL` is also missing, but libuv accepts
-    # the number and turns it into `TerminateProcess`.
+    # the comparisons meaningful.
     _AF_UNIX = -1
     _SHELL = (os.environ.get("ComSpec", "cmd.exe"), "/c")
-    _SIGKILL = 9
 else:
     _AF_UNIX = socket.AF_UNIX
     _SHELL = ("/bin/sh", "-c")
-    _SIGKILL = signal.SIGKILL
 
 
 class ConnectionOperations(SocketOperations):
@@ -951,13 +948,22 @@ class _SubprocessTransport(base_subprocess.BaseSubprocessTransport):
         bufsize: int,
         **kwargs: Any,
     ) -> None:
+        windows_verbatim = False
         argv = [*_SHELL, args] if shell else [os.fsdecode(arg) for arg in args]
+        if sys.platform == "win32":
+            if shell:
+                # cmd.exe has quoting rules of its own: hand it the command
+                # exactly as CPython's subprocess would have written it, with
+                # libuv's MSVCRT-style argv escaping switched off.
+                argv = [*_SHELL, f'"{os.fsdecode(args)}"']
+                windows_verbatim = True
         self._proc = Popen(  # type: ignore[assignment]  # a Popen-shaped object, not a Popen
             cast("ConnectionOperations", self._loop),
             argv,
             stdin=stdin,
             stdout=stdout,
             stderr=stderr,
+            windows_verbatim=windows_verbatim,
             on_exit=self._process_exited,
             **kwargs,
         )

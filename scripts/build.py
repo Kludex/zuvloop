@@ -17,6 +17,12 @@ def main() -> int:
         f"-Dext-suffix={sysconfig.get_config_var('EXT_SUFFIX')}",
         f"-Doptimize={'Debug' if '--debug' in sys.argv else 'ReleaseFast'}",
     ]
+    if sys.platform == "win32":
+        abiflags = sysconfig.get_config_var("abiflags") or ""
+        command += [
+            f"-Dpython-libdir={Path(sys.base_prefix) / 'libs'}",
+            f"-Dpython-lib=python{sys.version_info.major}{sys.version_info.minor}{abiflags}",
+        ]
     return subprocess.run(command, cwd=ROOT).returncode
 
 

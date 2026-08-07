@@ -141,6 +141,7 @@ pub const StdioFlags = struct {
 pub const ProcessFlags = struct {
     pub const setuid: c_uint = 1;
     pub const setgid: c_uint = 2;
+    pub const windows_verbatim_arguments: c_uint = 4;
     pub const detached: c_uint = 8;
 };
 
@@ -445,7 +446,7 @@ pub fn toErrno(err: c_int) c_int {
         -4026 => 132, // EOVERFLOW
         -4025 => 10044, // ESOCKTNOSUPPORT -> WSAESOCKTNOSUPPORT
         -4022 => 8, // ENOEXEC
-        -9919 => 120, // ENODATA
+        -4024 => 120, // ENODATA
         else => 22, // EINVAL for anything with no Windows analogue
     };
 }

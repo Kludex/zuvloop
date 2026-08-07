@@ -45,6 +45,7 @@ class Popen:
         stdout: Any = None,
         stderr: Any = None,
         start_new_session: bool = False,
+        windows_verbatim: bool = False,
         startupinfo: None = None,
         creationflags: int = 0,
         pass_fds: Sequence[int] = (),
@@ -77,7 +78,9 @@ class Popen:
                     # is what closes it from here.
                     setattr(self, _NAMES[index], open(mine, "wb" if index == 0 else "rb", 0))
 
-            flags = _zuvloop.PROCESS_DETACHED if start_new_session else 0
+            flags = (_zuvloop.PROCESS_DETACHED if start_new_session else 0) | (
+                _zuvloop.PROCESS_WINDOWS_VERBATIM if windows_verbatim else 0
+            )
             self._handle = loop._spawn_process(
                 executable or args[0],
                 args,

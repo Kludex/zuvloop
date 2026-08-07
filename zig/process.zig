@@ -342,11 +342,11 @@ var methods = [_]c.PyMethodDef{
 };
 
 var slots = [_]c.PyType_Slot{
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @constCast(@ptrCast(&dealloc)) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @constCast(@ptrCast(&traverse)) },
-    .{ .slot = c.Py_tp_clear, .pfunc = @constCast(@ptrCast(&clear_)) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
+    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&clear_)) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
-    .{ .slot = c.Py_tp_doc, .pfunc = @constCast(@ptrCast("A libuv-backed child process.")) },
+    .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("A libuv-backed child process.")) },
     .{ .slot = 0, .pfunc = null },
 };
 
@@ -368,4 +368,5 @@ pub fn register(module: *py.Object) py.Error!void {
     if (c.PyModule_AddIntConstant(module, "PROCESS_DETACHED", uv.ProcessFlags.detached) < 0) return py.Error.Python;
     if (c.PyModule_AddIntConstant(module, "PROCESS_SETUID", uv.ProcessFlags.setuid) < 0) return py.Error.Python;
     if (c.PyModule_AddIntConstant(module, "PROCESS_SETGID", uv.ProcessFlags.setgid) < 0) return py.Error.Python;
+    if (c.PyModule_AddIntConstant(module, "PROCESS_WINDOWS_VERBATIM", uv.ProcessFlags.windows_verbatim_arguments) < 0) return py.Error.Python;
 }
