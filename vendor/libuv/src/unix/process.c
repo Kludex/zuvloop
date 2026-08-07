@@ -35,13 +35,15 @@
 #include <fcntl.h>
 #include <poll.h>
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
 # include <spawn.h>
 # include <paths.h>
+# include <dlfcn.h>
+#endif
+#if defined(__APPLE__)
 # include <sys/kauth.h>
 # include <sys/types.h>
 # include <sys/sysctl.h>
-# include <dlfcn.h>
 # include <crt_externs.h>
 # include <xlocale.h>
 # define environ (*_NSGetEnviron())
@@ -417,10 +419,11 @@ static void uv__process_child_init(const uv_process_options_t* options,
 }
 
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
 typedef struct uv__posix_spawn_fncs_tag {
   struct {
     int (*addchdir_np)(const posix_spawn_file_actions_t *, const char *);
+    int (*addclosefrom_np)(posix_spawn_file_actions_t *, int);
   } file_actions;
 } uv__posix_spawn_fncs_t;
 
@@ -434,10 +437,18 @@ static void uv__spawn_init_posix_spawn_fncs(void) {
   /* Try to locate all non-portable functions at runtime */
   posix_spawn_fncs.file_actions.addchdir_np =
     dlsym(RTLD_DEFAULT, "posix_spawn_file_actions_addchdir_np");
+  posix_spawn_fncs.file_actions.addclosefrom_np =
+    dlsym(RTLD_DEFAULT, "posix_spawn_file_actions_addclosefrom_np");
 }
 
 
 static void uv__spawn_init_can_use_setsid(void) {
+#if defined(__linux__)
+#ifdef POSIX_SPAWN_SETSID
+  posix_spawn_can_use_setsid = 1;
+#endif
+}
+#else /* defined(__APPLE__) */
   int which[] = {CTL_KERN, KERN_OSRELEASE};
   unsigned major;
   unsigned minor;
@@ -455,6 +466,7 @@ static void uv__spawn_init_can_use_setsid(void) {
 
   posix_spawn_can_use_setsid = (major >= 19);  /* macOS Catalina */
 }
+#endif
 
 
 static void uv__spawn_init_posix_spawn(void) {
@@ -500,9 +512,11 @@ static int uv__spawn_set_posix_spawn_attrs(
    *    spawn-sigmask in attributes
    * 4) POSIX_SPAWN_SETSID: Make the process a new session leader if a detached
    *    session was requested. */
-  flags = POSIX_SPAWN_CLOEXEC_DEFAULT |
-          POSIX_SPAWN_SETSIGDEF |
+  flags = POSIX_SPAWN_SETSIGDEF |
           POSIX_SPAWN_SETSIGMASK;
+#if defined(__APPLE__)
+  flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
+#endif
   if (options->flags & UV_PROCESS_DETACHED) {
     /* If running on a version of macOS where this flag is not supported,
      * revert back to the fork/exec flow. Otherwise posix_spawn will
@@ -567,6 +581,17 @@ static int uv__spawn_set_posix_spawn_file_actions(
       goto error;
   }
 
+#if !defined(__APPLE__)
+  /* Without the Apple-only POSIX_SPAWN_CLOEXEC_DEFAULT, closing everything
+   * the child should not see needs posix_spawn_file_actions_addclosefrom_np
+   * (glibc 2.34). Requiring it up front also pins a glibc new enough (2.29)
+   * that adddup2 with equal descriptors clears FD_CLOEXEC in the child. */
+  if (posix_spawn_fncs->file_actions.addclosefrom_np == NULL) {
+    err = ENOSYS;
+    goto error;
+  }
+#endif
+
   /* Do not return ENOSYS after this point, as we may mutate pipes. */
 
   /* First duplicate low numbered fds, since it's not safe to duplicate them,
@@ -619,7 +644,11 @@ static int uv__spawn_set_posix_spawn_file_actions(
     }
 
     if (fd == use_fd)
+#if defined(__APPLE__)
         err = posix_spawn_file_actions_addinherit_np(actions, fd);
+#else
+        err = posix_spawn_file_actions_adddup2(actions, fd, fd);
+#endif
     else
         err = posix_spawn_file_actions_adddup2(actions, use_fd, fd);
     assert(err != ENOSYS);
@@ -650,6 +679,14 @@ static int uv__spawn_set_posix_spawn_file_actions(
     if (err != 0)
       goto error;
   }
+
+#if !defined(__APPLE__)
+  /* Everything past the child's stdio is closed here, standing in for the
+   * Apple-only POSIX_SPAWN_CLOEXEC_DEFAULT set in the spawn attributes. */
+  err = posix_spawn_fncs->file_actions.addclosefrom_np(actions, stdio_count);
+  if (err != 0)
+    goto error;
+#endif
 
   return 0;
 
@@ -869,7 +906,7 @@ static int uv__spawn_and_init_child(
   int exec_errorno;
   ssize_t r;
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__linux__)
   uv_once(&posix_spawn_init_once, uv__spawn_init_posix_spawn);
 
   /* Special child process spawn case for macOS Big Sur (11.0) onwards
@@ -884,7 +921,15 @@ static int uv__spawn_and_init_child(
    * exhibit the problem. This block implements the forking and preparation
    * logic with posix_spawn and its related primitives. It also takes advantage of
    * the macOS extension POSIX_SPAWN_CLOEXEC_DEFAULT that makes impossible to
-   * leak descriptors to the child process. */
+   * leak descriptors to the child process.
+   *
+   * On Linux, glibc's posix_spawn is clone(CLONE_VM|CLONE_VFORK): no
+   * page-table copy, so spawning stays flat as the parent's heap grows,
+   * where fork reaches milliseconds per call from a multi-hundred-MiB
+   * parent. Descriptor hygiene comes from
+   * posix_spawn_file_actions_addclosefrom_np (glibc 2.34, resolved with
+   * dlsym) standing in for POSIX_SPAWN_CLOEXEC_DEFAULT; a libc without it
+   * falls back to fork below. */
   err = uv__spawn_and_init_child_posix_spawn(options,
                                              stdio_count,
                                              pipes,
