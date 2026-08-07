@@ -58,7 +58,14 @@ jobs:
           uv run ruff format --check
 
       - name: Type check
+        if: runner.os != 'Windows'
         run: uv run mypy
+
+      # The POSIX-only test modules reach for signals and socket families
+      # typeshed rightly refuses on Windows; the library itself has to hold.
+      - name: Type check
+        if: runner.os == 'Windows'
+        run: uv run mypy zuvloop
 
       - name: Test
         if: runner.os != 'Windows'
