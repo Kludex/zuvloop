@@ -77,11 +77,21 @@ jobs:
 
       # Windows runs with structured skips - no Unix sockets, POSIX signals or
       # pipe descriptors - so the 100% branch gate cannot hold there. The POSIX
-      # jobs keep enforcing it. The faulthandler timeout names any test that
-      # hangs, which on a platform this young is the likeliest failure shape.
+      # jobs keep enforcing it. One pytest process per file, with a hard test
+      # timeout: a hang - the likeliest failure shape on a platform this young -
+      # then costs one file's run and a stack dump, not the whole job.
       - name: Test
         if: runner.os == 'Windows'
-        run: uv run pytest --faulthandler-timeout=120
+        shell: bash
+        run: |
+          rc=0
+          for f in tests/test_*.py; do
+            ec=0
+            uv run pytest "$f" --timeout=120 --timeout-method=thread || ec=$?
+            # 5 is "no tests collected": the POSIX-only modules on Windows.
+            if [ "$ec" -ne 0 ] && [ "$ec" -ne 5 ]; then rc=1; fi
+          done
+          exit $rc
 
 
   # The Zig layer reaches libc through `std.c`, whose shape differs per target,

@@ -36,6 +36,7 @@ dev = [
     "mypy>=1.13",
     "opentelemetry-sdk>=1.23",
     "pytest>=8.3",
+    "pytest-timeout>=2.3",
     "ruff>=0.8",
 ]
 bench = ["aiohttp", "httptools", "pytest-codspeed>=5", "uvicorn", "uvloop>=0.21; sys_platform != 'win32'"]
