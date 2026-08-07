@@ -113,12 +113,22 @@ class Popen:
 def _stdio(child_fds: list[int], pass_fds: Sequence[int]) -> list[int]:
     """The descriptors the child inherits, each at the index it will hold there.
 
-    A `pass_fds` entry keeps its own number, so it sits at that index and the gap
-    before it is left closed. The three standard streams have already claimed
-    0, 1 and 2, and a `pass_fds` naming one of those is what it already is.
+    A `pass_fds` entry keeps its own number, so it sits at that index. The gap
+    before it is left unconfigured, which closes it in practice: descriptors
+    carry close-on-exec by default since PEP 446, and one deliberately made
+    inheritable still reaches the child - as it does under every `uv_spawn`
+    user, libuv having no per-descriptor close hook. The three standard streams
+    have already claimed 0, 1 and 2, and a `pass_fds` naming one of those is
+    what it already is.
     """
     stdio = list(child_fds)
     for fd in sorted(set(pass_fds)):
+        if fd < 0:
+            raise ValueError("bad value(s) in pass_fds")
+        # An absent descriptor cannot be inherited; failing here beats the
+        # child dying with exit code 127. It also bounds the padding below,
+        # since an open descriptor sits under RLIMIT_NOFILE.
+        os.fstat(fd)
         if fd < len(stdio):
             continue
         stdio.extend([-1] * (fd - len(stdio)))

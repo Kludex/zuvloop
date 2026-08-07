@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import os
 import signal
 import sys
@@ -301,7 +302,8 @@ async def test_a_descriptor_not_passed_does_not_reach_the_child() -> None:
         process = await asyncio.create_subprocess_exec(sys.executable, "-c", WRITE_TO_FD, str(write_fd), stderr=PIPE)
         _stdout, stderr = await process.communicate()
         assert process.returncode == 1
-        assert b"Bad file descriptor" in stderr
+        # The number rather than the phrase, which libc translates per locale.
+        assert f"[Errno {errno.EBADF}]".encode() in stderr
     finally:
         os.close(read_fd)
         os.close(write_fd)
@@ -327,10 +329,26 @@ async def test_pass_fds_leaves_the_gap_before_it_closed() -> None:
         )
         _stdout, stderr = await process.communicate()
         assert process.returncode == 1
-        assert b"Bad file descriptor" in stderr
+        assert f"[Errno {errno.EBADF}]".encode() in stderr
     finally:
         for fd in (read_fd, write_fd, spare_read, spare_write):
             os.close(fd)
+
+
+async def test_pass_fds_rejects_a_negative_descriptor() -> None:
+    with pytest.raises(ValueError, match="pass_fds"):
+        await asyncio.create_subprocess_exec("/bin/echo", pass_fds=(-1,))
+
+
+async def test_pass_fds_rejects_a_descriptor_that_is_not_open() -> None:
+    """Caught in the parent, where the error can name the descriptor - the
+    alternative is the child dying with libuv's bare exit code 127.
+
+    A high number rather than a freshly closed one: the spawn opens pipes of
+    its own first, and the lowest-free rule would hand a just-closed number
+    straight back to one of them."""
+    with pytest.raises(OSError):
+        await asyncio.create_subprocess_exec("/bin/echo", pass_fds=(4096,))
 
 
 async def test_signalling_an_exited_child_is_a_no_op() -> None:
