@@ -263,8 +263,8 @@ fn callInContext(self: *Transport, callback: ?*py.Object, arg: ?*py.Object, comp
 
 fn isExit(exc: *py.Object) bool {
     const kind: *py.Object = @ptrCast(py.typeOf(exc));
-    return c.PyType_IsSubtype(@ptrCast(kind), @ptrCast(c.PyExc_SystemExit)) != 0 or
-        c.PyType_IsSubtype(@ptrCast(kind), @ptrCast(c.PyExc_KeyboardInterrupt)) != 0;
+    return c.PyType_IsSubtype(@ptrCast(kind), @ptrCast(py.exc_system_exit)) != 0 or
+        c.PyType_IsSubtype(@ptrCast(kind), @ptrCast(py.exc_keyboard_interrupt)) != 0;
 }
 
 fn reportError(self: *Transport, comptime message: [:0]const u8) void {

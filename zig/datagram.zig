@@ -194,7 +194,7 @@ fn onRecv(
     if (flags & uv.UDP_PARTIAL != 0) {
         // The datagram did not fit and the tail is gone; reporting the prefix
         // would be worse than reporting the loss.
-        const exc = c.PyObject_CallFunction(@ptrCast(c.PyExc_OSError), "s", "datagram truncated") orelse {
+        const exc = c.PyObject_CallFunction(py.exc_os_error, "s", "datagram truncated") orelse {
             c.PyErr_Clear();
             return;
         };

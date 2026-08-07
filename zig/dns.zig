@@ -134,7 +134,7 @@ fn copyZ(dst: []u8, value: *py.Object, what: [:0]const u8) py.Error!?[*:0]const 
         dst[rendered.len] = 0;
         return @ptrCast(dst.ptr);
     } else {
-        _ = c.PyErr_Format(@ptrCast(c.PyExc_TypeError), "%s must be str, bytes, int or None", what.ptr);
+        _ = c.PyErr_Format(py.exc_type_error, "%s must be str, bytes, int or None", what.ptr);
         return py.Error.Python;
     }
     if (@as(usize, @intCast(len)) >= dst.len) return py.errValue("value too long");
@@ -194,7 +194,7 @@ fn resolverException(status: c_int) ?*py.Object {
     }
     var buf: [128]u8 = undefined;
     const msg = uv.strerror(status, &buf);
-    return c.PyObject_CallFunction(@ptrCast(c.PyExc_OSError), "is", uv.toErrno(status), msg.ptr);
+    return c.PyObject_CallFunction(py.exc_os_error, "is", uv.toErrno(status), msg.ptr);
 }
 
 /// Raises `socket.gaierror` for a code the platform's resolver produced itself.
@@ -203,7 +203,7 @@ fn raisePlatformError(code: netdb.EAI) py.Error {
     // library reports that instead - `set_gaierror` in CPython's socketmodule
     // hands it straight to `PyErr_SetFromErrno`. Windows has no such code.
     if (@hasField(netdb.EAI, "SYSTEM") and code == eai("SYSTEM", .FAIL)) {
-        _ = c.PyErr_SetFromErrno(@ptrCast(c.PyExc_OSError));
+        _ = c.PyErr_SetFromErrno(py.exc_os_error);
         return py.Error.Python;
     }
     const exc = c.PyObject_CallFunction(gaierror, "is", @intFromEnum(code), netdb.gai_strerror(code)) orelse
@@ -489,7 +489,7 @@ pub fn getnameinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
     addr.fromPython(0, args[0].?, &storage) catch |e| {
         // Only the host is the resolver's to report; a bad tuple or port keeps
         // its own exception, and those are not `OSError`.
-        if (c.PyErr_ExceptionMatches(@ptrCast(c.PyExc_OSError)) == 0) return e;
+        if (c.PyErr_ExceptionMatches(py.exc_os_error) == 0) return e;
         c.PyErr_Clear();
         return raisePlatformError(eai("NONAME", .FAIL));
     };

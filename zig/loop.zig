@@ -356,8 +356,8 @@ pub fn handleCallbackError(h: *Handle) void {
         return;
     };
     const self = asLoop(loop_obj);
-    if (c.PyErr_ExceptionMatches(@ptrCast(c.PyExc_SystemExit)) != 0 or
-        c.PyErr_ExceptionMatches(@ptrCast(c.PyExc_KeyboardInterrupt)) != 0)
+    if (c.PyErr_ExceptionMatches(py.exc_system_exit) != 0 or
+        c.PyErr_ExceptionMatches(py.exc_keyboard_interrupt) != 0)
     {
         captureFatal(self);
         return;
@@ -852,7 +852,7 @@ fn newLoop(tp: ?*c.PyTypeObject, _: ?*py.Object, _: ?*py.Object) callconv(.c) ?*
         alloc.free(words);
         alloc.destroy(st);
         py.decref(obj);
-        c.PyErr_SetString(@ptrCast(c.PyExc_RuntimeError), "failed to initialise the libuv loop");
+        c.PyErr_SetString(py.exc_runtime_error, "failed to initialise the libuv loop");
         return null;
     }
     // Only publish State after the loop itself is valid: dealloc may safely
@@ -866,7 +866,7 @@ fn newLoop(tp: ?*c.PyTypeObject, _: ?*py.Object, _: ?*py.Object) callconv(.c) ?*
         uv.uv_prepare_init(st.uvloop, st.flusher) < 0)
     {
         py.decref(obj);
-        c.PyErr_SetString(@ptrCast(c.PyExc_RuntimeError), "failed to initialise the libuv loop");
+        c.PyErr_SetString(py.exc_runtime_error, "failed to initialise the libuv loop");
         return null;
     }
     _ = uv.uv_loop_configure(st.uvloop, .metrics_idle_time);

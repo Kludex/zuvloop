@@ -97,7 +97,7 @@ fn reserve(sequence: *py.Object, what: [:0]const u8) py.Error!usize {
         } else if (c.PyBytes_Check(item) != 0) {
             len = c.PyBytes_Size(item);
         } else {
-            _ = c.PyErr_Format(@ptrCast(c.PyExc_TypeError), "%s must contain str or bytes", what.ptr);
+            _ = c.PyErr_Format(py.exc_type_error, "%s must contain str or bytes", what.ptr);
             return py.Error.Python;
         }
         total += @as(usize, @intCast(len)) + 1;
@@ -197,7 +197,7 @@ fn getReturncode(self_obj: *py.Object) py.Error!*py.Object {
 fn sendSignal(self_obj: *py.Object, signum: *py.Object) py.Error!*py.Object {
     const self = asProcess(self_obj);
     if (self.flags & EXITED != 0) {
-        c.PyErr_SetString(@ptrCast(c.PyExc_ProcessLookupError), "process already exited");
+        c.PyErr_SetString(py.exc_process_lookup_error, "process already exited");
         return py.Error.Python;
     }
     try py.errUvIfNeg(uv.uv_process_kill(self.handle(), try py.asCInt(signum)));
