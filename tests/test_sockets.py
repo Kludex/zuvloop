@@ -74,6 +74,7 @@ async def test_sock_recv_into() -> None:
         right.close()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows loopback buffering absorbs the payload before the reset")
 async def test_a_retried_operation_reports_errors() -> None:
     """The peer disappears while the send is parked waiting for writability."""
     loop = running_loop()

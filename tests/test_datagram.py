@@ -234,6 +234,7 @@ async def test_an_unbound_endpoint_can_be_created_from_a_family() -> None:
         server.close()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SO_REUSEPORT")
 async def test_broadcast_and_reuse_port_are_applied() -> None:
     transport, _protocol = await running_loop().create_datagram_endpoint(
         Collector, local_addr=("127.0.0.1", 0), allow_broadcast=True, reuse_port=True

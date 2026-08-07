@@ -11,7 +11,10 @@ import pytest
 
 from conftest import running_loop
 
-pytestmark = pytest.mark.anyio
+pytestmark = [
+    pytest.mark.anyio,
+    pytest.mark.skipif(sys.platform == "win32", reason="POSIX binaries and signal exit codes throughout"),
+]
 
 PIPE = asyncio.subprocess.PIPE
 

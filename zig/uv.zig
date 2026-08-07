@@ -95,7 +95,17 @@ pub const UDP_REUSEADDR: c_uint = 4;
 pub const UDP_MMSG_CHUNK: c_uint = 8;
 pub const UDP_MMSG_FREE: c_uint = 16;
 
-pub const Buf = extern struct {
+/// `uv_buf_t` mirrors the platform's scatter-gather element: `iovec` on POSIX
+/// and `WSABUF` on Windows - whose fields are in the opposite order, and whose
+/// length is 32-bit, so no single buffer above 4 GiB can be expressed there.
+pub const Buf = if (is_windows) extern struct {
+    len: c_ulong,
+    base: [*]u8,
+
+    pub fn init(base: [*]u8, len: usize) Buf {
+        return .{ .base = base, .len = @intCast(len) };
+    }
+} else extern struct {
     base: [*]u8,
     len: usize,
 
@@ -103,6 +113,13 @@ pub const Buf = extern struct {
         return .{ .base = base, .len = len };
     }
 };
+
+/// A descriptor from Python, as the socket `uv_*_open` takes. On Windows that
+/// is the `SOCKET` itself; sign-extending keeps -1 equal to `INVALID_SOCKET`,
+/// so a bad descriptor fails in libuv instead of tripping a cast.
+pub inline fn asSock(fd: c_int) OsSock {
+    return if (is_windows) @bitCast(@as(isize, fd)) else fd;
+}
 
 pub const Metrics = extern struct {
     loop_count: u64,

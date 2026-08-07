@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
+import sys
 from typing import IO
 
 import pytest
@@ -10,7 +11,10 @@ import pytest
 import zuvloop
 from conftest import running_loop
 
-pytestmark = pytest.mark.anyio
+pytestmark = [
+    pytest.mark.anyio,
+    pytest.mark.skipif(sys.platform == "win32", reason="POSIX pipe descriptors throughout"),
+]
 
 
 class Reader(asyncio.Protocol):

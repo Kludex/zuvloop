@@ -42,18 +42,12 @@ pub const EAI = enum(c_int) {
     _,
 };
 
+/// The exact string CPython's socket module uses for every resolver failure
+/// on Windows; `gaierror` messages have to match what the standard library
+/// would have raised.
 pub fn gai_strerror(code: EAI) [*:0]const u8 {
-    return switch (code) {
-        .MEMORY => "A memory allocation failure occurred",
-        .BADFLAGS => "An invalid value was provided for the ai_flags member",
-        .SOCKTYPE => "The ai_socktype member is not supported",
-        .FAMILY => "The ai_family member is not supported",
-        .SERVICE => "The servname parameter is not supported for ai_socktype",
-        .NONAME => "The name does not resolve for the supplied parameters",
-        .AGAIN => "A temporary failure in name resolution occurred",
-        .FAIL => "A nonrecoverable failure in name resolution occurred",
-        else => "getaddrinfo failed",
-    };
+    _ = code;
+    return "getaddrinfo failed";
 }
 
 pub extern "c" fn getaddrinfo(

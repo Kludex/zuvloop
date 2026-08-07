@@ -302,7 +302,7 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
     // this needs would be paid per read for nothing.
     if (self.flags & BUFFERED == 0 and self.read_bytes == null and self.read_size <= copy_threshold) {
         if (loopmod.scratchBuffer(st)) |scratch| {
-            buf.* = .{ .base = scratch, .len = self.read_size };
+            buf.* = uv.Buf.init(scratch, self.read_size);
             return;
         }
     }
@@ -345,7 +345,7 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
         // Small traffic: read into the shared buffer and allocate exactly what
         // arrived. A null read_bytes marks this path for onRead.
         if (loopmod.scratchBuffer(st)) |scratch| {
-            buf.* = .{ .base = scratch, .len = self.read_size };
+            buf.* = uv.Buf.init(scratch, self.read_size);
             return;
         }
     }
@@ -356,7 +356,7 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
         return;
     };
     self.read_bytes = target;
-    buf.* = .{ .base = @ptrCast(c.PyBytes_AsString(target)), .len = self.read_size };
+    buf.* = uv.Buf.init(@ptrCast(c.PyBytes_AsString(target)), self.read_size);
 }
 
 fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) void {
@@ -579,7 +579,7 @@ fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!vo
                 return;
             }
             pending[0].base += remaining;
-            pending[0].len -= remaining;
+            pending[0].len -= @intCast(remaining);
         } else if (written < 0 and written != uv.EAGAIN) {
             releaseViews(views);
             forceClose(self, takeUvError(written));
@@ -1091,7 +1091,7 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
     uv.setData(self.stream(), self);
 
     const open_status = if (kind == KIND_TCP)
-        uv.uv_tcp_open(@ptrCast(self.stream()), @intCast(fd))
+        uv.uv_tcp_open(@ptrCast(self.stream()), uv.asSock(fd))
     else
         uv.uv_pipe_open(@ptrCast(self.stream()), fd);
     if (open_status < 0) {

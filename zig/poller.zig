@@ -87,7 +87,7 @@ fn get(st: *State, loop: *LoopObject, fd: c_int) py.Error!*Poller {
     // `SOCKET` itself rather than a CRT descriptor - the plain `uv_poll_init`
     // would run it through `_get_osfhandle` and reject it.
     const status = if (uv.is_windows)
-        uv.uv_poll_init_socket(st.uvloop, self.uvPoll(), @intCast(fd))
+        uv.uv_poll_init_socket(st.uvloop, self.uvPoll(), uv.asSock(fd))
     else
         uv.uv_poll_init(st.uvloop, self.uvPoll(), fd);
     if (status < 0) {
