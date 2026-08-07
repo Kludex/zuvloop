@@ -20,6 +20,10 @@ a.setblocking(False)
 b.setblocking(False)
 print("stage 3: socketpair", a.fileno(), b.fileno(), flush=True)
 
+print("stage 3a: time() ->", loop.time(), flush=True)
+print("stage 3b: returned None:", loop._timer_handle_cancelled(None), flush=True)
+print("stage 3c: returned False:", loop.is_closed(), flush=True)
+
 loop.add_reader(a.fileno(), print)
 print("stage 4: add_reader", flush=True)
 
