@@ -5,6 +5,7 @@ import contextlib
 import errno
 import os
 import signal
+import socket
 import sys
 from asyncio.subprocess import Process
 from pathlib import Path
@@ -333,6 +334,21 @@ async def test_pass_fds_leaves_the_gap_before_it_closed() -> None:
     finally:
         for fd in (read_fd, write_fd, spare_read, spare_write):
             os.close(fd)
+
+
+async def test_pass_fds_leaves_the_blocking_state_alone() -> None:
+    """libuv's posix_spawn path marks every stdio slot blocking, on the file
+    description the parent still shares - flipping an asyncio-managed socket
+    to blocking would hang the loop that owns it."""
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    try:
+        process = await asyncio.create_subprocess_exec("/bin/echo", pass_fds=(left.fileno(),))
+        assert await process.wait() == 0
+        assert os.get_blocking(left.fileno()) is False
+    finally:
+        left.close()
+        right.close()
 
 
 async def test_pass_fds_rejects_a_negative_descriptor() -> None:

@@ -69,6 +69,11 @@ class Popen:
         self.returncode: int | None = None
         self._on_exit = on_exit
 
+        # libuv's posix_spawn path - macOS - marks every stdio slot blocking,
+        # and the flag lives on the file description the parent shares with the
+        # child. subprocess leaves passed descriptors untouched, so what the
+        # caller had is put back once the spawn is done.
+        blocking = {fd: os.get_blocking(fd) for fd in pass_fds}
         child_fds: list[int] = []
         try:
             for index, request in enumerate((stdin, stdout, stderr)):
@@ -103,6 +108,8 @@ class Popen:
             for fd in child_fds:
                 if fd >= 0:
                     os.close(fd)
+            for fd, was_blocking in blocking.items():
+                os.set_blocking(fd, was_blocking)
 
         self.pid: int = self._handle.get_pid()
 
