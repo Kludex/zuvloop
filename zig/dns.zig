@@ -481,7 +481,7 @@ pub fn getnameinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
     try loopmod.checkClosed(loop.state());
 
     var storage: addr.Storage = .{};
-    addr.fromPython(0, args[0].?, &storage) catch |e| {
+    _ = addr.fromPython(0, args[0].?, &storage) catch |e| {
         // Only the host is the resolver's to report; a bad tuple or port keeps
         // its own exception, and those are not `OSError`.
         if (c.PyErr_ExceptionMatches(@ptrCast(c.PyExc_OSError)) == 0) return e;

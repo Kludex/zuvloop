@@ -288,6 +288,7 @@ pub extern fn uv_udp_open(handle: *Udp, sock: OsSock) c_int;
 pub extern fn uv_udp_bind(handle: *Udp, addr: *const std.posix.sockaddr, flags: c_uint) c_int;
 pub extern fn uv_udp_connect(handle: *Udp, addr: ?*const std.posix.sockaddr) c_int;
 pub extern fn uv_udp_getsockname(handle: *const Udp, name: *std.posix.sockaddr, namelen: *c_int) c_int;
+pub extern fn uv_udp_getpeername(handle: *const Udp, name: *std.posix.sockaddr, namelen: *c_int) c_int;
 pub extern fn uv_udp_send(req: *UdpSend, handle: *Udp, bufs: [*]const Buf, nbufs: c_uint, addr: ?*const std.posix.sockaddr, cb: UdpSendCb) c_int;
 pub extern fn uv_udp_try_send(handle: *Udp, bufs: [*]const Buf, nbufs: c_uint, addr: ?*const std.posix.sockaddr) c_int;
 pub extern fn uv_udp_recv_start(handle: *Udp, alloc_cb: AllocCb, recv_cb: UdpRecvCb) c_int;
