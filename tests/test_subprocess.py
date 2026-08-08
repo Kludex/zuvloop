@@ -337,9 +337,7 @@ async def test_pass_fds_leaves_the_gap_before_it_closed() -> None:
 
 
 async def test_pass_fds_leaves_the_blocking_state_alone() -> None:
-    """libuv's posix_spawn path marks every stdio slot blocking, on the file
-    description the parent still shares - flipping an asyncio-managed socket
-    to blocking would hang the loop that owns it."""
+    """A passed asyncio socket flipped to blocking would hang its own loop."""
     left, right = socket.socketpair()
     left.setblocking(False)
     try:
@@ -357,17 +355,14 @@ async def test_pass_fds_rejects_a_negative_descriptor() -> None:
 
 
 async def test_pass_fds_rejects_a_descriptor_that_is_not_open() -> None:
-    """Caught in the parent, where the error can name the descriptor - the
-    alternative is the child dying with libuv's bare exit code 127."""
+    """In the parent, where the error can name the descriptor."""
     with pytest.raises(OSError) as caught:
         await asyncio.create_subprocess_exec("/bin/echo", pass_fds=(4096,))
     assert caught.value.errno == errno.EBADF
 
 
 async def test_pass_fds_rejects_a_freshly_closed_descriptor() -> None:
-    """The check runs before any pipe of ours is opened. Later it would be too
-    late: the lowest-free rule hands a just-closed number to the next pipe, and
-    the child would inherit that pipe end where the error should have been."""
+    """Checked before the spawn's own pipes can reuse the number."""
     read_fd, write_fd = os.pipe()
     os.close(write_fd)
     try:

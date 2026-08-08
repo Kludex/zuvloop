@@ -50,13 +50,8 @@ class Popen:
         if unsupported:
             name = next(iter(unsupported))
             raise ValueError(f"{name} is not supported by zuvloop's subprocess transport")
-        # Before any stream of ours is opened: the lowest-free rule would hand
-        # a freshly closed number in `pass_fds` straight to one of the pipes
-        # below, and the child would silently inherit that pipe end instead of
-        # the error. Failing here also beats the child dying with libuv's bare
-        # exit code 127, and bounds the stdio padding, since an open descriptor
-        # sits under RLIMIT_NOFILE. Materialized first, so a one-shot iterable
-        # is not spent by the validation.
+        # Before any pipe of ours can reuse a freshly closed number, and in the
+        # parent, where the error beats the child's bare exit code 127.
         pass_fds = tuple(pass_fds)
         for fd in pass_fds:
             if fd < 0:
@@ -69,10 +64,8 @@ class Popen:
         self.returncode: int | None = None
         self._on_exit = on_exit
 
-        # libuv's posix_spawn path - macOS - marks every stdio slot blocking,
-        # and the flag lives on the file description the parent shares with the
-        # child. subprocess leaves passed descriptors untouched, so what the
-        # caller had is put back once the spawn is done.
+        # libuv's posix_spawn path marks stdio slots blocking on the file
+        # description the parent shares; the caller's state goes back after.
         blocking = {fd: os.get_blocking(fd) for fd in pass_fds}
         child_fds: list[int] = []
         try:
@@ -133,12 +126,9 @@ def _stdio(child_fds: list[int], pass_fds: Sequence[int]) -> list[int]:
     """The descriptors the child inherits, each at the index it will hold there.
 
     A `pass_fds` entry keeps its own number, so it sits at that index. The gap
-    before it is left unconfigured, which closes it in practice: descriptors
-    carry close-on-exec by default since PEP 446, and one deliberately made
-    inheritable still reaches the child - as it does under every `uv_spawn`
-    user, libuv having no per-descriptor close hook. The three standard streams
-    have already claimed 0, 1 and 2, and a `pass_fds` naming one of those is
-    what it already is.
+    before it closes through close-on-exec defaults - libuv has no descriptor
+    close hook. The standard streams already claim 0-2, so naming one of those
+    asks for nothing new.
     """
     stdio = list(child_fds)
     for fd in sorted(set(pass_fds)):
