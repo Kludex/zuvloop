@@ -481,7 +481,13 @@ pub fn getnameinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
     try loopmod.checkClosed(loop.state());
 
     var storage: addr.Storage = .{};
-    _ = try addr.fromPython(0, args[0].?, &storage);
+    _ = addr.fromPython(0, args[0].?, &storage) catch |e| {
+        // Only the host is the resolver's to report; a bad tuple or port keeps
+        // its own exception, and those are not `OSError`.
+        if (c.PyErr_ExceptionMatches(@ptrCast(c.PyExc_OSError)) == 0) return e;
+        c.PyErr_Clear();
+        return raisePlatformError(eai("NONAME", .FAIL));
+    };
     const flags = try py.asCInt(args[1].?);
 
     const req = try allocRequest(loop, .getnameinfo);
