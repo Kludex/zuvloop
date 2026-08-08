@@ -7,6 +7,7 @@ import socket
 import ssl
 import struct
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,9 @@ from conftest import running_loop
 from zuvloop._server import Server
 
 pytestmark = pytest.mark.anyio
+
+# What `getaddrinfo` hands back: family, kind, protocol, canonical name, address.
+type AddrInfo = tuple[int, int, int, str, tuple[str, int] | tuple[str, int, int, int]]
 
 
 class Echo(asyncio.Protocol):
@@ -1348,6 +1352,192 @@ async def test_the_asyncio_server_hook_unregisters_and_closes() -> None:
     assert sock.fileno() == -1
 
 
+async def test_a_raising_read_callback_closes_the_connection() -> None:
+    """asyncio treats it as fatal, and the exception is what `connection_lost` is for."""
+    loop = running_loop()
+    loop.set_exception_handler(lambda _loop, _context: None)
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    calls = 0
+    lost: asyncio.Future[BaseException | None] = loop.create_future()
+
+    class Boom(asyncio.Protocol):
+        def data_received(self, data: bytes) -> None:
+            nonlocal calls
+            calls += 1
+            raise ZeroDivisionError("boom")
+
+        def connection_lost(self, exc: BaseException | None) -> None:
+            lost.set_result(exc)
+
+    try:
+        transport, _protocol = await loop.connect_accepted_socket(Boom, left)
+        right.send(b"first")
+        assert isinstance(await asyncio.wait_for(lost, 2), ZeroDivisionError)
+        assert transport.is_closing() is True
+        assert calls == 1
+    finally:
+        loop.set_exception_handler(None)
+        right.close()
+
+
+async def test_happy_eyeballs_beats_a_black_holed_address() -> None:
+    """Without racing, an address on a route that drops costs a full timeout.
+
+    The route that drops is arranged here rather than borrowed from the host:
+    whether `192.0.2.1` answers, refuses or vanishes is a property of the
+    machine's routing table, and a refusal would let a sequential connect pass.
+    """
+    loop = running_loop()
+    server, port, _ = await start_echo()
+    black_hole = ("192.0.2.1", port)
+    resolved = [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", black_hole),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)),
+    ]
+
+    original_getaddrinfo = loop.getaddrinfo
+    original_sock_connect = loop.sock_connect
+
+    async def getaddrinfo(
+        host: str | bytes | None, port: str | bytes | int | None, **kwargs: int
+    ) -> Sequence[AddrInfo]:
+        # Only the made-up name is answered from the list. `sock_connect`
+        # resolves the address it is handed, and answering that from the list
+        # too would send every attempt to the same place.
+        if host == "split":
+            return resolved
+        return await original_getaddrinfo(host, port, **kwargs)
+
+    async def sock_connect(sock: socket.socket, address: tuple[str, int]) -> None:
+        if address == black_hole:
+            await asyncio.Event().wait()
+        await original_sock_connect(sock, address)
+
+    async with server:
+        loop.getaddrinfo = getaddrinfo  # type: ignore[method-assign]
+        loop.sock_connect = sock_connect  # type: ignore[method-assign]
+        try:
+            transport, _protocol = await asyncio.wait_for(
+                loop.create_connection(Collector, "split", port, happy_eyeballs_delay=0.1), 5
+            )
+            assert transport.get_extra_info("peername")[0] == "127.0.0.1"
+            transport.close()
+        finally:
+            loop.getaddrinfo = original_getaddrinfo  # type: ignore[method-assign]
+            loop.sock_connect = original_sock_connect  # type: ignore[method-assign]
+
+
+async def test_all_errors_reports_every_failure() -> None:
+    loop = running_loop()
+    with pytest.raises(ExceptionGroup) as caught:
+        await loop.create_connection(Collector, "127.0.0.1", 1, all_errors=True)
+    assert caught.value.exceptions
+    assert all(isinstance(exc, OSError) for exc in caught.value.exceptions)
+
+
+async def test_interleave_is_accepted_without_a_delay() -> None:
+    server, port, _ = await start_echo()
+    loop = running_loop()
+    async with server:
+        transport, _protocol = await loop.create_connection(Collector, "127.0.0.1", port, interleave=1)
+        transport.close()
+
+
+async def test_differing_failures_are_reported_together() -> None:
+    """One complaint stands in for many identical ones; different ones do not."""
+    loop = running_loop()
+    original = loop.getaddrinfo
+
+    async def getaddrinfo(
+        host: str | bytes | None, port: str | bytes | int | None, **kwargs: int
+    ) -> Sequence[AddrInfo]:
+        if host == "two-ways-to-fail":
+            # Both refuse at once, and the address is in the message, so the two
+            # complaints differ - which is the case that cannot be folded.
+            return [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 1)),
+                (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 1, 0, 0)),
+            ]
+        return await original(host, port, **kwargs)
+
+    loop.getaddrinfo = getaddrinfo  # type: ignore[method-assign]
+    try:
+        with pytest.raises(OSError, match="Multiple exceptions"):
+            await loop.create_connection(Collector, "two-ways-to-fail", 1)
+    finally:
+        loop.getaddrinfo = original  # type: ignore[method-assign]
+
+
+async def test_identical_failures_are_reported_once() -> None:
+    """Two attempts that fail the same way are one complaint, not a list of two."""
+    loop = running_loop()
+    original_getaddrinfo = loop.getaddrinfo
+    original_sock_connect = loop.sock_connect
+    attempts = 0
+
+    async def getaddrinfo(
+        host: str | bytes | None, port: str | bytes | int | None, **kwargs: int
+    ) -> Sequence[AddrInfo]:
+        if host == "twice-the-same":
+            info = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 1))
+            return [info, info]
+        return await original_getaddrinfo(host, port, **kwargs)
+
+    async def sock_connect(sock: socket.socket, address: tuple[str, int]) -> None:
+        nonlocal attempts
+        attempts += 1
+        await original_sock_connect(sock, address)
+
+    loop.getaddrinfo = getaddrinfo  # type: ignore[method-assign]
+    loop.sock_connect = sock_connect  # type: ignore[method-assign]
+    try:
+        with pytest.raises(ConnectionRefusedError) as caught:
+            await loop.create_connection(Collector, "twice-the-same", 1)
+        # One complaint is the right answer only if both attempts really ran.
+        assert attempts == 2
+        assert "Multiple exceptions" not in str(caught.value)
+    finally:
+        loop.getaddrinfo = original_getaddrinfo  # type: ignore[method-assign]
+        loop.sock_connect = original_sock_connect  # type: ignore[method-assign]
+
+
+async def test_a_socket_that_cannot_be_created_is_still_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Creating the socket fails for real - EMFILE, a family the kernel refuses.
+
+    An attempt that failed without recording anything leaves nothing to raise at
+    the end, which surfaced as an `IndexError` rather than the actual problem.
+    """
+    loop = running_loop()
+    real = socket.socket
+
+    def refuse(*args: int, **kwargs: int) -> socket.socket:
+        raise OSError(24, "Too many open files")
+
+    monkeypatch.setattr(socket, "socket", refuse)
+    with pytest.raises(OSError, match="Too many open files"):
+        await loop.create_connection(Collector, "127.0.0.1", 1)
+
+    monkeypatch.setattr(socket, "socket", real)
+    assert socket.socket is real
+
+
+async def test_every_failure_is_reported_when_a_socket_cannot_be_created(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`all_errors` needs something to group; an empty group is a ValueError."""
+    loop = running_loop()
+
+    def refuse(*args: int, **kwargs: int) -> socket.socket:
+        raise OSError(24, "Too many open files")
+
+    monkeypatch.setattr(socket, "socket", refuse)
+    with pytest.raises(ExceptionGroup) as caught:
+        await loop.create_connection(Collector, "127.0.0.1", 1, all_errors=True)
+    assert [str(exc) for exc in caught.value.exceptions] == ["[Errno 24] Too many open files"]
+
+
 async def test_serve_forever_on_a_closed_server_is_rejected() -> None:
     """asyncio raises rather than waiting on a server that can never serve."""
     server, _port, _ = await start_echo()
@@ -1509,6 +1699,28 @@ async def test_a_protocol_that_closes_from_pause_writing_is_not_resumed() -> Non
         assert events == ["pause", "lost"]
     finally:
         loop.set_exception_handler(None)
+        right.close()
+
+
+@pytest.mark.anyio(None)
+def test_an_exit_from_a_read_callback_reaches_the_caller(loop: zuvloop.EventLoop) -> None:
+    """Otherwise it reaches the exception handler, and the caller of `run_forever`
+    never learns why the program was asked to stop."""
+    loop.set_exception_handler(lambda _loop, _context: None)
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+
+    class Interrupt(asyncio.Protocol):
+        def data_received(self, data: bytes) -> None:
+            raise KeyboardInterrupt("stop")
+
+    try:
+        loop.run_until_complete(loop.connect_accepted_socket(Interrupt, left))
+        right.send(b"go")
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_until_complete(asyncio.sleep(0.3))
+    finally:
         right.close()
 
 
