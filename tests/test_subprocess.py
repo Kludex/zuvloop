@@ -342,13 +342,24 @@ async def test_pass_fds_rejects_a_negative_descriptor() -> None:
 
 async def test_pass_fds_rejects_a_descriptor_that_is_not_open() -> None:
     """Caught in the parent, where the error can name the descriptor - the
-    alternative is the child dying with libuv's bare exit code 127.
-
-    A high number rather than a freshly closed one: the spawn opens pipes of
-    its own first, and the lowest-free rule would hand a just-closed number
-    straight back to one of them."""
-    with pytest.raises(OSError):
+    alternative is the child dying with libuv's bare exit code 127."""
+    with pytest.raises(OSError) as caught:
         await asyncio.create_subprocess_exec("/bin/echo", pass_fds=(4096,))
+    assert caught.value.errno == errno.EBADF
+
+
+async def test_pass_fds_rejects_a_freshly_closed_descriptor() -> None:
+    """The check runs before any pipe of ours is opened. Later it would be too
+    late: the lowest-free rule hands a just-closed number to the next pipe, and
+    the child would inherit that pipe end where the error should have been."""
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    try:
+        with pytest.raises(OSError) as caught:
+            await asyncio.create_subprocess_exec("/bin/echo", stderr=PIPE, pass_fds=(write_fd,))
+        assert caught.value.errno == errno.EBADF
+    finally:
+        os.close(read_fd)
 
 
 async def test_signalling_an_exited_child_is_a_no_op() -> None:

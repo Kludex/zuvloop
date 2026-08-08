@@ -50,6 +50,16 @@ class Popen:
         if unsupported:
             name = next(iter(unsupported))
             raise ValueError(f"{name} is not supported by zuvloop's subprocess transport")
+        # Before any stream of ours is opened: the lowest-free rule would hand
+        # a freshly closed number in `pass_fds` straight to one of the pipes
+        # below, and the child would silently inherit that pipe end instead of
+        # the error. Failing here also beats the child dying with libuv's bare
+        # exit code 127, and bounds the stdio padding, since an open descriptor
+        # sits under RLIMIT_NOFILE.
+        for fd in pass_fds:
+            if fd < 0:
+                raise ValueError("bad value(s) in pass_fds")
+            os.fstat(fd)
 
         self.stdin: io.BufferedWriter | None = None
         self.stdout: io.BufferedReader | None = None
@@ -123,12 +133,6 @@ def _stdio(child_fds: list[int], pass_fds: Sequence[int]) -> list[int]:
     """
     stdio = list(child_fds)
     for fd in sorted(set(pass_fds)):
-        if fd < 0:
-            raise ValueError("bad value(s) in pass_fds")
-        # An absent descriptor cannot be inherited; failing here beats the
-        # child dying with exit code 127. It also bounds the padding below,
-        # since an open descriptor sits under RLIMIT_NOFILE.
-        os.fstat(fd)
         if fd < len(stdio):
             continue
         stdio.extend([-1] * (fd - len(stdio)))
