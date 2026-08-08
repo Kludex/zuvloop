@@ -168,8 +168,6 @@ jobs:
 
   benchmarks:
     runs-on: ubuntu-latest
-    # Normally ~3 minutes; the CodSpeed harness has been seen sitting for over
-    # half an hour, and without a bound that holds the whole run hostage.
     timeout-minutes: 15
     permissions:
       contents: read
