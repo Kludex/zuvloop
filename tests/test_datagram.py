@@ -144,15 +144,40 @@ async def test_abort_closes_immediately() -> None:
     await asyncio.wait_for(protocol.lost, 2)
 
 
-async def test_sending_after_close_is_rejected() -> None:
-    server, _echo, address = await start_echo()
+async def test_sending_after_close_is_dropped() -> None:
+    """asyncio drops it; a shutdown race should not raise out of user code."""
+    loop = running_loop()
+    server, echo, address = await start_echo()
+    transport, _protocol = await loop.create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
+    live, live_protocol = await loop.create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
+    try:
+        transport.close()
+        transport.sendto(b"dropped", address)
+        # Once the echo has answered this one, anything the closed endpoint sent
+        # would have arrived.
+        live.sendto(b"delivered", address)
+        assert live_protocol.done is not None
+        assert await asyncio.wait_for(live_protocol.done, 2) == b"re:delivered"
+        assert [data for data, _addr in echo.received] == [b"delivered"]
+    finally:
+        live.close()
+        server.close()
+
+
+async def test_a_closing_endpoint_still_rejects_a_bad_address() -> None:
+    """Only the state check softens - the argument errors asyncio raises remain."""
+    transport, _protocol = await running_loop().create_datagram_endpoint(Collector, remote_addr=("127.0.0.1", 9))
+    transport.close()
+    with pytest.raises(ValueError, match="connected"):
+        transport.sendto(b"hello", ("127.0.0.1", 1234))
+
+
+async def test_a_closing_endpoint_still_rejects_a_payload_that_is_not_a_buffer() -> None:
+    """asyncio checks the type before it decides to drop anything."""
     transport, _protocol = await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
     transport.close()
-    try:
-        with pytest.raises(RuntimeError, match="after close"):
-            transport.sendto(b"hello", address)
-    finally:
-        server.close()
+    with pytest.raises(TypeError):
+        transport.sendto(123, ("127.0.0.1", 1234))  # type: ignore[arg-type]
 
 
 async def test_the_protocol_can_be_replaced() -> None:

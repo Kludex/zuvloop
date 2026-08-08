@@ -547,17 +547,23 @@ fn queueWrite(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) py.E
     maybePauseProtocol(self);
 }
 
+/// Whether a write may proceed, releasing `views` if it may not.
+///
+/// A close only drops the data; raising would turn an ordinary shutdown race
+/// into an exception. `write_eof()` is the caller's mistake and each entry point
+/// rejects it earlier, so an empty write is an error too.
+fn acceptsWrite(self: *Transport, views: []c.Py_buffer) py.Error!bool {
+    if (self.flags & (CONN_LOST | CLOSING) != 0) {
+        releaseViews(views);
+        return false;
+    }
+    return true;
+}
+
 /// Writes what the socket accepts immediately and queues the rest.
 /// Takes ownership of `views` on every path.
 fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!void {
-    if (self.flags & CONN_LOST != 0) {
-        releaseViews(views);
-        return;
-    }
-    if (self.flags & (CLOSING | EOF_WRITTEN) != 0) {
-        releaseViews(views);
-        return py.errRuntime("Cannot call write() after write_eof() or close()");
-    }
+    if (!try acceptsWrite(self, views)) return;
 
     var pending = bufs;
     if (self.write_buffer_size == 0) {
@@ -636,14 +642,7 @@ fn appendPending(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) v
 /// Accepts a write, deferring the syscall to the end of the iteration.
 /// Takes ownership of `views` on every path.
 fn submitWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!void {
-    if (self.flags & CONN_LOST != 0) {
-        releaseViews(views);
-        return;
-    }
-    if (self.flags & (CLOSING | EOF_WRITTEN) != 0) {
-        releaseViews(views);
-        return py.errRuntime("Cannot call write() after write_eof() or close()");
-    }
+    if (!try acceptsWrite(self, views)) return;
     appendPending(self, bufs, views);
     // Batching pays off only for consecutive writes from one callback, and a
     // caller outside the loop may block reading the peer before the flush could
@@ -878,6 +877,10 @@ fn write(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
     const self = asTransport(self_obj);
     var views = [_]c.Py_buffer{undefined};
     if (c.PyObject_GetBuffer(data, &views[0], c.PyBUF_SIMPLE) < 0) return py.Error.Python;
+    if (self.flags & EOF_WRITTEN != 0) {
+        c.PyBuffer_Release(&views[0]);
+        return py.errRuntime("Cannot call write() after write_eof()");
+    }
     if (views[0].len == 0) {
         c.PyBuffer_Release(&views[0]);
         return py.noneRef();
@@ -889,6 +892,7 @@ fn write(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
 
 fn writelines(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
     const self = asTransport(self_obj);
+    if (self.flags & EOF_WRITTEN != 0) return py.errRuntime("Cannot call writelines() after write_eof()");
     const seq = c.PySequence_Fast(data, "writelines() requires an iterable of buffers") orelse return py.Error.Python;
     defer py.decref(seq);
     const n: usize = @intCast(c.PySequence_Size(seq));
