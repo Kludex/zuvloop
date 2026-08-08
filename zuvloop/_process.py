@@ -55,7 +55,9 @@ class Popen:
         # below, and the child would silently inherit that pipe end instead of
         # the error. Failing here also beats the child dying with libuv's bare
         # exit code 127, and bounds the stdio padding, since an open descriptor
-        # sits under RLIMIT_NOFILE.
+        # sits under RLIMIT_NOFILE. Materialized first, so a one-shot iterable
+        # is not spent by the validation.
+        pass_fds = tuple(pass_fds)
         for fd in pass_fds:
             if fd < 0:
                 raise ValueError("bad value(s) in pass_fds")
