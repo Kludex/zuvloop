@@ -47,11 +47,16 @@ class Popen:
             raise ValueError("startupinfo is not supported by zuvloop's subprocess transport")
         if creationflags:
             raise ValueError("creationflags is not supported by zuvloop's subprocess transport")
-        if pass_fds:
-            raise ValueError("pass_fds is not supported by zuvloop's subprocess transport")
         if unsupported:
             name = next(iter(unsupported))
             raise ValueError(f"{name} is not supported by zuvloop's subprocess transport")
+        # Before any pipe of ours can reuse a freshly closed number, and in the
+        # parent, where the error beats the child's bare exit code 127.
+        pass_fds = tuple(pass_fds)
+        for fd in pass_fds:
+            if fd < 0:
+                raise ValueError("bad value(s) in pass_fds")
+            os.fstat(fd)
 
         self.stdin: io.BufferedWriter | None = None
         self.stdout: io.BufferedReader | None = None
@@ -59,6 +64,9 @@ class Popen:
         self.returncode: int | None = None
         self._on_exit = on_exit
 
+        # libuv's posix_spawn path marks stdio slots blocking on the file
+        # description the parent shares; the caller's state goes back after.
+        blocking = {fd: os.get_blocking(fd) for fd in pass_fds}
         child_fds: list[int] = []
         try:
             for index, request in enumerate((stdin, stdout, stderr)):
@@ -75,7 +83,7 @@ class Popen:
                 args,
                 None if env is None else [f"{k}={v}" for k, v in env.items()],
                 None if cwd is None else os.fspath(cwd),
-                child_fds,
+                _stdio(child_fds, pass_fds),
                 flags,
                 0,
                 0,
@@ -93,6 +101,8 @@ class Popen:
             for fd in child_fds:
                 if fd >= 0:
                     os.close(fd)
+            for fd, was_blocking in blocking.items():
+                os.set_blocking(fd, was_blocking)
 
         self.pid: int = self._handle.get_pid()
 
@@ -110,6 +120,23 @@ class Popen:
         # `BaseSubprocessTransport.close()` reaches for this on a child that is
         # still running.
         self.send_signal(signal.SIGKILL)
+
+
+def _stdio(child_fds: list[int], pass_fds: Sequence[int]) -> list[int]:
+    """The descriptors the child inherits, each at the index it will hold there.
+
+    A `pass_fds` entry keeps its own number, so it sits at that index. The gap
+    before it closes through close-on-exec defaults - libuv has no descriptor
+    close hook. The standard streams already claim 0-2, so naming one of those
+    asks for nothing new.
+    """
+    stdio = list(child_fds)
+    for fd in sorted(set(pass_fds)):
+        if fd < len(stdio):
+            continue
+        stdio.extend([-1] * (fd - len(stdio)))
+        stdio.append(fd)
+    return stdio
 
 
 def _open_stream(index: int, request: Any, child_fds: list[int]) -> tuple[int, int | None]:
