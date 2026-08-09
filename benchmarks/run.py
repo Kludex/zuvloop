@@ -274,6 +274,8 @@ def main() -> int:
     parser.add_argument("--repeat", type=int, default=3, help="runs per benchmark; the best is reported")
     parser.add_argument("--only", nargs="*", choices=sorted(BENCHMARKS), help="benchmarks to run")
     args = parser.parse_args()
+    if args.repeat < 1:
+        parser.error("--repeat must be at least 1")
 
     factories = loop_factories()
     baseline = "uvloop" if "uvloop" in factories else "asyncio"
