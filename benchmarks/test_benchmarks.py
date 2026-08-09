@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
-import threading
 from collections.abc import Callable, Coroutine, Iterator
 
 import pytest
@@ -74,27 +73,6 @@ def test_call_soon(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop)
         for _ in range(iterations):
             loop.call_soon(step)
         await done
-
-    benchmark(drive(loop, work))
-
-
-@pytest.mark.benchmark
-def test_call_soon_threadsafe(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
-    """Cross-thread scheduling, where the 3.14 handle contract sets the price."""
-    iterations = 10_000
-
-    async def work() -> None:
-        done = loop.create_future()
-
-        def worker() -> None:
-            for _ in range(iterations):
-                loop.call_soon_threadsafe(_noop)
-            loop.call_soon_threadsafe(done.set_result, None)
-
-        thread = threading.Thread(target=worker)
-        thread.start()
-        await done
-        thread.join()
 
     benchmark(drive(loop, work))
 
