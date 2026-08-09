@@ -19,6 +19,7 @@ import os
 import socket
 import statistics
 import sys
+import threading
 import time
 from collections.abc import Callable, Coroutine
 
@@ -187,6 +188,26 @@ def call_soon(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
     return _driver(loop, once)
 
 
+def call_soon_threadsafe(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
+    """Cross-thread scheduling: 10000 callbacks issued from a worker thread."""
+    iterations = 10_000
+
+    async def once() -> None:
+        done = loop.create_future()
+
+        def worker() -> None:
+            for _ in range(iterations):
+                loop.call_soon_threadsafe(_noop)
+            loop.call_soon_threadsafe(done.set_result, None)
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        await done
+        thread.join()
+
+    return _driver(loop, once)
+
+
 def timers(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
     """Timer bookkeeping: schedule and cancel, never firing."""
     iterations = 10_000
@@ -229,6 +250,7 @@ WORKLOADS: dict[str, Workload] = {
     "split_write": split_write,
     "bulk": bulk,
     "call_soon": call_soon,
+    "call_soon_threadsafe": call_soon_threadsafe,
     "timers": timers,
     "getaddrinfo": getaddrinfo,
     "spawn": spawn,
