@@ -107,8 +107,12 @@ pub fn create(
 /// releases any thread blocked in `cancel` or `cancelled`.
 pub fn run(obj: *py.Object) void {
     const self = payload(obj);
-    self.runner = c.PyThread_get_thread_ident();
     if (@cmpxchgStrong(u32, &self.run_state, PENDING, RUNNING, .acq_rel, .acquire) != null) return;
+    // Only the winner may claim the run: `_run` is a Python method, and a
+    // losing caller writing here would misdirect the waits keyed on it. A
+    // reader that sees RUNNING before this write compares against zero, which
+    // is never a thread id, and waits - the conservative side of the race.
+    self.runner = c.PyThread_get_thread_ident();
     const callback = self.callback.?;
     handlemod.invoke(obj, self.loop, callback, self.argv(), self.nargs, self.context.?);
     @atomicStore(u32, &self.run_state, DONE, .release);
