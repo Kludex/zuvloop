@@ -35,16 +35,17 @@ Throughput relative to stock asyncio (higher is better), measured with the suite
 
 | Benchmark | asyncio | uvloop | zuvloop |
 | --- | ---: | ---: | ---: |
-| `call_soon` | 2.69M/s | 4.69M/s | **5.91M/s** |
-| `call_soon` with arguments | 2.43M/s | 3.87M/s | **6.47M/s** |
-| timer schedule + cancel | 1.58M/s | 2.62M/s | **9.55M/s** |
-| bulk stream | 8.4 GiB/s | 8.5 GiB/s | **10.2 GiB/s** |
-| echo round trips, 1 KiB | 39.0k/s | 56.8k/s | **58.5k/s** |
-| uvicorn, plaintext | 55.3k req/s | 71.9k req/s | **75.9k req/s** |
-| uvicorn, 10 KiB body | 52.6k req/s | 68.7k req/s | **73.6k req/s** |
-| aiohttp server | 49.0k req/s | 59.8k req/s | **60.6k req/s** |
-| aiohttp client | 13.2k req/s | 16.2k req/s | **16.9k req/s** |
-| `getaddrinfo`, numeric host | 28.5k/s | 1.57M/s | **1.90M/s** |
+| `call_soon` | 2.59M/s | 5.66M/s | **5.90M/s** |
+| `call_soon` with arguments | 2.45M/s | 3.55M/s | **6.36M/s** |
+| `call_soon_threadsafe` | 0.44M/s | 5.06M/s | **6.51M/s** |
+| timer schedule + cancel | 1.55M/s | 2.57M/s | **9.58M/s** |
+| bulk stream | 8.6 GiB/s | 9.0 GiB/s | **10.7 GiB/s** |
+| echo round trips, 1 KiB | 38.4k/s | 53.0k/s | **58.4k/s** |
+| uvicorn, plaintext | 54.0k req/s | 70.5k req/s | **76.7k req/s** |
+| uvicorn, 10 KiB body | 51.6k req/s | 69.5k req/s | **74.2k req/s** |
+| aiohttp server | 48.8k req/s | 61.0k req/s | **62.6k req/s** |
+| aiohttp client | 13.4k req/s | 16.6k req/s | **16.9k req/s** |
+| `getaddrinfo`, numeric host | 28.3k/s | 1.58M/s | **1.91M/s** |
 
 Curious how? The [architecture docs](https://zuvloop.marcelotryle.com) explain the design:
 argument storage inside handles (no tuple per callback), a native timer heap behind a single
