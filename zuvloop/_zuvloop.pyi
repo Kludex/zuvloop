@@ -10,6 +10,7 @@ __all__ = [
     "Handle",
     "Loop",
     "Process",
+    "ThreadSafeHandle",
     "TimerHandle",
     "Transport",
     "libuv_version",
@@ -31,6 +32,13 @@ class Handle(asyncio.Handle):
 
 class TimerHandle(Handle, asyncio.TimerHandle):
     def when(self) -> float: ...
+
+class ThreadSafeHandle(asyncio.Handle):
+    """Subtype of `asyncio.events._ThreadSafeHandle`; `cancel` and `cancelled`
+    from a foreign thread wait out a callback that is mid-run."""
+
+    def cancel(self) -> None: ...
+    def cancelled(self) -> bool: ...
 
 class DatagramTransport(asyncio.Transport, asyncio.DatagramTransport):
     def get_extra_info(self, name: str, default: Any = None) -> Any: ...
@@ -83,7 +91,7 @@ class Loop:
     def call_soon(self, callback: Callable[..., object], *args: Any, context: Context | None = None) -> Handle: ...
     def call_soon_threadsafe(
         self, callback: Callable[..., object], *args: Any, context: Context | None = None
-    ) -> Handle: ...
+    ) -> ThreadSafeHandle: ...
     def call_later(
         self, delay: float, callback: Callable[..., object], *args: Any, context: Context | None = None
     ) -> TimerHandle: ...

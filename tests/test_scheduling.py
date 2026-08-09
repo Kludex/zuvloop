@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextvars
 import threading
 import time
@@ -165,8 +166,147 @@ async def test_call_soon_threadsafe_from_another_thread() -> None:
 
 async def test_call_soon_threadsafe_validates_its_arguments() -> None:
     loop = running_loop()
-    with pytest.raises(TypeError, match="missing 1 required positional argument"):
+    with pytest.raises(TypeError, match="requires a callback"):
         loop.call_soon_threadsafe()  # type: ignore[call-arg]
+
+
+async def test_call_soon_threadsafe_returns_the_stdlib_threadsafe_handle() -> None:
+    loop = running_loop()
+    handle = loop.call_soon_threadsafe(lambda: None)
+    assert isinstance(handle, asyncio.events._ThreadSafeHandle)  # type: ignore[attr-defined]
+    assert isinstance(handle, asyncio.Handle)
+    handle.cancel()
+
+
+def test_threadsafe_cancel_from_another_thread_waits_for_the_running_callback() -> None:
+    loop = zuvloop.new_event_loop()
+    started = threading.Event()
+    finished = threading.Event()
+    results: list[str] = []
+
+    def callback(arg: str) -> None:
+        started.set()
+        results.append(arg)
+        time.sleep(0.2)
+        finished.set()
+
+    def canceller() -> None:
+        handle = loop.call_soon_threadsafe(callback, "ran")
+        started.wait()
+        handle.cancel()
+        assert finished.is_set()
+        assert handle.cancelled()
+        loop.call_soon_threadsafe(loop.stop)
+
+    thread = threading.Thread(target=canceller)
+    loop.call_soon(thread.start)
+    loop.run_forever()
+    thread.join()
+    loop.close()
+    assert results == ["ran"]
+
+
+def test_threadsafe_cancelled_from_another_thread_waits_for_the_running_callback() -> None:
+    loop = zuvloop.new_event_loop()
+    started = threading.Event()
+    finished = threading.Event()
+
+    def callback() -> None:
+        started.set()
+        time.sleep(0.2)
+        finished.set()
+
+    def checker() -> None:
+        handle = loop.call_soon_threadsafe(callback)
+        started.wait()
+        assert handle.cancelled() is False
+        assert finished.is_set()
+        loop.call_soon_threadsafe(loop.stop)
+
+    thread = threading.Thread(target=checker)
+    loop.call_soon(thread.start)
+    loop.run_forever()
+    thread.join()
+    loop.close()
+
+
+def test_threadsafe_cancel_inside_its_own_callback_completes_the_run() -> None:
+    loop = zuvloop.new_event_loop()
+    handle_ready: concurrent.futures.Future[asyncio.Handle] = concurrent.futures.Future()
+    results: list[str] = []
+
+    def callback(arg: str) -> None:
+        handle = handle_ready.result()
+        handle.cancel()
+        assert handle.cancelled()
+        results.append(arg)
+        loop.stop()
+
+    def scheduler() -> None:
+        handle_ready.set_result(loop.call_soon_threadsafe(callback, "ran"))
+
+    thread = threading.Thread(target=scheduler)
+    loop.call_soon(thread.start)
+    loop.run_forever()
+    thread.join()
+    loop.close()
+    assert results == ["ran"]
+
+
+def test_threadsafe_cancel_before_the_loop_runs_it() -> None:
+    loop = zuvloop.new_event_loop()
+    results: list[str] = []
+
+    def scheduler() -> None:
+        handle = loop.call_soon_threadsafe(results.append, "never")
+        handle.cancel()
+        handle.cancel()
+        assert handle.cancelled()
+        loop.call_soon_threadsafe(loop.stop)
+
+    thread = threading.Thread(target=scheduler)
+    loop.call_soon(thread.start)
+    loop.run_forever()
+    thread.join()
+    loop.close()
+    assert results == []
+
+
+def test_threadsafe_cancel_releases_every_waiting_thread() -> None:
+    loop = zuvloop.new_event_loop()
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    handle_ready: concurrent.futures.Future[asyncio.Handle] = concurrent.futures.Future()
+
+    def callback() -> None:
+        started.set()
+        release.wait()
+        finished.set()
+
+    def waiter() -> None:
+        handle = handle_ready.result()
+        started.wait()
+        handle.cancel()
+        assert finished.is_set()
+
+    def driver() -> None:
+        handle_ready.set_result(loop.call_soon_threadsafe(callback))
+        waiters = [threading.Thread(target=waiter) for _ in range(2)]
+        for thread in waiters:
+            thread.start()
+        started.wait()
+        time.sleep(0.1)
+        release.set()
+        for thread in waiters:
+            thread.join()
+        loop.call_soon_threadsafe(loop.stop)
+
+    thread = threading.Thread(target=driver)
+    loop.call_soon(thread.start)
+    loop.run_forever()
+    thread.join()
+    loop.close()
 
 
 async def test_run_in_executor_uses_a_thread() -> None:

@@ -6,6 +6,7 @@ const loop = @import("loop.zig");
 const datagram = @import("datagram.zig");
 const process = @import("process.zig");
 const handle = @import("handle.zig");
+const tshandle = @import("tshandle.zig");
 
 fn libuvVersion(_: ?*py.Object, _: ?*py.Object) callconv(.c) ?*py.Object {
     return py.strZ(uv.uv_version_string());
@@ -19,6 +20,7 @@ var methods = [_]c.PyMethodDef{
 fn exec(module: ?*py.Object) callconv(.c) c_int {
     const m = module orelse return -1;
     handle.register(m) catch return -1;
+    tshandle.register(m) catch return -1;
     loop.register(m) catch return -1;
     datagram.register(m) catch return -1;
     process.register(m) catch return -1;
