@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextvars
 import threading
 import time
@@ -165,8 +166,173 @@ async def test_call_soon_threadsafe_from_another_thread() -> None:
 
 async def test_call_soon_threadsafe_validates_its_arguments() -> None:
     loop = running_loop()
-    with pytest.raises(TypeError, match="missing 1 required positional argument"):
+    with pytest.raises(TypeError, match="requires a callback"):
         loop.call_soon_threadsafe()  # type: ignore[call-arg]
+
+
+async def test_call_soon_threadsafe_returns_the_stdlib_threadsafe_handle() -> None:
+    loop = running_loop()
+    handle = loop.call_soon_threadsafe(lambda: None)
+    assert isinstance(handle, asyncio.events._ThreadSafeHandle)  # type: ignore[attr-defined]
+    assert isinstance(handle, asyncio.Handle)
+    handle.cancel()
+
+
+def test_threadsafe_cancel_from_another_thread_waits_for_the_running_callback() -> None:
+    loop = zuvloop.new_event_loop()
+    started = threading.Event()
+    finished = threading.Event()
+    results: list[str] = []
+    observed: list[bool] = []
+
+    def callback(arg: str) -> None:
+        started.set()
+        results.append(arg)
+        time.sleep(0.2)
+        finished.set()
+
+    def canceller() -> None:
+        try:
+            handle = loop.call_soon_threadsafe(callback, "ran")
+            started.wait(5)
+            handle.cancel()
+            observed.append(finished.is_set())
+            observed.append(handle.cancelled())
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+
+    thread = threading.Thread(target=canceller)
+    loop.call_soon(thread.start)
+    loop.run_forever()
+    thread.join()
+    loop.close()
+    assert results == ["ran"]
+    assert observed == [True, True]
+
+
+def test_threadsafe_cancelled_from_another_thread_waits_for_the_running_callback() -> None:
+    loop = zuvloop.new_event_loop()
+    started = threading.Event()
+    finished = threading.Event()
+    observed: list[bool] = []
+
+    def callback() -> None:
+        started.set()
+        time.sleep(0.2)
+        finished.set()
+
+    def checker() -> None:
+        try:
+            handle = loop.call_soon_threadsafe(callback)
+            started.wait(5)
+            observed.append(handle.cancelled())
+            observed.append(finished.is_set())
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+
+    thread = threading.Thread(target=checker)
+    loop.call_soon(thread.start)
+    loop.run_forever()
+    thread.join()
+    loop.close()
+    assert observed == [False, True]
+
+
+def test_threadsafe_cancel_inside_its_own_callback_completes_the_run() -> None:
+    loop = zuvloop.new_event_loop()
+    handle_ready: concurrent.futures.Future[asyncio.Handle] = concurrent.futures.Future()
+    results: list[str] = []
+    observed: list[bool] = []
+
+    def callback(arg: str) -> None:
+        try:
+            handle = handle_ready.result(5)
+            handle.cancel()
+            observed.append(handle.cancelled())
+            results.append(arg)
+        finally:
+            loop.stop()
+
+    def scheduler() -> None:
+        handle_ready.set_result(loop.call_soon_threadsafe(callback, "ran"))
+
+    thread = threading.Thread(target=scheduler)
+    loop.call_soon(thread.start)
+    loop.run_forever()
+    thread.join()
+    loop.close()
+    assert results == ["ran"]
+    assert observed == [True]
+
+
+def test_threadsafe_cancel_before_the_loop_runs_it() -> None:
+    loop = zuvloop.new_event_loop()
+    gate = threading.Event()
+    results: list[str] = []
+    observed: list[bool] = []
+
+    def scheduler() -> None:
+        try:
+            handle = loop.call_soon_threadsafe(results.append, "never")
+            handle.cancel()
+            handle.cancel()
+            observed.append(handle.cancelled())
+        finally:
+            gate.set()
+            loop.call_soon_threadsafe(loop.stop)
+
+    # The gate holds the loop thread until the cancellation is done, so the
+    # callback cannot win the race and run before `cancel` reaches it.
+    loop.call_soon(gate.wait, 5)
+    thread = threading.Thread(target=scheduler)
+    thread.start()
+    loop.run_forever()
+    thread.join()
+    loop.close()
+    assert results == []
+    assert observed == [True]
+
+
+def test_threadsafe_cancel_releases_every_waiting_thread() -> None:
+    loop = zuvloop.new_event_loop()
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    handle_ready: concurrent.futures.Future[asyncio.Handle] = concurrent.futures.Future()
+    observed: list[bool] = []
+
+    def callback() -> None:
+        started.set()
+        release.wait(5)
+        finished.set()
+
+    def waiter() -> None:
+        handle = handle_ready.result(5)
+        started.wait(5)
+        handle.cancel()
+        observed.append(finished.is_set())
+
+    def driver() -> None:
+        try:
+            handle_ready.set_result(loop.call_soon_threadsafe(callback))
+            waiters = [threading.Thread(target=waiter) for _ in range(2)]
+            for waiting in waiters:
+                waiting.start()
+            started.wait(5)
+            time.sleep(0.1)
+            release.set()
+            for waiting in waiters:
+                waiting.join()
+        finally:
+            release.set()
+            loop.call_soon_threadsafe(loop.stop)
+
+    thread = threading.Thread(target=driver)
+    loop.call_soon(thread.start)
+    loop.run_forever()
+    thread.join()
+    loop.close()
+    assert observed == [True, True]
 
 
 async def test_run_in_executor_uses_a_thread() -> None:

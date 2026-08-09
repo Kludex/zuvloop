@@ -86,19 +86,30 @@ pub fn create(
 pub fn run(self: *Handle) void {
     if (self.isCancelled()) return;
     const callback = self.callback orelse return;
-    const ctx = self.context.?;
+    invoke(@ptrCast(self), self.loop, callback, self.argv(), self.nargs, self.context.?);
+}
 
+/// Calls `callback(*argv)` inside `ctx`, routing failures to `loop` with
+/// `owner` named as the failing handle.
+pub fn invoke(
+    owner: *py.Object,
+    loop: ?*py.Object,
+    callback: *py.Object,
+    argv: [*]?*py.Object,
+    nargs: c.Py_ssize_t,
+    ctx: *py.Object,
+) void {
     if (c.PyContext_Enter(ctx) < 0) {
-        loopmod.handleCallbackError(self);
+        loopmod.callbackFailed(loop, owner);
         return;
     }
-    const result = c.PyObject_Vectorcall(callback, self.argv(), @intCast(self.nargs), null);
+    const result = c.PyObject_Vectorcall(callback, argv, @intCast(nargs), null);
     if (result) |r| {
         py.decref(r);
     } else {
-        loopmod.handleCallbackError(self);
+        loopmod.callbackFailed(loop, owner);
     }
-    if (c.PyContext_Exit(ctx) < 0) py.writeUnraisable(@ptrCast(self));
+    if (c.PyContext_Exit(ctx) < 0) py.writeUnraisable(owner);
 }
 
 fn clearArgs(self: *Handle) void {

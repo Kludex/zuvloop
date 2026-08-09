@@ -11,6 +11,7 @@ const c = py.c;
 const uv = @import("uv.zig");
 const collections = @import("collections.zig");
 const handlemod = @import("handle.zig");
+const tshandle = @import("tshandle.zig");
 const pollermod = @import("poller.zig");
 const dns = @import("dns.zig");
 const transportmod = @import("transport.zig");
@@ -250,6 +251,16 @@ pub inline fn startIdle(st: *State) void {
     }
 }
 
+/// The ready queue holds both handle types; only the type says which protocol
+/// a callback runs under.
+inline fn runOne(obj: *py.Object) void {
+    if (tshandle.owns(obj)) {
+        tshandle.run(obj);
+    } else {
+        handlemod.run(@ptrCast(@alignCast(obj)));
+    }
+}
+
 /// Runs exactly the callbacks queued on entry. asyncio guarantees everything
 /// already scheduled runs even if one of them calls `stop()`, so the batch is
 /// never cut short.
@@ -260,14 +271,13 @@ fn runReady(self: *LoopObject) void {
     st.callbacks_run += remaining;
     while (remaining != 0) : (remaining -= 1) {
         const obj = st.ready.pop() orelse break;
-        const h: *Handle = @ptrCast(@alignCast(obj));
         if ((st.debug or st.slow_callback_monitoring) and st.slow_callback_duration < std.math.inf(f64)) {
             const started = uv.uv_hrtime();
-            handlemod.run(h);
+            runOne(obj);
             const elapsed = @as(f64, @floatFromInt(uv.uv_hrtime() - started)) / 1e9;
             if (elapsed > st.slow_callback_duration) reportSlowCallback(self, obj, elapsed);
         } else {
-            handlemod.run(h);
+            runOne(obj);
         }
         py.decref(obj);
     }
@@ -350,8 +360,8 @@ pub fn captureFatal(self: *LoopObject) void {
 
 /// Routes a failed callback to `call_exception_handler`, except for the two
 /// exceptions asyncio propagates out of `run_forever`.
-pub fn handleCallbackError(h: *Handle) void {
-    const loop_obj = h.loop orelse {
+pub fn callbackFailed(loop_obj_opt: ?*py.Object, h: *py.Object) void {
+    const loop_obj = loop_obj_opt orelse {
         c.PyErr_Clear();
         return;
     };
@@ -364,7 +374,7 @@ pub fn handleCallbackError(h: *Handle) void {
     }
     const exc = c.PyErr_GetRaisedException() orelse return;
     defer py.decref(exc);
-    callExceptionHandler(self, "Exception in callback", exc, @ptrCast(h));
+    callExceptionHandler(self, "Exception in callback", exc, h);
 }
 
 pub fn callExceptionHandler(self: *LoopObject, comptime message: [:0]const u8, exc: *py.Object, h: ?*py.Object) void {
@@ -456,12 +466,12 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
     const st = self.state();
     try checkClosed(st);
     const p = try parseCall(args, nargs, kwnames, 1);
-    const h = try handlemod.create(handlemod.handle_type.?, self_obj, args[0].?, p.positional, p.context);
+    const h = try tshandle.create(self_obj, args[0].?, p.positional, p.context);
     py.incref(h);
     // One FIFO for both schedulers, so a `call_soon` issued after a
     // `call_soon_threadsafe` still runs after it. The caller holds the GIL and the
     // loop touches `ready` only while holding it, so the push is atomic against it.
-    st.ready.push(@as(*py.Object, @ptrCast(h))) catch {
+    st.ready.push(h) catch {
         py.decref(h);
         py.decref(h);
         return py.errNoMemory();
@@ -469,7 +479,7 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
     // The only libuv call legal from a foreign thread; `uv_idle_start` is not, so
     // the idle handle is armed by the waker on the loop thread.
     _ = uv.uv_async_send(st.waker);
-    return @ptrCast(h);
+    return h;
 }
 
 fn scheduleAt(self: *LoopObject, when: f64, callback: *py.Object, p: Parsed) py.Error!*py.Object {
