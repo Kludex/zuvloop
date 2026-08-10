@@ -127,6 +127,73 @@ async def test_call_at_uses_the_loop_clock() -> None:
     await done
 
 
+async def test_call_later_returns_a_real_timer_handle() -> None:
+    """`call_soon` trades this for a leaner handle; a timer can afford the base."""
+    loop = running_loop()
+    handle = loop.call_later(30, print)
+    assert isinstance(handle, asyncio.TimerHandle)
+    assert isinstance(handle, asyncio.Handle)
+    handle.cancel()
+
+
+async def test_timer_handles_order_by_their_deadline() -> None:
+    """The ordering comes from the base class, which reads `_when`."""
+    loop = running_loop()
+    later = loop.call_later(60, print)
+    sooner = loop.call_later(30, print)
+
+    assert sooner < later
+    assert later > sooner
+    assert sorted([later, sooner]) == [sooner, later]
+    assert sooner == sooner
+    assert sooner != later
+    assert isinstance(hash(sooner), int)
+    assert sooner._when < later._when
+    assert sooner._cancelled is False
+    assert sooner._scheduled is True
+    assert sooner._callback is print
+    assert sooner._args == ()
+
+    sooner.cancel()
+    later.cancel()
+    assert sooner.cancelled() and later.cancelled()
+    # Cancelling drops the arguments rather than emptying them, and leaves the
+    # handle in the heap until something compacts it - both as asyncio reports.
+    assert sooner._callback is None
+    assert sooner._args is None
+    assert sooner._scheduled is True
+
+
+async def test_a_fired_timer_is_no_longer_scheduled() -> None:
+    """`BaseEventLoop` clears the flag when the handle leaves its heap for the
+    ready queue, and so does the native one."""
+    loop = running_loop()
+    done = loop.create_future()
+    handle = loop.call_later(0.01, done.set_result, None)
+    assert handle._scheduled is True
+    await done
+    await asyncio.sleep(0)
+    assert handle._scheduled is False
+
+
+async def test_a_cancelled_timer_stops_being_scheduled_when_it_leaves_the_heap() -> None:
+    """Cancelling alone leaves it in the heap, as it does in asyncio. Reaching the
+    deadline retires it, and so does the compaction a run of cancellations sets off."""
+    loop = running_loop()
+    due = loop.call_later(0.01, print)
+    due.cancel()
+    assert due._scheduled is True
+
+    pending = loop.call_later(30, print)
+    pending.cancel()
+    for _ in range(400):
+        loop.call_later(30, print).cancel()
+
+    await asyncio.sleep(0.05)
+    assert due._scheduled is False
+    assert pending._scheduled is False
+
+
 async def test_call_later_requires_a_delay_and_a_callback() -> None:
     loop = running_loop()
     with pytest.raises(TypeError, match="delay and a callback"):

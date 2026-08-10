@@ -170,10 +170,12 @@ returns and nothing else. A loop that needs a controllable clock should schedule
 explicitly.
 
 Also not implemented: `sendfile()` and `sock_sendfile()` raise `NotImplementedError`. Handles
-returned by `call_soon` and `call_later` implement the `asyncio.Handle` and
-`asyncio.TimerHandle` interfaces but are not instances of those classes; `call_soon_threadsafe`
-does return a real `asyncio.Handle`, because 3.14 requires cancelling one from another thread to
-block until a callback that has already started finishes.
+returned by `call_soon` implement the `asyncio.Handle` interface but are not instances of it:
+the base class is 56 bytes of storage such a handle never writes, measured at 2% of `call_soon`,
+which is the object the loop allocates more often than any other. `call_later` and `call_at`
+do return real `asyncio.TimerHandle` instances, so they order and compare by deadline, and
+`call_soon_threadsafe` returns a real `asyncio.Handle`, because 3.14 requires cancelling one
+from another thread to block until a callback that has already started finishes.
 
 ## Development
 

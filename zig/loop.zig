@@ -12,6 +12,7 @@ const uv = @import("uv.zig");
 const collections = @import("collections.zig");
 const handlemod = @import("handle.zig");
 const tshandle = @import("tshandle.zig");
+const timermod = @import("timer.zig");
 const pollermod = @import("poller.zig");
 const dns = @import("dns.zig");
 const transportmod = @import("transport.zig");
@@ -118,9 +119,13 @@ pub inline fn now() f64 {
     return @as(f64, @floatFromInt(ns)) / 1e9;
 }
 
-fn isHandleCancelled(obj: *py.Object) bool {
-    const h: *Handle = @ptrCast(@alignCast(obj));
-    return h.isCancelled();
+/// Cancelled means dropped, and being dropped from the heap is what ends being
+/// scheduled - so the flag is cleared on the way out, as it is everywhere else
+/// a timer leaves.
+fn retireIfCancelled(obj: *py.Object) bool {
+    if (!timermod.isCancelled(obj)) return false;
+    timermod.clearScheduled(obj);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -254,7 +259,9 @@ pub inline fn startIdle(st: *State) void {
 /// The ready queue holds both handle types; only the type says which protocol
 /// a callback runs under.
 inline fn runOne(obj: *py.Object) void {
-    if (tshandle.owns(obj)) {
+    if (timermod.owns(obj)) {
+        timermod.run(obj);
+    } else if (tshandle.owns(obj)) {
         tshandle.run(obj);
     } else {
         handlemod.run(@ptrCast(@alignCast(obj)));
@@ -305,8 +312,8 @@ fn collectDueTimers(self: *LoopObject) void {
     while (st.timers.peek()) |entry| {
         if (entry.when > deadline) break;
         _ = st.timers.pop();
-        const h: *Handle = @ptrCast(@alignCast(entry.handle));
-        if (h.isCancelled()) {
+        timermod.clearScheduled(entry.handle);
+        if (timermod.isCancelled(entry.handle)) {
             py.decref(entry.handle);
             if (st.timers.cancelled != 0) st.timers.cancelled -= 1;
             continue;
@@ -320,9 +327,9 @@ fn collectDueTimers(self: *LoopObject) void {
 fn armTimer(self: *LoopObject) void {
     const st = self.state();
     while (st.timers.peek()) |entry| {
-        const h: *Handle = @ptrCast(@alignCast(entry.handle));
-        if (!h.isCancelled()) break;
+        if (!timermod.isCancelled(entry.handle)) break;
         _ = st.timers.pop();
+        timermod.clearScheduled(entry.handle);
         py.decref(entry.handle);
         if (st.timers.cancelled != 0) st.timers.cancelled -= 1;
     }
@@ -345,7 +352,7 @@ pub fn noteTimerCancelled(self: *LoopObject) void {
     const st = self.st orelse return;
     st.timers.cancelled += 1;
     if (st.timers.cancelled > min_cancelled_timers and st.timers.cancelled * 2 > st.timers.len) {
-        st.timers.compact(isHandleCancelled);
+        st.timers.compact(retireIfCancelled);
         armTimer(self);
     }
 }
@@ -485,17 +492,15 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
 fn scheduleAt(self: *LoopObject, when: f64, callback: *py.Object, p: Parsed) py.Error!*py.Object {
     const st = self.state();
     try checkClosed(st);
-    const h = try handlemod.create(handlemod.timer_type.?, @ptrCast(self), callback, p.positional, p.context);
-    h.flags |= handlemod.IS_TIMER;
-    h.when = when;
+    const h = try timermod.create(@ptrCast(self), callback, p.positional, p.context, when);
     py.incref(h);
-    st.timers.push(when, @as(*py.Object, @ptrCast(h))) catch {
+    st.timers.push(when, h) catch {
         py.decref(h);
         py.decref(h);
         return py.errNoMemory();
     };
     armTimer(self);
-    return @ptrCast(h);
+    return h;
 }
 
 fn callLater(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames: ?*py.Object) py.Error!*py.Object {

@@ -1,8 +1,12 @@
-//! `Handle` and `TimerHandle`: the callback records the loop schedules.
+//! `Handle`: the callback record `call_soon` returns.
 //!
-//! Both share one layout. Arguments up to `inline_args` live inside the object,
-//! so the common `call_soon(cb, a, b)` never allocates a tuple and the callback
-//! is invoked straight through the vectorcall protocol.
+//! Arguments up to `inline_args` live inside the object, so the common
+//! `call_soon(cb, a, b)` never allocates a tuple and the callback is invoked
+//! straight through the vectorcall protocol. Deliberately not a subtype of
+//! `asyncio.Handle`, which would take the object from 88 bytes to 144: its
+//! `__slots__` are storage this never writes, and measured 2% of `call_soon`
+//! on the object the loop allocates more often than any other. `timer.zig`
+//! pays that price, where the ordering the base defines earns it.
 
 const std = @import("std");
 const py = @import("py.zig");
@@ -13,7 +17,6 @@ const inline_args = 3;
 const arg_alloc = std.heap.c_allocator;
 
 pub const CANCELLED: u32 = 1 << 0;
-pub const IS_TIMER: u32 = 1 << 1;
 
 pub const Handle = extern struct {
     ob_base: c.PyObject,
@@ -21,10 +24,8 @@ pub const Handle = extern struct {
     callback: ?*py.Object,
     context: ?*py.Object,
     heap_args: ?[*]?*py.Object,
-    next: ?*Handle,
     nargs: c.Py_ssize_t,
     flags: u32,
-    when: f64,
     args: [inline_args]?*py.Object,
 
     pub inline fn argv(self: *Handle) [*]?*py.Object {
@@ -37,7 +38,6 @@ pub const Handle = extern struct {
 };
 
 pub var handle_type: ?*c.PyTypeObject = null;
-pub var timer_type: ?*c.PyTypeObject = null;
 
 /// Allocates a handle and takes ownership of nothing: all references are new.
 pub fn create(
@@ -170,9 +170,6 @@ fn cancel(self_obj: *py.Object) py.Error!*py.Object {
         self.flags |= CANCELLED;
         clearArgs(self);
         py.clear(&self.callback);
-        if (self.flags & IS_TIMER != 0) {
-            if (self.loop) |l| loopmod.noteTimerCancelled(@ptrCast(@alignCast(l)));
-        }
     }
     return py.noneRef();
 }
@@ -182,10 +179,6 @@ fn cancelled(self_obj: *py.Object) py.Error!*py.Object {
     return py.boolRef(self.isCancelled());
 }
 
-fn when(self_obj: *py.Object) py.Error!*py.Object {
-    const self: *Handle = @ptrCast(@alignCast(self_obj));
-    return py.float(self.when) orelse py.Error.Python;
-}
 
 fn getCallback(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
     const self: *Handle = @ptrCast(@alignCast(self_obj.?));
@@ -223,13 +216,6 @@ var handle_methods = [_]c.PyMethodDef{
     py.sentinel,
 };
 
-var timer_methods = [_]c.PyMethodDef{
-    py.methodNoArgs("cancel", cancel, "Cancel the callback."),
-    py.methodNoArgs("cancelled", cancelled, "Return True if the callback was cancelled."),
-    py.methodNoArgs("when", when, "Return the scheduled time, on the loop's clock."),
-    py.sentinel,
-};
-
 fn slots(methods: [*]c.PyMethodDef) [8]c.PyType_Slot {
     return .{
         .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
@@ -244,7 +230,6 @@ fn slots(methods: [*]c.PyMethodDef) [8]c.PyType_Slot {
 }
 
 var handle_slots = slots(&handle_methods);
-var timer_slots = slots(&timer_methods);
 
 // asyncio's handles are weak-referenceable, so these must be too.
 const flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | c.Py_TPFLAGS_MANAGED_WEAKREF |
@@ -258,17 +243,8 @@ var handle_spec = c.PyType_Spec{
     .slots = &handle_slots,
 };
 
-var timer_spec = c.PyType_Spec{
-    .name = "zuvloop._zuvloop.TimerHandle",
-    .basicsize = @sizeOf(Handle),
-    .itemsize = 0,
-    .flags = flags,
-    .slots = &timer_slots,
-};
 
 pub fn register(module: *py.Object) py.Error!void {
     handle_type = @ptrCast(c.PyType_FromModuleAndSpec(module, &handle_spec, null) orelse return py.Error.Python);
-    timer_type = @ptrCast(c.PyType_FromModuleAndSpec(module, &timer_spec, null) orelse return py.Error.Python);
     if (c.PyModule_AddObjectRef(module, "Handle", @ptrCast(handle_type)) < 0) return py.Error.Python;
-    if (c.PyModule_AddObjectRef(module, "TimerHandle", @ptrCast(timer_type)) < 0) return py.Error.Python;
 }
