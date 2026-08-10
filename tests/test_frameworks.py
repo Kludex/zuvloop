@@ -13,12 +13,16 @@ import asyncio
 import socket
 from collections.abc import AsyncIterator, Awaitable, Callable
 
-import aiohttp
 import pytest
-import uvicorn
-from aiohttp import web
 
 import zuvloop
+
+try:
+    import aiohttp
+    import uvicorn
+    from aiohttp import web
+except ImportError:  # pragma: no cover - both come from the bench group
+    pytest.skip("aiohttp and uvicorn are bench-group dependencies", allow_module_level=True)
 
 pytestmark = pytest.mark.anyio
 
