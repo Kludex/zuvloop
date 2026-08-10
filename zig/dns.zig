@@ -441,7 +441,14 @@ pub fn getaddrinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
     // can never reach a resolver that way. The platforms disagree about what it
     // means - BSD reads it as the null host, glibc as a name it cannot find - and
     // matching `socket.getaddrinfo` means letting the platform answer rather than
-    // picking one. Neither looks anything up, so this cannot block the loop.
+    // picking one.
+    //
+    // Nothing is resolved here, but this does enter libc on the loop thread, and
+    // the first call in a process pays for the resolver's own initialization:
+    // measured on macOS at 1.5ms for a numeric service and 2.3ms for a name,
+    // then under a microsecond for every call after it. `resolveNumeric` pays the
+    // same initialization on the main path, so moving this one to a threadpool
+    // would not buy a loop that never waits for the resolver to wake up.
     if (host) |name| if (name[0] == 0) {
         var res: ?*std.c.addrinfo = null;
         const rc = std.c.getaddrinfo(name, service, &hints, &res);
