@@ -1372,7 +1372,7 @@ async def test_a_poll_error_does_not_unregister_the_reader() -> None:
         def on_readable() -> None:
             try:
                 data = sock.recv(1024)
-            except (BlockingIOError, ConnectionRefusedError):
+            except BlockingIOError, ConnectionRefusedError:
                 return  # the rejection, consumed, or a bare error wake; the registration stays
             if not received.done():  # pragma: no cover - whether a duplicate wake arrives is the platform's choice
                 received.set_result(data)
