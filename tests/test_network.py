@@ -1352,6 +1352,46 @@ async def test_the_asyncio_server_hook_unregisters_and_closes() -> None:
     assert sock.fileno() == -1
 
 
+async def test_a_poll_error_does_not_unregister_the_reader() -> None:
+    """An ICMP rejection reaches epoll as POLLERR, on which libuv stops the
+    poll handle; the registration survives the error, so the polling must too.
+    macOS never delivers the POLLERR, which makes this a plain delivery test
+    there; the teeth are in the Linux run."""
+    loop = running_loop()
+    received: asyncio.Future[bytes] = loop.create_future()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    peer = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.bind(("127.0.0.1", 0))
+        sock.setblocking(False)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            dead = probe.getsockname()
+        sock.connect(dead)
+
+        def on_readable() -> None:
+            try:
+                data = sock.recv(1024)
+            except OSError:
+                return  # the rejection, consumed; the registration stays
+            if not received.done():
+                received.set_result(data)
+
+        loop.add_reader(sock.fileno(), on_readable)
+        try:
+            sock.send(b"ping")  # nothing listens on `dead`: the rejection comes back
+        except OSError:
+            pass
+        await asyncio.sleep(0.1)
+        peer.bind(dead)
+        peer.sendto(b"pong", sock.getsockname())
+        assert await asyncio.wait_for(received, 2) == b"pong"
+    finally:
+        loop.remove_reader(sock.fileno())
+        sock.close()
+        peer.close()
+
+
 async def test_a_raising_read_callback_closes_the_connection() -> None:
     """asyncio treats it as fatal, and the exception is what `connection_lost` is for."""
     loop = running_loop()
