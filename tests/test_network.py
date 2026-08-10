@@ -1372,15 +1372,15 @@ async def test_a_poll_error_does_not_unregister_the_reader() -> None:
         def on_readable() -> None:
             try:
                 data = sock.recv(1024)
-            except OSError:
-                return  # the rejection, consumed; the registration stays
-            if not received.done():
+            except (BlockingIOError, ConnectionRefusedError):
+                return  # the rejection, consumed, or a bare error wake; the registration stays
+            if not received.done():  # pragma: no cover - whether a duplicate wake arrives is the platform's choice
                 received.set_result(data)
 
         loop.add_reader(sock.fileno(), on_readable)
         try:
             sock.send(b"ping")  # nothing listens on `dead`: the rejection comes back
-        except OSError:
+        except OSError:  # pragma: no cover - whether the send itself raises is the platform's choice
             pass
         await asyncio.sleep(0.1)
         peer.bind(dead)
