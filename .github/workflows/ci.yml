@@ -65,6 +65,40 @@ jobs:
           uv run coverage report
 
 
+  # musl has only ever been compiled for, never run. It is a different libc under
+  # the same Zig `std.c` shapes - a third of the published wheels - and the class
+  # of defect that keeps reaching users is exactly the one a host cannot see.
+  #
+  # Alpine runs in a plain container rather than as a job `container:`, because
+  # the Actions runner needs a glibc Node to start one and Alpine has none. Zig
+  # is fetched as its own static tarball for the same reason.
+  musl:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Test under musl
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src python:3.14-alpine sh -euc '
+            apk add --no-cache curl xz build-base
+
+            curl -fsSL https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz \
+              | tar -xJ -C /opt
+            export PATH="/opt/zig-x86_64-linux-0.16.0:$PATH"
+            zig version
+
+            pip install --no-cache-dir --quiet uv
+            # The interpreter in the image is the one to test against; uv would
+            # otherwise fetch a managed build, and those are linked against glibc.
+            export UV_PYTHON_PREFERENCE=only-system
+            uv sync --python "$(command -v python3)" --group dev --group bench
+
+            uv run python -c "import zuvloop; print(zuvloop.libuv_version())"
+            uv run pytest -q
+          '
+
+
   # The Zig layer reaches libc through `std.c`, whose shape differs per target,
   # and the tests only ever run on the host. Two bugs have shipped that a
   # compile for the other target would have caught on the way in.
@@ -127,7 +161,9 @@ jobs:
           enable-cache: true
 
       - name: Install
-        run: uv sync --python 3.14 --group dev
+        # `bench` carries aiohttp and uvicorn: the framework tests are worth
+        # more here than anywhere, with the bounds checks left on.
+        run: uv sync --python 3.14 --group dev --group bench
 
       # Built straight with zig rather than through the wheel hook, which pins
       # `ReleaseFast`. The install step puts it where the package expects.
