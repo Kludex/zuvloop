@@ -21,6 +21,7 @@ const inline_args = 3;
 const arg_alloc = std.heap.c_allocator;
 
 const CANCELLED: u32 = 1 << 0;
+const SCHEDULED: u32 = 1 << 1;
 
 const Payload = extern struct {
     loop: ?*py.Object,
@@ -56,6 +57,14 @@ pub fn deadline(obj: *py.Object) f64 {
     return payload(obj).when;
 }
 
+/// Leaving the timer heap for the ready queue is what ends being scheduled, as
+/// it does for the handle `BaseEventLoop` pops out of its own heap. Cancelling
+/// does not: a cancelled timer sits in the heap until something compacts it,
+/// which is the state asyncio reports too.
+pub fn clearScheduled(obj: *py.Object) void {
+    payload(obj).flags &= ~SCHEDULED;
+}
+
 pub fn create(
     loop: *py.Object,
     callback: *py.Object,
@@ -66,6 +75,7 @@ pub fn create(
     const obj = c.PyType_GenericAlloc(timer_type.?, 0) orelse return py.Error.Python;
     const self = payload(obj);
     self.when = at;
+    self.flags = SCHEDULED;
 
     if (args.len > inline_args) {
         const buf = arg_alloc.alloc(?*py.Object, args.len) catch {
@@ -190,6 +200,9 @@ fn getCallback(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 
 fn getArgs(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
     const self = payload(self_obj.?);
+    // Cancelling drops the arguments rather than emptying them, which is the
+    // difference asyncio reports as None instead of an empty tuple.
+    if (self.flags & CANCELLED != 0) return py.newref(py.none());
     const n: usize = @intCast(self.nargs);
     const items = self.argv();
     const tuple = c.PyTuple_New(self.nargs) orelse return null;
@@ -217,10 +230,7 @@ fn getWhen(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 }
 
 fn getScheduled(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
-    // The native timer heap owns scheduling; nothing here is ever handed to the
-    // stdlib bookkeeping that reads this.
-    _ = self_obj;
-    return py.boolRef(false);
+    return py.boolRef(payload(self_obj.?).flags & SCHEDULED != 0);
 }
 
 fn getNone(_: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {

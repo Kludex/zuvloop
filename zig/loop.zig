@@ -312,6 +312,7 @@ fn collectDueTimers(self: *LoopObject) void {
             if (st.timers.cancelled != 0) st.timers.cancelled -= 1;
             continue;
         }
+        timermod.clearScheduled(entry.handle);
         st.ready.push(entry.handle) catch py.decref(entry.handle);
     }
     startIdle(st);

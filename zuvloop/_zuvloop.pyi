@@ -32,8 +32,18 @@ class Handle(asyncio.Handle):
 
 class TimerHandle(asyncio.TimerHandle):
     """Subtype of `asyncio.TimerHandle`, so the ordering the base defines over
-    the deadline works."""
+    the deadline works.
 
+    The base reads these while comparing and formatting handles; each is a
+    read-only view of the native record rather than the base's own storage.
+    """
+
+    @property
+    def _when(self) -> float: ...
+    @property
+    def _scheduled(self) -> bool: ...
+    @property
+    def _callback(self) -> Callable[..., object] | None: ...
     def cancel(self) -> None: ...
     def cancelled(self) -> bool: ...
     def when(self) -> float: ...

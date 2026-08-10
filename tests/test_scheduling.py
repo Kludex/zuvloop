@@ -150,12 +150,30 @@ async def test_timer_handles_order_by_their_deadline() -> None:
     assert isinstance(hash(sooner), int)
     assert sooner._when < later._when
     assert sooner._cancelled is False
-    assert sooner._scheduled is False
+    assert sooner._scheduled is True
     assert sooner._callback is print
     assert sooner._args == ()
 
     sooner.cancel()
     later.cancel()
+    assert sooner.cancelled() and later.cancelled()
+    # Cancelling drops the arguments rather than emptying them, and leaves the
+    # handle in the heap until something compacts it - both as asyncio reports.
+    assert sooner._callback is None
+    assert sooner._args is None
+    assert sooner._scheduled is True
+
+
+async def test_a_fired_timer_is_no_longer_scheduled() -> None:
+    """`BaseEventLoop` clears the flag when the handle leaves its heap for the
+    ready queue, and so does the native one."""
+    loop = running_loop()
+    done = loop.create_future()
+    handle = loop.call_later(0.01, done.set_result, None)
+    assert handle._scheduled is True
+    await done
+    await asyncio.sleep(0)
+    assert handle._scheduled is False
 
 
 async def test_call_later_requires_a_delay_and_a_callback() -> None:
