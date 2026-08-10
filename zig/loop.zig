@@ -119,8 +119,13 @@ pub inline fn now() f64 {
     return @as(f64, @floatFromInt(ns)) / 1e9;
 }
 
-fn isHandleCancelled(obj: *py.Object) bool {
-    return timermod.isCancelled(obj);
+/// Cancelled means dropped, and being dropped from the heap is what ends being
+/// scheduled - so the flag is cleared on the way out, as it is everywhere else
+/// a timer leaves.
+fn retireIfCancelled(obj: *py.Object) bool {
+    if (!timermod.isCancelled(obj)) return false;
+    timermod.clearScheduled(obj);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -307,12 +312,12 @@ fn collectDueTimers(self: *LoopObject) void {
     while (st.timers.peek()) |entry| {
         if (entry.when > deadline) break;
         _ = st.timers.pop();
+        timermod.clearScheduled(entry.handle);
         if (timermod.isCancelled(entry.handle)) {
             py.decref(entry.handle);
             if (st.timers.cancelled != 0) st.timers.cancelled -= 1;
             continue;
         }
-        timermod.clearScheduled(entry.handle);
         st.ready.push(entry.handle) catch py.decref(entry.handle);
     }
     startIdle(st);
@@ -324,6 +329,7 @@ fn armTimer(self: *LoopObject) void {
     while (st.timers.peek()) |entry| {
         if (!timermod.isCancelled(entry.handle)) break;
         _ = st.timers.pop();
+        timermod.clearScheduled(entry.handle);
         py.decref(entry.handle);
         if (st.timers.cancelled != 0) st.timers.cancelled -= 1;
     }
@@ -346,7 +352,7 @@ pub fn noteTimerCancelled(self: *LoopObject) void {
     const st = self.st orelse return;
     st.timers.cancelled += 1;
     if (st.timers.cancelled > min_cancelled_timers and st.timers.cancelled * 2 > st.timers.len) {
-        st.timers.compact(isHandleCancelled);
+        st.timers.compact(retireIfCancelled);
         armTimer(self);
     }
 }

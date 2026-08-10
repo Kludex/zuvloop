@@ -57,10 +57,9 @@ pub fn deadline(obj: *py.Object) f64 {
     return payload(obj).when;
 }
 
-/// Leaving the timer heap for the ready queue is what ends being scheduled, as
-/// it does for the handle `BaseEventLoop` pops out of its own heap. Cancelling
-/// does not: a cancelled timer sits in the heap until something compacts it,
-/// which is the state asyncio reports too.
+/// Leaving the heap is what ends being scheduled, by whichever route: run, due
+/// but cancelled, or compacted away. Cancelling alone does not, because the
+/// entry is still in the heap - the same order `BaseEventLoop` clears it in.
 pub fn clearScheduled(obj: *py.Object) void {
     payload(obj).flags &= ~SCHEDULED;
 }

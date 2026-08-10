@@ -176,6 +176,24 @@ async def test_a_fired_timer_is_no_longer_scheduled() -> None:
     assert handle._scheduled is False
 
 
+async def test_a_cancelled_timer_stops_being_scheduled_when_it_leaves_the_heap() -> None:
+    """Cancelling alone leaves it in the heap, as it does in asyncio. Reaching the
+    deadline retires it, and so does the compaction a run of cancellations sets off."""
+    loop = running_loop()
+    due = loop.call_later(0.01, print)
+    due.cancel()
+    assert due._scheduled is True
+
+    pending = loop.call_later(30, print)
+    pending.cancel()
+    for _ in range(400):
+        loop.call_later(30, print).cancel()
+
+    await asyncio.sleep(0.05)
+    assert due._scheduled is False
+    assert pending._scheduled is False
+
+
 async def test_call_later_requires_a_delay_and_a_callback() -> None:
     loop = running_loop()
     with pytest.raises(TypeError, match="delay and a callback"):

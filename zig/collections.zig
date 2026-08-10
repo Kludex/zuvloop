@@ -127,7 +127,7 @@ pub const Timers = struct {
     /// inside the pass would shuffle slots the pass has already moved, and one
     /// from inside the array would land on an entry not yet released. Which is
     /// also why the doomed handles are copied out rather than parked in the tail.
-    pub fn compact(self: *Timers, isCancelled: *const fn (*py.Object) bool) void {
+    pub fn compact(self: *Timers, shouldDrop: *const fn (*py.Object) bool) void {
         // Sized by the heap rather than by `cancelled`, which is a hint and not a
         // guarantee: `Handle.cancel` only reports to the loop while it still has
         // one, so an entry can be cancelled without ever being counted. Nowhere
@@ -140,7 +140,7 @@ pub const Timers = struct {
         var read: usize = 0;
         while (read < self.len) : (read += 1) {
             const entry = self.items[read];
-            if (isCancelled(entry.handle)) {
+            if (shouldDrop(entry.handle)) {
                 doomed[dropped] = entry.handle;
                 dropped += 1;
             } else {
