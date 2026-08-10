@@ -215,7 +215,11 @@ fn onRecv(
     };
     defer py.decref(data);
     const sender = addr.toPython(from.?) catch {
-        c.PyErr_Clear();
+        // The datagram cannot be delivered without naming its sender, and a
+        // receive failure is what `error_received` exists to report.
+        const exc = c.PyErr_GetRaisedException() orelse return;
+        defer py.decref(exc);
+        callInContext(self, self.cb_error_received, &.{exc});
         return;
     };
     defer py.decref(sender);
