@@ -26,7 +26,10 @@ async def test_getaddrinfo_resolves_localhost() -> None:
         assert family in (socket.AF_INET, socket.AF_INET6)
         assert kind is socket.SOCK_STREAM
         assert isinstance(proto, int)
-        assert canonname == ""
+        # Whether libc fills the canonical name in without `AI_CANONNAME` is its
+        # own business: musl answers `localhost` here where glibc and BSD leave
+        # it empty. Agreeing with the standard library is asserted below.
+        assert isinstance(canonname, str)
         assert sockaddr[1] == 80
 
 
