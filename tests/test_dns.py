@@ -81,11 +81,15 @@ async def test_getaddrinfo_reports_failures() -> None:
         # What `""` means is the platform's business, and the platforms disagree:
         # BSD reads it as the null host and resolves the wildcard address, glibc
         # calls it a name it cannot find. libuv reaches neither, because it runs
-        # every hostname through IDNA first and that rejects an empty one.
+        # every hostname through IDNA first and that rejects an empty one. Each
+        # service form reaches libc differently, and the null one is what CPython
+        # carries a macOS workaround for.
         ("", "http"),
+        ("", "80"),
+        ("", None),
     ],
 )
-async def test_getaddrinfo_answers_as_the_stdlib_does(host: str, port: str) -> None:
+async def test_getaddrinfo_answers_as_the_stdlib_does(host: str, port: str | None) -> None:
     loop = running_loop()
     kwargs = {"family": socket.AF_INET, "type": socket.SOCK_STREAM}
     try:
