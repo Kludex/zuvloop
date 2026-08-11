@@ -359,10 +359,13 @@ async def test_sendfile_of_an_empty_file_over_a_transport(tmp_path: Path) -> Non
 
 async def test_sendfile_waits_for_buffered_writes_to_drain(payload_file: IO[bytes]) -> None:
     loop = running_loop()
-    server, port, sinks = await start_sink()
+    server, port, sinks = await start_sink(StalledSink)
     protocol = Recorder()
     transport, _ = await loop.create_connection(lambda: protocol, "127.0.0.1", port)
-    head = PAYLOAD[: 2 * 1024 * 1024]
+    # A stalled peer and a head far beyond loopback buffering, so the backlog
+    # reliably outlives the sendfile call on every platform - Linux otherwise
+    # absorbs multi-megabyte writes synchronously and nothing stays buffered.
+    head = PAYLOAD * 8
     try:
         transport.write(head)
         # Writes are handed to libuv at the end of the iteration; only then can
@@ -370,8 +373,12 @@ async def test_sendfile_waits_for_buffered_writes_to_drain(payload_file: IO[byte
         await asyncio.sleep(0)
         assert isinstance(transport, _zuvloop.Transport)
         assert transport._protocol_paused
-        sent = await loop.sendfile(transport, payload_file, count=100_000)
-        assert sent == 100_000
+        task = loop.create_task(loop.sendfile(transport, payload_file, count=100_000))
+        await asyncio.sleep(0.05)
+        assert not task.done()
+        assert sinks[0].transport is not None
+        sinks[0].transport.resume_reading()
+        assert await task == 100_000
         assert protocol.resumed >= 1
     finally:
         transport.close()
