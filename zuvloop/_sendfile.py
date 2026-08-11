@@ -6,11 +6,10 @@ import os
 import socket
 import ssl
 from asyncio.constants import _SendfileMode
-from collections.abc import Callable
 from typing import IO, cast
 
 from . import _zuvloop
-from ._sockets import SocketOperations, _attempt, _check_non_blocking
+from ._sockets import SocketOperations
 
 # CPython's fallback read sizes: large reads straight to a socket, smaller ones
 # through a transport so flow control gets a say between chunks.
@@ -26,7 +25,7 @@ class SendfileOperations(SocketOperations):
     async def sock_sendfile(  # type: ignore[override]  # typeshed allows fallback=None
         self, sock: socket.socket, file: IO[bytes], offset: int = 0, count: int | None = None, *, fallback: bool = True
     ) -> int:
-        _check_non_blocking(sock)
+        self._check_non_blocking(sock)
         _check_sendfile_params(sock, file, offset, count)
         try:
             return await self._sendfile_to_fd(sock.fileno(), file, offset, count)
@@ -102,7 +101,7 @@ class SendfileOperations(SocketOperations):
         try:
             while blocksize > 0:
                 try:
-                    sent = await self._retry_until_writable(fd, os.sendfile, fd, fileno, offset, blocksize)
+                    sent = cast("int", await self._retry_ready(fd, True, os.sendfile, (fd, fileno, offset, blocksize)))
                 except OSError as exc:
                     if total_sent == 0:
                         # The main reason to get here is `file` not being a
@@ -124,16 +123,6 @@ class SendfileOperations(SocketOperations):
         finally:
             if total_sent > 0:
                 os.lseek(fileno, offset, os.SEEK_SET)
-
-    async def _retry_until_writable(self, fd: int, op: Callable[..., int], *args: int) -> int:
-        future = self.create_future()
-        if _attempt(future, op, args):
-            return cast("int", await future)
-        token = self._watch(fd, True, _attempt, future, op, args)
-        try:
-            return cast("int", await future)
-        finally:
-            self._unwatch(fd, True, token)
 
     async def _sock_sendfile_fallback(
         self, sock: socket.socket, file: IO[bytes], offset: int, count: int | None

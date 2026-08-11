@@ -34,17 +34,22 @@ class SocketOperations(LoopBase):
         self, sock: socket.socket, op: Callable[..., Any], *args: Any, write: bool = False
     ) -> Any:
         """Run `op`, retrying it each time `sock` reports itself ready."""
-        _check_non_blocking(sock)
+        self._check_non_blocking(sock)
+        return await self._retry_ready(sock.fileno(), write, op, args)
+
+    async def _retry_ready(self, fd: int, write: bool, op: Callable[..., Any], args: tuple[Any, ...]) -> Any:
         future = self.create_future()
         if _attempt(future, op, args):
             return await future
-
-        fd = sock.fileno()
         token = self._watch(fd, write, _attempt, future, op, args)
         try:
             return await future
         finally:
             self._unwatch(fd, write, token)
+
+    def _check_non_blocking(self, sock: socket.socket) -> None:
+        if sock.gettimeout() != 0:
+            raise ValueError("the socket must be non-blocking")
 
     async def sock_recv(self, sock: socket.socket, nbytes: int) -> bytes:
         return await self._retry_until_ready(sock, sock.recv, nbytes)  # type: ignore[no-any-return]
@@ -73,7 +78,7 @@ class SocketOperations(LoopBase):
             sent += await self._retry_until_ready(sock, _send_chunk, sock, view, sent, write=True)
 
     async def sock_connect(self, sock: socket.socket, address: Any) -> None:
-        _check_non_blocking(sock)
+        self._check_non_blocking(sock)
         if sock.family in (socket.AF_INET, socket.AF_INET6):
             resolved = await self.getaddrinfo(*address[:2], family=sock.family, type=sock.type, proto=sock.proto)
             address = resolved[0][4]
@@ -126,8 +131,3 @@ def _send_chunk(sock: socket.socket, view: memoryview, sent: int) -> int:
 def _sendto(sock: socket.socket, data: Any, address: Any) -> int:
     """Resolved per attempt, not bound once: callers rebind `sendto` between retries."""
     return sock.sendto(data, address)
-
-
-def _check_non_blocking(sock: socket.socket) -> None:
-    if sock.gettimeout() != 0:
-        raise ValueError("the socket must be non-blocking")
