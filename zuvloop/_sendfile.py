@@ -12,7 +12,10 @@ from typing import IO, cast
 from . import _zuvloop
 from ._sockets import SocketOperations, _attempt, _check_non_blocking
 
-_CHUNK = 16384
+# CPython's fallback read sizes: large reads straight to a socket, smaller ones
+# through a transport so flow control gets a say between chunks.
+_SOCKET_CHUNK = 256 * 1024
+_TRANSPORT_CHUNK = 16 * 1024
 
 
 class SendfileOperations(SocketOperations):
@@ -52,6 +55,8 @@ class SendfileOperations(SocketOperations):
                 except asyncio.SendfileNotAvailableError:
                     if not fallback:
                         raise
+            elif not fallback:
+                raise asyncio.SendfileNotAvailableError(f"native sendfile is not supported for transport {transport!r}")
             return await self._sendfile_fallback(transport, file, offset, count)
         mode = getattr(transport, "_sendfile_compatible", _SendfileMode.UNSUPPORTED)
         if mode == _SendfileMode.UNSUPPORTED:
@@ -120,7 +125,7 @@ class SendfileOperations(SocketOperations):
             if total_sent > 0:
                 os.lseek(fileno, offset, os.SEEK_SET)
 
-    async def _retry_until_writable(self, fd: int, op: Callable[..., int], *args: object) -> int:
+    async def _retry_until_writable(self, fd: int, op: Callable[..., int], *args: int) -> int:
         future = self.create_future()
         if _attempt(future, op, args):
             return cast("int", await future)
@@ -135,7 +140,7 @@ class SendfileOperations(SocketOperations):
     ) -> int:
         if offset:
             file.seek(offset)
-        blocksize = min(count, _CHUNK) if count is not None else _CHUNK
+        blocksize = min(count, _SOCKET_CHUNK) if count is not None else _SOCKET_CHUNK
         total_sent = 0
         try:
             while blocksize > 0:
@@ -145,7 +150,7 @@ class SendfileOperations(SocketOperations):
                 await self.sock_sendall(sock, data)
                 total_sent += len(data)
                 if count is not None:
-                    blocksize = min(count - total_sent, _CHUNK)
+                    blocksize = min(count - total_sent, _SOCKET_CHUNK)
             return total_sent
         finally:
             if total_sent > 0 and hasattr(file, "seek"):
@@ -156,7 +161,7 @@ class SendfileOperations(SocketOperations):
     ) -> int:
         if offset:
             file.seek(offset)
-        blocksize = min(count, _CHUNK) if count is not None else _CHUNK
+        blocksize = min(count, _TRANSPORT_CHUNK) if count is not None else _TRANSPORT_CHUNK
         total_sent = 0
         waiter = _SendfileProtocol(self, transport, bool(getattr(transport, "_protocol_paused", False)))
         try:
@@ -168,7 +173,7 @@ class SendfileOperations(SocketOperations):
                 transport.write(data)
                 total_sent += len(data)
                 if count is not None:
-                    blocksize = min(count - total_sent, _CHUNK)
+                    blocksize = min(count - total_sent, _TRANSPORT_CHUNK)
             return total_sent
         finally:
             if total_sent > 0 and hasattr(file, "seek"):
@@ -228,9 +233,17 @@ class _SendfileProtocol(asyncio.Protocol):
         if self._should_resume_reading:
             self._transport.resume_reading()
         if self._waiter is not None:
-            self._waiter.cancel()
+            if not self._waiter.done():
+                self._waiter.cancel()
+            elif not self._waiter.cancelled():
+                # A failure connection_lost() recorded that nobody awaited
+                # would otherwise be reported as an unretrieved exception.
+                self._waiter.exception()
             self._waiter = None
-        if self._should_resume_writing:
+        # A transport still over its high-water mark delivers its own
+        # resume_writing() once it drains; replaying one now would be an
+        # invitation to write into the backlog.
+        if self._should_resume_writing and not getattr(self._transport, "_protocol_paused", False):
             self._protocol.resume_writing()
 
 

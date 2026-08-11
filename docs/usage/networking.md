@@ -98,5 +98,6 @@ system call — the kernel moves the bytes, nothing is copied through Python. Fo
 `sendfile(transport, ...)` the loop first lets the transport's buffered writes
 drain and pauses reading, so the file cannot reorder around data written before
 it. Targets the syscall cannot serve — a `BytesIO`, a TLS transport, a pipe —
-fall back to a read-and-write loop, or raise `SendfileNotAvailableError` when
-called with `fallback=False`.
+fall back to a read-and-write loop. With `fallback=False` they raise instead:
+`RuntimeError` where the transport itself rules the syscall out, as a TLS
+transport does, and `SendfileNotAvailableError` everywhere else.

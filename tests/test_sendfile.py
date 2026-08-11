@@ -470,6 +470,8 @@ async def test_sendfile_writes_through_a_pipe_transport() -> None:
     read_file = os.fdopen(read_end, "rb", buffering=0)
     transport, _ = await loop.connect_write_pipe(asyncio.Protocol, os.fdopen(write_end, "wb", buffering=0))
     try:
+        with pytest.raises(asyncio.SendfileNotAvailableError):
+            await loop.sendfile(transport, io.BytesIO(PAYLOAD[:10_000]), fallback=False)
         sent = await loop.sendfile(transport, io.BytesIO(PAYLOAD[:10_000]))
         assert sent == 10_000
         transport.close()
@@ -598,6 +600,10 @@ class FallbackFakeTransport(FakeTransport):
     _sendfile_compatible = _SendfileMode.FALLBACK
 
 
+class PausedFallbackFakeTransport(FallbackFakeTransport):
+    _protocol_paused = True
+
+
 async def test_sendfile_on_a_foreign_transport_without_support(payload_file: IO[bytes]) -> None:
     loop = running_loop()
     with pytest.raises(RuntimeError, match="not supported"):
@@ -623,6 +629,18 @@ async def test_sendfile_on_a_foreign_transport_with_fallback_disabled(payload_fi
     loop = running_loop()
     with pytest.raises(RuntimeError, match="fallback is disabled"):
         await loop.sendfile(cast("asyncio.WriteTransport", FallbackFakeTransport()), payload_file, fallback=False)
+
+
+async def test_sendfile_leaves_a_still_paused_protocol_paused() -> None:
+    """A transport over its high-water mark delivers its own resume later;
+    replaying one at restore would invite writes into the backlog."""
+    loop = running_loop()
+    fake = PausedFallbackFakeTransport()
+    recorder = Recorder()
+    fake.protocol = recorder
+    assert await loop.sendfile(cast("asyncio.WriteTransport", fake), io.BytesIO()) == 0
+    assert fake.protocol is recorder
+    assert recorder.resumed == 0
 
 
 async def test_sendfile_stops_when_the_transport_closes_mid_transfer() -> None:
