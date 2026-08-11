@@ -36,8 +36,10 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
     orchestration that runs once per loop or once per connection.
     """
 
-    # How often the loop gauges are sampled while a real OpenTelemetry meter
-    # provider is installed. Assign before running the loop to change it.
+    # How often the native sampler fires while the loop runs. It publishes the
+    # loop gauges when a meter provider is installed, and it is also how quickly
+    # a provider configured after the loop started is noticed. Assign before
+    # running the loop to change it.
     metrics_interval: float = 10.0
 
     def __init__(self) -> None:
@@ -52,6 +54,8 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         self._sock_watchers: dict[tuple[int, bool], object] = {}
         self._wakeup_fd_attached = False
         self._instrumentation = Instrumentation()
+        self._monitoring_armed = False
+        self._metrics_armed = False
         self._setup_self_pipe()
 
     def __del__(self, _warn: Callable[..., object] = warnings.warn) -> None:
@@ -100,11 +104,10 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         self._attach_wakeup_fd()
         _events._set_running_loop(self)
         sys.set_asyncgen_hooks(firstiter=self._asyncgen_firstiter, finalizer=self._asyncgen_finalizer)
-        # Gauges cost nothing to skip and something to sample, so the sampler
-        # runs exactly when there is somewhere for the numbers to go.
-        if metrics_provider_installed():
-            self._start_metrics(self.metrics_interval, publish_metrics)
-        self._set_slow_callback_monitoring(instrumentation_provider_installed())
+        self._monitoring_armed = instrumentation_provider_installed()
+        self._metrics_armed = metrics_provider_installed()
+        self._set_slow_callback_monitoring(self._monitoring_armed)
+        self._start_metrics(self.metrics_interval, self._on_sample)
         try:
             self._run()
         finally:
@@ -252,6 +255,15 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
 
     def _on_slow_callback(self, handle: object, duration: float) -> None:
         self._instrumentation.report_slow_callback(handle, duration)
+
+    def _on_sample(self, snapshot: dict[str, int]) -> None:
+        if not self._monitoring_armed and instrumentation_provider_installed():
+            self._monitoring_armed = True
+            self._set_slow_callback_monitoring(True)
+        if not self._metrics_armed:
+            self._metrics_armed = metrics_provider_installed()
+        if self._metrics_armed:
+            publish_metrics(snapshot)
 
     # -- internals ---------------------------------------------------------
 

@@ -64,10 +64,10 @@ class Instrumentation:
                     "code.callback": repr(handle),
                     "duration": duration,
                     "asyncio.call_graph": capture_call_graph(handle),
+                    "logfire.level_num": 13,
                 }
             ),
         )
-        span.set_status(Status(StatusCode.ERROR, "callback exceeded slow_callback_duration"))
         span.end(end_time=ended)
 
     def report_exception(self, context: dict[str, Any]) -> None:
