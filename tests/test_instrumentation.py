@@ -255,6 +255,46 @@ async def test_monitoring_arms_when_a_provider_appears_mid_run(
     assert any("blocks_after_provider" in callback for callback in callbacks)
 
 
+async def test_provider_checks_stop_once_a_provider_is_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The armed flags are latches: after a provider says yes, later sampler
+    ticks publish without asking again."""
+    snapshots: list[dict[str, int]] = []
+    checks = 0
+    installed = False
+
+    def probe() -> bool:
+        nonlocal checks
+        checks += 1
+        return installed
+
+    monkeypatch.setattr("zuvloop._base.publish_metrics", snapshots.append)
+    monkeypatch.setattr("zuvloop._base.metrics_provider_installed", probe)
+
+    def main() -> None:
+        loop = zuvloop.new_event_loop()
+        loop.metrics_interval = 0.02
+
+        async def scenario() -> None:
+            nonlocal installed
+            await asyncio.sleep(0.05)
+            assert not snapshots
+            installed = True
+            await asyncio.sleep(0.05)
+            assert snapshots
+            checks_when_armed = checks
+            published = len(snapshots)
+            await asyncio.sleep(0.05)
+            assert len(snapshots) > published
+            assert checks == checks_when_armed
+
+        try:
+            loop.run_until_complete(scenario())
+        finally:
+            loop.close()
+
+    await asyncio.to_thread(main)
+
+
 async def test_gauges_stay_unpublished_without_a_meter_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     snapshots: list[dict[str, int]] = []
     monkeypatch.setattr("zuvloop._base.publish_metrics", snapshots.append)

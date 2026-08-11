@@ -55,6 +55,7 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         self._wakeup_fd_attached = False
         self._instrumentation = Instrumentation()
         self._monitoring_armed = False
+        self._metrics_armed = False
         self._setup_self_pipe()
 
     def __del__(self, _warn: Callable[..., object] = warnings.warn) -> None:
@@ -104,10 +105,13 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         _events._set_running_loop(self)
         sys.set_asyncgen_hooks(firstiter=self._asyncgen_firstiter, finalizer=self._asyncgen_finalizer)
         # Providers are commonly installed from inside the loop - logfire's
-        # configure() in main(), for instance - so the decision cannot be
-        # latched here. The sampler doubles as the re-check: each interval it
-        # arms slow-callback timing if a provider has appeared since.
+        # configure() in main(), for instance - so the decision cannot be made
+        # only here. The sampler doubles as the re-check: each interval it arms
+        # whatever a newly appeared provider serves. Installation is one-way in
+        # OpenTelemetry, so each armed flag is a latch and the provider lookup
+        # stops once it has said yes.
         self._monitoring_armed = instrumentation_provider_installed()
+        self._metrics_armed = metrics_provider_installed()
         self._set_slow_callback_monitoring(self._monitoring_armed)
         self._start_metrics(self.metrics_interval, self._on_sample)
         try:
@@ -262,7 +266,9 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         if not self._monitoring_armed and instrumentation_provider_installed():
             self._monitoring_armed = True
             self._set_slow_callback_monitoring(True)
-        if metrics_provider_installed():
+        if not self._metrics_armed:
+            self._metrics_armed = metrics_provider_installed()
+        if self._metrics_armed:
             publish_metrics(snapshot)
 
     # -- internals ---------------------------------------------------------
