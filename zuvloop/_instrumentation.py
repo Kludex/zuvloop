@@ -64,10 +64,14 @@ class Instrumentation:
                     "code.callback": repr(handle),
                     "duration": duration,
                     "asyncio.call_graph": capture_call_graph(handle),
+                    # A slow callback is a warning, which span status cannot
+                    # say - OpenTelemetry has only OK, ERROR and UNSET. The
+                    # status stays unset; this is Logfire's severity scale,
+                    # and backends that do not know it ignore the attribute.
+                    "logfire.level_num": 13,
                 }
             ),
         )
-        span.set_status(Status(StatusCode.ERROR, "callback exceeded slow_callback_duration"))
         span.end(end_time=ended)
 
     def report_exception(self, context: dict[str, Any]) -> None:

@@ -98,9 +98,11 @@ That's it. That's the migration. 🎉
 ## Observability
 
 zuvloop emits plain OpenTelemetry. The only runtime dependency is `opentelemetry-api` — not the
-SDK, nothing vendor-specific. Configure providers before starting the loop; zuvloop checks for them
-at each `run_forever()` entry. Until then the instruments are no-ops and slow-callback timing stays
-off.
+SDK, nothing vendor-specific. Providers can be configured before the loop starts or from inside
+it — `logfire.configure()` in `main()` works: zuvloop checks at each `run_forever()` entry and
+re-checks on its sampling interval (`loop.metrics_interval`, 10 seconds by default) while the
+loop runs. Until a provider is installed the instruments are no-ops and slow-callback timing
+stays off.
 
 Anything that speaks OpenTelemetry can collect it. For example, with
 <a href="https://logfire.pydantic.dev" target="_blank">Logfire</a>:
