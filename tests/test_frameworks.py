@@ -21,7 +21,12 @@ try:
     import aiohttp
     import uvicorn
     from aiohttp import web
-except ImportError:  # pragma: no cover - both come from the bench group
+except ModuleNotFoundError as exc:  # pragma: no cover - both come from the bench group
+    # Only the packages themselves being absent is a reason to skip. Anything
+    # broken underneath them - a transitive import, an ABI mismatch - is the
+    # breakage these tests exist to notice, so it is left to propagate.
+    if exc.name not in {"aiohttp", "uvicorn"}:
+        raise
     pytest.skip("aiohttp and uvicorn are bench-group dependencies", allow_module_level=True)
 
 pytestmark = pytest.mark.anyio
@@ -35,10 +40,16 @@ type Send = Callable[[Message], Awaitable[None]]
 type Receive = Callable[[], Awaitable[Message]]
 
 
-def free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
+def bound_socket() -> socket.socket:
+    """Bound here and handed to the server still bound.
+
+    Reading a port from a throwaway socket and reconnecting to it later leaves a
+    window where the kernel can give that port to something else, which on a
+    runner building several of these at once is a flake nobody can reproduce.
+    """
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    return sock
 
 
 async def echo(request: web.Request) -> web.Response:
@@ -56,8 +67,9 @@ async def aiohttp_server() -> AsyncIterator[str]:
     app.router.add_get("/bulk", bulk)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
-    port = free_port()
-    site = web.TCPSite(runner, "127.0.0.1", port)
+    sock = bound_socket()
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
     await site.start()
     try:
         yield f"http://127.0.0.1:{port}"
@@ -109,15 +121,22 @@ async def app(scope: Message, receive: Receive, send: Send) -> None:
 
 async def uvicorn_server() -> AsyncIterator[str]:
     assert isinstance(asyncio.get_running_loop(), zuvloop.EventLoop)
-    port = free_port()
-    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error", access_log=False)
+    sock = bound_socket()
+    port = sock.getsockname()[1]
+    config = uvicorn.Config(app, log_level="error", access_log=False)
     server = uvicorn.Server(config)
     # uvicorn installs process-wide SIGINT and SIGTERM handlers otherwise, which
     # is the runner's business rather than a test's.
     server.capture_signals = _no_signals  # type: ignore[assignment]
-    serving = asyncio.ensure_future(server.serve())
+    serving = asyncio.ensure_future(server.serve(sockets=[sock]))
     try:
         while not server.started:
+            # Nothing else is watching this task. Left unwatched, a server that
+            # raised before it started serving would spin here until the job
+            # timed out rather than reporting what went wrong.
+            if serving.done():  # pragma: no cover - only reached when the server fails to start
+                await serving
+                raise RuntimeError("uvicorn stopped before it began serving")
             await asyncio.sleep(0.01)
         yield f"http://127.0.0.1:{port}"
     finally:
