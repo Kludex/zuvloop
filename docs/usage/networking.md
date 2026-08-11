@@ -91,5 +91,12 @@ works too, including the case where it swaps a plain protocol for a
 one `uv_poll_t` per descriptor, and the `sock_*` family
 (`sock_recv`, `sock_sendall`, `sock_connect`, `sock_accept`, …) is built on them.
 
-`sock_sendfile` and `sendfile` raise `NotImplementedError`. asyncio falls back to
-a read-and-write loop when a loop declines them, so file responses still work.
+## Sending files
+
+`sock_sendfile` and `sendfile` transfer file contents with the `sendfile(2)`
+system call — the kernel moves the bytes, nothing is copied through Python. For
+`sendfile(transport, ...)` the loop first lets the transport's buffered writes
+drain and pauses reading, so the file cannot reorder around data written before
+it. Targets the syscall cannot serve — a `BytesIO`, a TLS transport, a pipe —
+fall back to a read-and-write loop, or raise `SendfileNotAvailableError` when
+called with `fallback=False`.

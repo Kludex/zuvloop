@@ -254,15 +254,6 @@ async def test_remove_reader_for_an_unwatched_descriptor() -> None:
     assert loop.remove_writer(0) is False
 
 
-async def test_sendfile_is_not_implemented() -> None:
-    loop = running_loop()
-    with socket.socket() as sock:
-        with pytest.raises(NotImplementedError):
-            await loop.sock_sendfile(sock, None)
-    with pytest.raises(NotImplementedError):
-        await loop.sendfile(None, None)
-
-
 async def test_a_partially_drained_descriptor_reports_ready_again() -> None:
     """Reading one byte at a time leaves the descriptor readable between wakeups."""
     loop = running_loop()

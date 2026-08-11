@@ -1005,6 +1005,10 @@ fn forceCloseMethod(self_obj: *py.Object, exc: *py.Object) py.Error!*py.Object {
     return py.noneRef();
 }
 
+fn getProtocolPaused(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
+    return py.boolRef(asTransport(self_obj.?).flags & PROTOCOL_PAUSED != 0);
+}
+
 // ---------------------------------------------------------------------------
 // construction
 
@@ -1225,12 +1229,19 @@ var methods = [_]c.PyMethodDef{
     py.sentinel,
 };
 
+// asyncio's name for this state; its sendfile machinery reads it off transports.
+var getsets = [_]c.PyGetSetDef{
+    .{ .name = "_protocol_paused", .get = getProtocolPaused, .set = null, .doc = "Whether flow control has paused the protocol.", .closure = null },
+    .{ .name = null, .get = null, .set = null, .doc = null, .closure = null },
+};
+
 var slots = [_]c.PyType_Slot{
     .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
     .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
     .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&clear_)) },
     .{ .slot = c.Py_tp_repr, .pfunc = @ptrCast(@constCast(&repr)) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
+    .{ .slot = c.Py_tp_getset, .pfunc = @ptrCast(&getsets) },
     .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("A libuv-backed stream transport.")) },
     .{ .slot = 0, .pfunc = null },
 };

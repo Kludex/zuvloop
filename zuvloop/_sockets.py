@@ -101,22 +101,6 @@ class SocketOperations(LoopBase):
         finally:
             self._unwatch(fd, True, token)
 
-    async def sock_sendfile(  # type: ignore[override]  # typeshed allows fallback=None
-        self, sock: socket.socket, file: Any, offset: int = 0, count: int | None = None, *, fallback: bool = True
-    ) -> int:
-        raise NotImplementedError("zuvloop does not implement sock_sendfile(); read and sock_sendall() instead")
-
-    async def sendfile(
-        self,
-        transport: Any,
-        file: Any,
-        offset: int = 0,
-        count: int | None = None,
-        *,
-        fallback: bool = True,
-    ) -> int:
-        raise NotImplementedError("zuvloop does not implement sendfile(); write the file contents instead")
-
 
 def _attempt(future: asyncio.Future[Any], op: Callable[..., Any], args: tuple[Any, ...]) -> bool:
     """Settle `future` from one attempt at `op`; False means "not ready yet"."""
