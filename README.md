@@ -122,8 +122,8 @@ zuvloop.run(main())
 
 That's all — there is no zuvloop-specific setup. Spans and counters are emitted
 as events happen, and the loop gauges are sampled automatically while the loop
-runs (only when a real provider is installed, so an uninstrumented program never
-pays for sampling).
+runs (published only once a real provider is installed; without one the
+snapshot is dropped).
 
 You get:
 

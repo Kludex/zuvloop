@@ -104,12 +104,6 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         self._attach_wakeup_fd()
         _events._set_running_loop(self)
         sys.set_asyncgen_hooks(firstiter=self._asyncgen_firstiter, finalizer=self._asyncgen_finalizer)
-        # Providers are commonly installed from inside the loop - logfire's
-        # configure() in main(), for instance - so the decision cannot be made
-        # only here. The sampler doubles as the re-check: each interval it arms
-        # whatever a newly appeared provider serves. Installation is one-way in
-        # OpenTelemetry, so each armed flag is a latch and the provider lookup
-        # stops once it has said yes.
         self._monitoring_armed = instrumentation_provider_installed()
         self._metrics_armed = metrics_provider_installed()
         self._set_slow_callback_monitoring(self._monitoring_armed)
