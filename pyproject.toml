@@ -1,14 +1,18 @@
 [build-system]
-requires = ["hatchling", "hatch-ziglang", "ziglang==0.16.0"]
+# hatch-ziglang is pinned exactly: it runs during the isolated wheel build and
+# invokes the native compiler, so a future version resolved from a lower bound
+# could execute unreviewed code into the wheels the publish job trusts. The
+# compiler is pinned for the same reason. Bump both deliberately.
+requires = ["hatchling", "hatch-vcs", "hatch-ziglang==0.2.1", "ziglang==0.16.0"]
 build-backend = "hatchling.build"
 
 [project]
 name = "zuvloop"
-version = "0.0.2"
 description = "A libuv event loop for asyncio, written in Zig."
 readme = "README.md"
 requires-python = ">=3.14"
 license = "MIT"
+dynamic = ["version"]
 # libuv is compiled into the extension, so its licence ships with the wheel.
 license-files = ["LICENSE", "vendor/libuv/LICENSE*"]
 authors = [{ name = "Marcelo Trylesinski", email = "marcelotryle@gmail.com" }]
@@ -39,6 +43,17 @@ dev = [
 ]
 bench = ["aiohttp", "httptools", "pytest-codspeed>=5", "uvicorn", "uvloop>=0.21"]
 docs = ["zensical"]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+# A tag is the version; commits after it are the next patch's dev builds, so an
+# untagged build can never claim to be the release. `no-local-version` drops the
+# `+<hash>` segment, which PyPI refuses on upload.
+version_scheme = "guess-next-dev"
+local_scheme = "no-local-version"
+fallback_version = "0.0.0"
 
 [tool.hatch.build.targets.wheel]
 packages = ["zuvloop"]

@@ -31,6 +31,10 @@ jobs:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           persist-credentials: false
+          # hatch-vcs reads the version off the tags, and the default shallow
+          # checkout fetches none of them: the build would stamp the fallback
+          # onto a wheel rather than fail, so this has to be the full history.
+          fetch-depth: 0
 
       # cibuildwheel's build[uv] frontend needs uv on PATH; the manylinux
       # containers ship it, the macOS runners do not.
@@ -61,6 +65,10 @@ jobs:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           persist-credentials: false
+          # hatch-vcs reads the version off the tags, and the default shallow
+          # checkout fetches none of them: the build would stamp the fallback
+          # onto a wheel rather than fail, so this has to be the full history.
+          fetch-depth: 0
 
       - uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867 # v7.1.6
         with:
