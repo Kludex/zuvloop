@@ -15,15 +15,15 @@ from typing import Any, cast
 
 from . import _zuvloop
 from ._process import Popen
+from ._sendfile import SendfileOperations
 from ._server import Server
-from ._sockets import SocketOperations
 
 # What `getaddrinfo` hands back: family, kind, protocol, canonical name, address.
 type _AddrInfo = tuple[int, int, int, str, tuple[str, int] | tuple[str, int, int, int]]
 _SSLArg = ssl_module.SSLContext | bool | None
 
 
-class ConnectionOperations(SocketOperations):
+class ConnectionOperations(SendfileOperations):
     """Connection and server setup.
 
     Sockets are created and bound here; once connected the descriptor is handed

@@ -53,10 +53,6 @@ Making the scheduler consult Python on every timer operation would cost more tha
 the compatibility is worth. Code that needs a controllable clock should schedule
 against one explicitly.
 
-**`sock_sendfile` and `sendfile` raise `NotImplementedError`.** asyncio falls
-back to a read-and-write loop when a loop declines them, so this degrades rather
-than breaks.
-
 **`host=""` is not treated as `NULL`.** `socket.getaddrinfo` resolves the empty
 string as an unspecified host; zuvloop raises `OSError`. This is the whole of its
 81-case disagreement above.

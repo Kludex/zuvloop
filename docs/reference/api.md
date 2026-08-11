@@ -28,9 +28,10 @@ Creates a loop. This is the callable to hand to `asyncio.run()`,
 
 ### `zuvloop.EventLoop`
 
-An `asyncio.AbstractEventLoop`. Every method asyncio declares is implemented;
-`sock_sendfile` and `sendfile` raise `NotImplementedError`, which asyncio treats
-as a signal to fall back.
+An `asyncio.AbstractEventLoop`. Every method asyncio declares is implemented,
+including `sock_sendfile` and `sendfile`, which use the `sendfile(2)` system
+call and fall back to a read-and-write loop where the syscall cannot serve —
+see [Sending files](../usage/networking.md#sending-files).
 
 Beyond asyncio's surface it carries the usual knobs — `set_debug`,
 `slow_callback_duration`, `set_exception_handler`, `set_default_executor`.

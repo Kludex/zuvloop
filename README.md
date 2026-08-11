@@ -169,7 +169,7 @@ zuvloop keeps its timer heap in native code and reads the clock directly, so mon
 returns and nothing else. A loop that needs a controllable clock should schedule against one
 explicitly.
 
-Also not implemented: `sendfile()` and `sock_sendfile()` raise `NotImplementedError`. Handles
+One more deliberate divergence: handles
 returned by `call_soon` implement the `asyncio.Handle` interface but are not instances of it:
 the base class is 56 bytes of storage such a handle never writes, measured at 2% of `call_soon`,
 which is the object the loop allocates more often than any other. `call_later` and `call_at`
