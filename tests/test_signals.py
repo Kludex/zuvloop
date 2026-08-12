@@ -249,6 +249,48 @@ def test_failed_registration_does_not_resurrect_a_finalized_owner(monkeypatch: p
         real_signal(signal.SIGUSR1, original)
 
 
+def test_rollback_revalidates_an_owner_finalized_at_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = signal.getsignal(signal.SIGUSR1)
+    old = zuvloop.new_event_loop()
+    owner = zuvloop.new_event_loop()
+    cleanup_fd = os.dup(old._csock.fileno())
+    old.add_signal_handler(signal.SIGUSR1, print)
+    real_signal = signal.signal
+    first_signal_call = True
+    finalized_checks = 0
+    real_is_finalized = old._signal_owner.is_finalized
+
+    def fail_registration_once(
+        sig: int, handler: int | Callable[[int, FrameType | None], object]
+    ) -> int | Callable[[int, FrameType | None], object] | None:
+        nonlocal first_signal_call
+        if first_signal_call:
+            first_signal_call = False
+            raise OSError("cannot install")
+        return real_signal(sig, handler)
+
+    def finalize_on_commit_check() -> bool:
+        nonlocal finalized_checks
+        finalized_checks += 1
+        if finalized_checks == 2:
+            _finish_deferred_signal_cleanup((signal.SIGUSR1,), cleanup_fd, old._signal_owner)
+        return real_is_finalized()
+
+    monkeypatch.setattr(signal, "signal", fail_registration_once)
+    monkeypatch.setattr(old._signal_owner, "is_finalized", finalize_on_commit_check)
+    try:
+        with pytest.raises(RuntimeError, match="cannot be caught"):
+            owner.add_signal_handler(signal.SIGUSR1, print)
+        assert signal.SIGUSR1 not in _signal_owners
+        assert signal.getsignal(signal.SIGUSR1) is signal.SIG_DFL
+        assert signal.set_wakeup_fd(-1) == -1
+    finally:
+        old.close()
+        owner.close()
+        signal.set_wakeup_fd(-1)
+        real_signal(signal.SIGUSR1, original)
+
+
 def test_failed_registration_abandons_a_finalized_wakeup_owner_for_another_signal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

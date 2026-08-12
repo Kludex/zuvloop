@@ -54,7 +54,7 @@ class EventLoop(ConnectionOperations):
             # signal number to the wakeup fd; the loop dispatches from there.
             signal.signal(sig, _noop_signal_handler)
         except OSError as exc:
-            previous_finalized = isinstance(previous_owner, SignalOwner) and previous_owner.finalized
+            previous_finalized = isinstance(previous_owner, SignalOwner) and previous_owner.is_finalized()
             if previous_finalized:
                 # A pending finalizer already skipped this provisional owner.
                 # Complete its reset instead of resurrecting that loop.
@@ -67,12 +67,19 @@ class EventLoop(ConnectionOperations):
                 self._signal_handlers[sig] = previous_entry
             if isinstance(previous_owner, SignalOwner) and not previous_finalized:
                 _signal_owners[sig] = previous_owner
+                # Finalization can run after the snapshot but before this dict
+                # assignment. Revalidate the token at the commit point; if it
+                # raced us, cleanup either removed it already or we do so now.
+                if (  # pragma: no cover - defensive recheck after deferred cleanup
+                    previous_owner.is_finalized() and _signal_owners.get(sig) is previous_owner
+                ):
+                    _signal_owners.pop(sig, None)
+                    handler = signal.default_int_handler if sig == signal.SIGINT else signal.SIG_DFL
+                    signal.signal(sig, handler)
             else:
                 _signal_owners.pop(sig, None)
 
-            previous_wakeup_owner = wakeup_state[1] if wakeup_state is not None else None
-            abandon_wakeup = previous_wakeup_owner is not None and previous_wakeup_owner.finalized
-            self._restore_wakeup_fd(wakeup_state, abandon=abandon_wakeup)
+            self._restore_wakeup_fd(wakeup_state)
             raise RuntimeError(f"sig {sig} cannot be caught") from exc
 
         signal.siginterrupt(sig, False)
