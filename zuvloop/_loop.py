@@ -9,7 +9,7 @@ from collections.abc import Callable
 from types import FrameType
 from typing import Any
 
-from ._base import _finished_signal_cleanups, _signal_owners
+from ._base import _signal_owners
 from ._connect import ConnectionOperations
 
 _MISSING_SIGNAL_OWNER = object()
@@ -54,27 +54,27 @@ class EventLoop(ConnectionOperations):
             # signal number to the wakeup fd; the loop dispatches from there.
             signal.signal(sig, _noop_signal_handler)
         except OSError as exc:
-            cleanup_finished = (
-                previous_owner is not _MISSING_SIGNAL_OWNER and (previous_owner, sig) in _finished_signal_cleanups
-            )
-            if cleanup_finished:
-                _finished_signal_cleanups.discard((previous_owner, sig))
+            if previous_owner is not _MISSING_SIGNAL_OWNER and previous_owner is not self._signal_owner:
+                # A pending finalizer may already have skipped this provisional
+                # owner. Complete its reset instead of resurrecting that loop.
                 handler = signal.default_int_handler if sig == signal.SIGINT else signal.SIG_DFL
                 signal.signal(sig, handler)
+
             if previous_entry is None:
                 del self._signal_handlers[sig]
             else:
                 self._signal_handlers[sig] = previous_entry
-            if previous_owner is _MISSING_SIGNAL_OWNER or cleanup_finished:
-                _signal_owners.pop(sig, None)
-            else:
+            if previous_owner is self._signal_owner:
                 _signal_owners[sig] = previous_owner
-            self._restore_wakeup_fd(wakeup_state, abandon=cleanup_finished)
+            else:
+                _signal_owners.pop(sig, None)
+
+            previous_wakeup_owner = wakeup_state[1] if wakeup_state is not None else None
+            abandon_wakeup = previous_wakeup_owner is not None and previous_wakeup_owner is not self._signal_owner
+            self._restore_wakeup_fd(wakeup_state, abandon=abandon_wakeup)
             raise RuntimeError(f"sig {sig} cannot be caught") from exc
 
         signal.siginterrupt(sig, False)
-        if previous_owner is not _MISSING_SIGNAL_OWNER:
-            _finished_signal_cleanups.discard((previous_owner, sig))
 
     def remove_signal_handler(self, sig: int) -> bool:
         _check_signal(sig)

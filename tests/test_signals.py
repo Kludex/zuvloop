@@ -81,10 +81,10 @@ def test_failed_wakeup_attach_rolls_back_signal_ownership(monkeypatch: pytest.Mo
     loop = zuvloop.new_event_loop()
     siginterrupt_calls: list[tuple[int, bool]] = []
 
-    def fail_to_attach() -> None:
+    def fail_to_attach(_fd: int) -> int:
         raise OSError("cannot attach")
 
-    monkeypatch.setattr(loop, "_attach_wakeup_fd", fail_to_attach)
+    monkeypatch.setattr(signal, "set_wakeup_fd", fail_to_attach)
     monkeypatch.setattr(signal, "siginterrupt", lambda sig, flag: siginterrupt_calls.append((sig, flag)))
     try:
         with pytest.raises(RuntimeError, match="cannot be caught"):
@@ -96,6 +96,36 @@ def test_failed_wakeup_attach_rolls_back_signal_ownership(monkeypatch: pytest.Mo
     finally:
         loop.close()
         signal.signal(signal.SIGUSR1, original)
+
+
+def test_failed_wakeup_attach_does_not_restore_another_loops_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    originals = {sig: signal.getsignal(sig) for sig in (signal.SIGUSR1, signal.SIGUSR2)}
+    old = zuvloop.new_event_loop()
+    owner = zuvloop.new_event_loop()
+    old.add_signal_handler(signal.SIGUSR1, print)
+    real_set_wakeup_fd = signal.set_wakeup_fd
+    first_call = True
+
+    def fail_once(fd: int) -> int:
+        nonlocal first_call
+        if first_call:
+            first_call = False
+            raise OSError("cannot attach")
+        return real_set_wakeup_fd(fd)
+
+    monkeypatch.setattr(signal, "set_wakeup_fd", fail_once)
+    try:
+        with pytest.raises(RuntimeError, match="cannot be caught"):
+            owner.add_signal_handler(signal.SIGUSR2, print)
+        assert signal.SIGUSR2 not in _signal_owners
+        assert real_set_wakeup_fd(-1) == -1
+    finally:
+        old.remove_signal_handler(signal.SIGUSR1)
+        old.close()
+        owner.close()
+        real_set_wakeup_fd(-1)
+        for sig, handler in originals.items():
+            signal.signal(sig, handler)
 
 
 def test_failed_signal_reregistration_restores_the_existing_entry(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -119,23 +149,31 @@ def test_failed_signal_reregistration_restores_the_existing_entry(monkeypatch: p
         signal.signal(signal.SIGUSR1, original)
 
 
-def test_stale_pending_cleanup_cannot_reset_a_registration_in_progress(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stale_cleanup_cannot_disable_a_wakeup_fd_during_attachment(monkeypatch: pytest.MonkeyPatch) -> None:
     original = signal.getsignal(signal.SIGUSR1)
     old = zuvloop.new_event_loop()
     owner = zuvloop.new_event_loop()
     cleanup_fd = os.dup(old._csock.fileno())
     old.add_signal_handler(signal.SIGUSR1, print)
-    real_siginterrupt = signal.siginterrupt
+    real_set_wakeup_fd = signal.set_wakeup_fd
+    cleanup_ran = False
 
-    def run_pending_cleanup(sig: int, flag: bool) -> None:
-        _finish_deferred_signal_cleanup((signal.SIGUSR1,), cleanup_fd, old._signal_owner)
-        real_siginterrupt(sig, flag)
+    def run_cleanup_after_install(fd: int) -> int:
+        nonlocal cleanup_ran
+        previous = real_set_wakeup_fd(fd)
+        if not cleanup_ran:
+            cleanup_ran = True
+            _finish_deferred_signal_cleanup((signal.SIGUSR1,), cleanup_fd, old._signal_owner)
+        return previous
 
-    monkeypatch.setattr(signal, "siginterrupt", run_pending_cleanup)
+    monkeypatch.setattr(signal, "set_wakeup_fd", run_cleanup_after_install)
     try:
         owner.add_signal_handler(signal.SIGUSR1, print)
         assert _signal_owners[signal.SIGUSR1] is owner._signal_owner
         assert signal.getsignal(signal.SIGUSR1) is _noop_signal_handler
+        installed = real_set_wakeup_fd(-1)
+        assert installed == owner._csock.fileno()
+        real_set_wakeup_fd(installed)
     finally:
         owner.remove_signal_handler(signal.SIGUSR1)
         old.close()
@@ -172,6 +210,42 @@ def test_failed_registration_does_not_resurrect_a_finalized_owner(monkeypatch: p
         old.close()
         owner.close()
         real_signal(signal.SIGUSR1, original)
+
+
+def test_failed_registration_abandons_a_finalized_wakeup_owner_for_another_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    originals = {sig: signal.getsignal(sig) for sig in (signal.SIGUSR1, signal.SIGUSR2)}
+    old = zuvloop.new_event_loop()
+    owner = zuvloop.new_event_loop()
+    cleanup_fd = os.dup(old._csock.fileno())
+    old.add_signal_handler(signal.SIGUSR1, print)
+    real_signal = signal.signal
+    first_call = True
+
+    def fail_after_other_signal_cleanup(
+        sig: int, handler: int | Callable[[int, FrameType | None], object]
+    ) -> int | Callable[[int, FrameType | None], object] | None:
+        nonlocal first_call
+        if first_call:
+            first_call = False
+            _finish_deferred_signal_cleanup((signal.SIGUSR1,), cleanup_fd, old._signal_owner)
+            raise OSError("cannot install")
+        return real_signal(sig, handler)
+
+    monkeypatch.setattr(signal, "signal", fail_after_other_signal_cleanup)
+    try:
+        with pytest.raises(RuntimeError, match="cannot be caught"):
+            owner.add_signal_handler(signal.SIGUSR2, print)
+        assert signal.SIGUSR1 not in _signal_owners
+        assert signal.SIGUSR2 not in _signal_owners
+        assert signal.set_wakeup_fd(-1) == -1
+    finally:
+        old.close()
+        owner.close()
+        signal.set_wakeup_fd(-1)
+        for sig, handler in originals.items():
+            real_signal(sig, handler)
 
 
 def test_signal_handlers_require_the_main_thread() -> None:
