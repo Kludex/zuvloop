@@ -98,7 +98,7 @@ def test_failed_wakeup_attach_rolls_back_signal_ownership(monkeypatch: pytest.Mo
         signal.signal(signal.SIGUSR1, original)
 
 
-def test_failed_wakeup_attach_does_not_restore_another_loops_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_failed_wakeup_attach_restores_another_live_loops_owner(monkeypatch: pytest.MonkeyPatch) -> None:
     originals = {sig: signal.getsignal(sig) for sig in (signal.SIGUSR1, signal.SIGUSR2)}
     old = zuvloop.new_event_loop()
     owner = zuvloop.new_event_loop()
@@ -118,9 +118,46 @@ def test_failed_wakeup_attach_does_not_restore_another_loops_owner(monkeypatch: 
         with pytest.raises(RuntimeError, match="cannot be caught"):
             owner.add_signal_handler(signal.SIGUSR2, print)
         assert signal.SIGUSR2 not in _signal_owners
-        assert real_set_wakeup_fd(-1) == -1
+        assert _signal_owners[signal.SIGUSR1] is old._signal_owner
+        installed = real_set_wakeup_fd(-1)
+        assert installed == old._csock.fileno()
+        real_set_wakeup_fd(installed)
     finally:
         old.remove_signal_handler(signal.SIGUSR1)
+        old.close()
+        owner.close()
+        real_set_wakeup_fd(-1)
+        for sig, handler in originals.items():
+            signal.signal(sig, handler)
+
+
+def test_failed_wakeup_attach_abandons_an_owner_finalized_during_the_syscall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    originals = {sig: signal.getsignal(sig) for sig in (signal.SIGUSR1, signal.SIGUSR2)}
+    old = zuvloop.new_event_loop()
+    owner = zuvloop.new_event_loop()
+    cleanup_fd = os.dup(old._csock.fileno())
+    old.add_signal_handler(signal.SIGUSR1, print)
+    real_set_wakeup_fd = signal.set_wakeup_fd
+    first_call = True
+
+    def finalize_then_fail(fd: int) -> int:
+        nonlocal first_call
+        if first_call:
+            first_call = False
+            _finish_deferred_signal_cleanup((signal.SIGUSR1,), cleanup_fd, old._signal_owner)
+            raise OSError("cannot attach")
+        return real_set_wakeup_fd(fd)
+
+    monkeypatch.setattr(signal, "set_wakeup_fd", finalize_then_fail)
+    try:
+        with pytest.raises(RuntimeError, match="cannot be caught"):
+            owner.add_signal_handler(signal.SIGUSR2, print)
+        assert signal.SIGUSR1 not in _signal_owners
+        assert signal.SIGUSR2 not in _signal_owners
+        assert real_set_wakeup_fd(-1) == -1
+    finally:
         old.close()
         owner.close()
         real_set_wakeup_fd(-1)

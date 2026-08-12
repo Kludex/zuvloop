@@ -9,7 +9,7 @@ from collections.abc import Callable
 from types import FrameType
 from typing import Any
 
-from ._base import _signal_owners
+from ._base import SignalOwner, _signal_owners
 from ._connect import ConnectionOperations
 
 _MISSING_SIGNAL_OWNER = object()
@@ -44,7 +44,7 @@ class EventLoop(ConnectionOperations):
         # seeing the new token makes it leave this registration alone.
         self._signal_handlers[sig] = entry
         _signal_owners[sig] = self._signal_owner
-        wakeup_state: tuple[int, object | None, bool] | None = None
+        wakeup_state: tuple[int, SignalOwner | None, bool] | None = None
         try:
             # Attach before signal.signal(), which implicitly enables syscall
             # interruption. If attachment fails, rollback has no siginterrupt
@@ -54,9 +54,10 @@ class EventLoop(ConnectionOperations):
             # signal number to the wakeup fd; the loop dispatches from there.
             signal.signal(sig, _noop_signal_handler)
         except OSError as exc:
-            if previous_owner is not _MISSING_SIGNAL_OWNER and previous_owner is not self._signal_owner:
-                # A pending finalizer may already have skipped this provisional
-                # owner. Complete its reset instead of resurrecting that loop.
+            previous_finalized = isinstance(previous_owner, SignalOwner) and previous_owner.finalized
+            if previous_finalized:
+                # A pending finalizer already skipped this provisional owner.
+                # Complete its reset instead of resurrecting that loop.
                 handler = signal.default_int_handler if sig == signal.SIGINT else signal.SIG_DFL
                 signal.signal(sig, handler)
 
@@ -64,13 +65,13 @@ class EventLoop(ConnectionOperations):
                 del self._signal_handlers[sig]
             else:
                 self._signal_handlers[sig] = previous_entry
-            if previous_owner is self._signal_owner:
+            if isinstance(previous_owner, SignalOwner) and not previous_finalized:
                 _signal_owners[sig] = previous_owner
             else:
                 _signal_owners.pop(sig, None)
 
             previous_wakeup_owner = wakeup_state[1] if wakeup_state is not None else None
-            abandon_wakeup = previous_wakeup_owner is not None and previous_wakeup_owner is not self._signal_owner
+            abandon_wakeup = previous_wakeup_owner is not None and previous_wakeup_owner.finalized
             self._restore_wakeup_fd(wakeup_state, abandon=abandon_wakeup)
             raise RuntimeError(f"sig {sig} cannot be caught") from exc
 
