@@ -58,7 +58,11 @@ curl -fsSL "${url}.sign" -o "$tmp/libuv.tar.gz.sign"
 status="$(GNUPGHOME="$tmp/gnupg" gpg --batch --status-fd 1 \
     --verify "$tmp/libuv.tar.gz.sign" "$tmp/libuv.tar.gz" 2>/dev/null)"
 signer="$(awk '$2 == "VALIDSIG" { print $NF }' <<< "$status")"
-if ! awk '!/^#/ { print $1 }' "$keys" | grep -Fxq "$signer"; then
+if [[ -z "$signer" ]]; then
+    echo "libuv $version signature produced no VALIDSIG status" >&2
+    exit 1
+fi
+if ! awk 'NF && !/^#/ { print $1 }' "$keys" | grep -Fxq "$signer"; then
     echo "libuv $version was signed by untrusted fingerprint $signer" >&2
     exit 1
 fi

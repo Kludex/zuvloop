@@ -197,7 +197,7 @@ $ python scripts/build.py
 ```
 
 `vendor/libuv` is an unmodified upstream release tarball; see `vendor/README.md`. Update it with
-`./vendor/update-libuv.sh <version>`.
+`./vendor/update-libuv.sh <version> <sha256>`.
 
 ## License
 

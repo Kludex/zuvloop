@@ -67,12 +67,16 @@ jobs:
 
       - if: steps.update.outputs.changed == 'true'
         name: Package the reviewed update
+        env:
+          VERSION: ${{ steps.update.outputs.version }}
+          SIGNER: ${{ steps.update.outputs.signer }}
         run: |
-          git diff --check
-          git diff --binary -- vendor > libuv.patch
-          printf 'version=%s\nsigner=%s\n' \
-            '${{ steps.update.outputs.version }}' \
-            '${{ steps.update.outputs.signer }}' > libuv-update.env
+          git add -A vendor
+          # The upstream tree is preserved verbatim, including its whitespace.
+          git diff --cached --check -- vendor/README.md
+          git diff --cached --binary -- vendor > libuv.patch
+          test -s libuv.patch
+          printf 'version=%s\nsigner=%s\n' "$VERSION" "$SIGNER" > libuv-update.env
 
       - if: steps.update.outputs.changed == 'true'
         uses: actions/upload-artifact@v7
