@@ -3,7 +3,7 @@
 # invokes the native compiler, so a future version resolved from a lower bound
 # could execute unreviewed code into the wheels the publish job trusts. The
 # compiler is pinned for the same reason. Bump both deliberately.
-requires = ["hatchling", "hatch-vcs", "hatch-ziglang==0.2.1", "ziglang==0.16.0"]
+requires = ["hatchling", "hatch-vcs==0.5.0", "hatch-ziglang==0.2.1", "ziglang==0.16.0"]
 build-backend = "hatchling.build"
 
 [project]
