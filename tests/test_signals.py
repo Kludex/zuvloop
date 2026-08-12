@@ -257,7 +257,7 @@ def test_rollback_revalidates_an_owner_finalized_at_commit(monkeypatch: pytest.M
     old.add_signal_handler(signal.SIGUSR1, print)
     real_signal = signal.signal
     first_signal_call = True
-    finalized_checks = 0
+    cleanup_ran = False
     real_is_finalized = SignalOwner.is_finalized
 
     def fail_registration_once(
@@ -270,11 +270,10 @@ def test_rollback_revalidates_an_owner_finalized_at_commit(monkeypatch: pytest.M
         return real_signal(sig, handler)
 
     def finalize_on_commit_check(token: SignalOwner) -> bool:
-        nonlocal finalized_checks
-        if token is old._signal_owner:  # pragma: no branch - this scenario queries only the old token
-            finalized_checks += 1
-            if finalized_checks == 2:
-                _finish_deferred_signal_cleanup((signal.SIGUSR1,), cleanup_fd, token)
+        nonlocal cleanup_ran
+        if token is old._signal_owner and _signal_owners.get(signal.SIGUSR1) is token:
+            cleanup_ran = True
+            _finish_deferred_signal_cleanup((signal.SIGUSR1,), cleanup_fd, token)
         return real_is_finalized(token)
 
     monkeypatch.setattr(signal, "signal", fail_registration_once)
@@ -282,6 +281,7 @@ def test_rollback_revalidates_an_owner_finalized_at_commit(monkeypatch: pytest.M
     try:
         with pytest.raises(RuntimeError, match="cannot be caught"):
             owner.add_signal_handler(signal.SIGUSR1, print)
+        assert cleanup_ran
         assert signal.SIGUSR1 not in _signal_owners
         assert signal.getsignal(signal.SIGUSR1) is signal.SIG_DFL
         assert signal.set_wakeup_fd(-1) == -1
