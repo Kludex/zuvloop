@@ -178,6 +178,22 @@ fn releaseViews(views: []c.Py_buffer) void {
     for (views) |*view| c.PyBuffer_Release(view);
 }
 
+/// Hold immutable bytes directly; snapshot every other exporter before write()
+/// returns so queued I/O cannot observe later mutations by the caller.
+fn acquireWriteView(data: *py.Object, view: *c.Py_buffer) py.Error!void {
+    if (c.PyBytes_Check(data) != 0) {
+        if (c.PyObject_GetBuffer(data, view, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
+        return;
+    }
+
+    var source: c.Py_buffer = undefined;
+    if (c.PyObject_GetBuffer(data, &source, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
+    defer c.PyBuffer_Release(&source);
+    const snapshot = c.PyBytes_FromStringAndSize(@ptrCast(source.buf), source.len) orelse return py.Error.Python;
+    defer py.decref(snapshot);
+    if (c.PyObject_GetBuffer(snapshot, view, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
+}
+
 // ---------------------------------------------------------------------------
 // protocol dispatch
 
@@ -876,7 +892,7 @@ pub fn startReadingMethod(self_obj: *py.Object) py.Error!*py.Object {
 fn write(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
     const self = asTransport(self_obj);
     var views = [_]c.Py_buffer{undefined};
-    if (c.PyObject_GetBuffer(data, &views[0], c.PyBUF_SIMPLE) < 0) return py.Error.Python;
+    try acquireWriteView(data, &views[0]);
     if (self.flags & EOF_WRITTEN != 0) {
         c.PyBuffer_Release(&views[0]);
         return py.errRuntime("Cannot call write() after write_eof()");
@@ -912,12 +928,12 @@ fn writelines(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
             return py.Error.Python;
         };
         // The buffer view keeps the exporter alive, so the item reference can go.
-        const acquired = c.PyObject_GetBuffer(item, &views[filled], c.PyBUF_SIMPLE);
-        py.decref(item);
-        if (acquired < 0) {
+        acquireWriteView(item, &views[filled]) catch {
+            py.decref(item);
             releaseViews(views[0..filled]);
             return py.Error.Python;
-        }
+        };
+        py.decref(item);
         bufs[filled] = .{ .base = @ptrCast(views[filled].buf), .len = @intCast(views[filled].len) };
     }
     try submitWrite(self, bufs, views);

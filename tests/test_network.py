@@ -139,6 +139,31 @@ async def test_large_payload_survives_partial_writes() -> None:
         await writer.wait_closed()
 
 
+async def test_queued_write_snapshots_a_mutable_buffer() -> None:
+    server, port, _ = await start_echo()
+    payload = bytearray(b"original write")
+    async with server:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(payload)
+        payload[:] = b"mutated later!"
+        assert await reader.readexactly(14) == b"original write"
+        writer.close()
+        await writer.wait_closed()
+
+
+async def test_queued_writelines_snapshot_mutable_buffers() -> None:
+    server, port, _ = await start_echo()
+    chunks = [bytearray(b"original "), bytearray(b"lines")]
+    async with server:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.writelines(chunks)
+        chunks[0][:] = b"mutated! "
+        chunks[1][:] = b"later"
+        assert await reader.readexactly(14) == b"original lines"
+        writer.close()
+        await writer.wait_closed()
+
+
 async def test_writelines_uses_scatter_gather() -> None:
     server, port, _ = await start_echo()
     chunks = [b"a" * 10, b"b" * 10, b"c" * 10]
