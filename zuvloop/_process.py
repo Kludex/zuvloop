@@ -4,6 +4,7 @@ import io
 import os
 import signal
 import subprocess
+import sys
 import threading
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, cast
@@ -75,10 +76,11 @@ class Popen:
         self._on_exit = on_exit
         self._stdlib: subprocess.Popen[bytes] | None = None
 
-        # libuv has no close_fds operation on its Unix fork path. Let stdlib do
-        # the spawn whenever descriptors must pass through: its child-side
-        # close avoids any process-wide inheritable-flag window in the parent.
-        if pass_fds:
+        # libuv's Linux fork path has no close_fds operation. Let stdlib do
+        # Linux spawns: its child-side close preserves Popen's default even when
+        # another thread is opening or renumbering inheritable descriptors. On
+        # macOS libuv uses POSIX_SPAWN_CLOEXEC_DEFAULT and is already safe.
+        if sys.platform == "linux" or pass_fds:
             process = subprocess.Popen(
                 args,
                 executable=executable,
@@ -96,12 +98,9 @@ class Popen:
             self.stdout = cast(io.BufferedReader | None, process.stdout)
             self.stderr = cast(io.BufferedReader | None, process.stderr)
             self.pid = process.pid
-            threading.Thread(target=self._wait_stdlib, args=(loop, process), daemon=True).start()
+            _register_stdlib_process(process, loop, self)
             return
 
-        # libuv's posix_spawn path marks stdio slots blocking on the file
-        # description the parent shares; the caller's state goes back after.
-        blocking = {fd: os.get_blocking(fd) for fd in pass_fds}
         child_fds: list[int] = []
         try:
             for index, request in enumerate((stdin, stdout, stderr)):
@@ -118,7 +117,7 @@ class Popen:
                 args,
                 env_items,
                 cwd_text,
-                _stdio(child_fds, pass_fds),
+                child_fds,
                 flags,
                 0,
                 0,
@@ -136,19 +135,8 @@ class Popen:
             for fd in child_fds:
                 if fd >= 0:
                     os.close(fd)
-            for fd, was_blocking in blocking.items():
-                os.set_blocking(fd, was_blocking)
 
         self.pid = self._handle.get_pid()
-
-    def _wait_stdlib(self, loop: ConnectionOperations, process: subprocess.Popen[bytes]) -> None:
-        returncode = process.wait()
-        try:
-            loop.call_soon_threadsafe(self._exited, returncode)
-        except RuntimeError:
-            # Closing the loop already closes its subprocess transport; there
-            # is nowhere left to deliver the exit notification.
-            pass
 
     def _exited(self, returncode: int) -> None:
         self.returncode = returncode
@@ -169,21 +157,47 @@ class Popen:
         self.send_signal(signal.SIGKILL)
 
 
-def _stdio(child_fds: list[int], pass_fds: Sequence[int]) -> list[int]:
-    """The descriptors the child inherits, each at the index it will hold there.
+_reaper_condition = threading.Condition()
+_reaper_processes: dict[int, tuple[subprocess.Popen[bytes], ConnectionOperations, Popen]] = {}
+_reaper_started = False
 
-    A `pass_fds` entry keeps its own number, so it sits at that index. The gap
-    before it closes through close-on-exec defaults - libuv has no descriptor
-    close hook. The standard streams already claim 0-2, so naming one of those
-    asks for nothing new.
-    """
-    stdio = list(child_fds)
-    for fd in sorted(set(pass_fds)):
-        if fd < len(stdio):
-            continue
-        stdio.extend([-1] * (fd - len(stdio)))
-        stdio.append(fd)
-    return stdio
+
+def _register_stdlib_process(
+    process: subprocess.Popen[bytes], loop: ConnectionOperations, wrapper: Popen
+) -> None:
+    global _reaper_started
+    with _reaper_condition:
+        _reaper_processes[process.pid] = (process, loop, wrapper)
+        if not _reaper_started:
+            threading.Thread(target=_reap_stdlib_processes, name="zuvloop-process-reaper", daemon=True).start()
+            _reaper_started = True
+        _reaper_condition.notify()
+
+
+def _reap_stdlib_processes() -> None:
+    """Poll every stdlib child from one bounded process-wide reaper thread."""
+    while True:
+        with _reaper_condition:
+            while not _reaper_processes:
+                _reaper_condition.wait()
+            processes = tuple(_reaper_processes.items())
+
+        completed = False
+        for pid, (process, loop, wrapper) in processes:
+            returncode = process.poll()
+            if returncode is None:
+                continue
+            completed = True
+            with _reaper_condition:
+                _reaper_processes.pop(pid, None)
+            try:
+                loop.call_soon_threadsafe(wrapper._exited, returncode)
+            except RuntimeError:  # pragma: no cover - loop closed while child exited
+                pass
+
+        if not completed:
+            with _reaper_condition:
+                _reaper_condition.wait(0.01)
 
 
 def _open_stream(index: int, request: Any, child_fds: list[int]) -> tuple[int, int | None]:
