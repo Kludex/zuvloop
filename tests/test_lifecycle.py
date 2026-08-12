@@ -28,6 +28,16 @@ def test_run_returns_the_coroutine_result() -> None:
     assert zuvloop.run(main()) == "done"
 
 
+def test_self_pipe_drain_stops_at_eof() -> None:
+    loop = zuvloop.new_event_loop()
+    try:
+        loop.remove_reader(loop._ssock.fileno())
+        loop._csock.close()
+        loop._drain_self_pipe(loop._ssock)
+    finally:
+        loop.close()
+
+
 def test_run_honours_debug_mode() -> None:
     async def main() -> bool:
         return running_loop().get_debug()
