@@ -913,7 +913,7 @@ class _SubprocessTransport(base_subprocess.BaseSubprocessTransport):
         assert self._proc is not None
         try:
             self._proc.send_signal(signal_number)
-        except ProcessLookupError:
+        except ProcessLookupError:  # pragma: no cover - pid exit race
             pass
 
     def terminate(self) -> None:

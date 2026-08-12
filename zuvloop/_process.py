@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import io
 import os
 import signal
 import subprocess
+import sys
+import threading
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import IO, TYPE_CHECKING, Any
 
 from . import _zuvloop
 
@@ -66,19 +67,60 @@ class Popen:
                 raise ValueError("bad value(s) in pass_fds")
             os.fstat(fd)
 
-        self.stdin: io.BufferedWriter | None = None
-        self.stdout: io.BufferedReader | None = None
-        self.stderr: io.BufferedReader | None = None
+        self.stdin: IO[bytes] | None = None
+        self.stdout: IO[bytes] | None = None
+        self.stderr: IO[bytes] | None = None
         self.returncode: int | None = None
+        self.pid: int
         self._on_exit = on_exit
+        self._stdlib: subprocess.Popen[bytes] | None = None
+        self._handle: _zuvloop.Process | None = None
 
-        # libuv's posix_spawn path marks stdio slots blocking on the file
-        # description the parent shares; the caller's state goes back after.
-        blocking = {fd: os.get_blocking(fd) for fd in pass_fds}
+        # libuv's Linux fork path has no close_fds operation. Let stdlib do
+        # Linux spawns: its child-side close preserves Popen's default even when
+        # another thread is opening or renumbering inheritable descriptors. On
+        # macOS libuv uses POSIX_SPAWN_CLOEXEC_DEFAULT and is already safe.
+        if sys.platform == "linux" or pass_fds:
+            process = subprocess.Popen(
+                args,
+                executable=executable,
+                env=env,
+                cwd=cwd,
+                stdin=stdin,
+                stdout=stdout,
+                stderr=stderr,
+                bufsize=0,
+                start_new_session=start_new_session,
+                pass_fds=pass_fds,
+            )
+            self._stdlib = process
+            self.stdin = process.stdin
+            self.stdout = process.stdout
+            self.stderr = process.stderr
+            self.pid = process.pid
+            process_reaper.register(process, loop, self)
+            return
+
+        self.spawn_libuv(  # pragma: no cover - platform path exercised by macOS CI
+            loop, args, file, env_items, cwd_text, stdin, stdout, stderr, start_new_session
+        )
+
+    def spawn_libuv(  # pragma: no cover - platform path exercised by macOS CI
+        self,
+        loop: ConnectionOperations,
+        args: list[str],
+        file: str,
+        env_items: list[str] | None,
+        cwd: str | None,
+        stdin: Any,
+        stdout: Any,
+        stderr: Any,
+        start_new_session: bool,
+    ) -> None:
         child_fds: list[int] = []
         try:
             for index, request in enumerate((stdin, stdout, stderr)):
-                child, mine = _open_stream(index, request, child_fds)
+                child, mine = open_stream(index, request, child_fds)
                 child_fds.append(child)
                 if mine is not None:
                     # Wrapping the descriptor hands it to the file object, which
@@ -86,17 +128,7 @@ class Popen:
                     setattr(self, _NAMES[index], open(mine, "wb" if index == 0 else "rb", 0))
 
             flags = _zuvloop.PROCESS_DETACHED if start_new_session else 0
-            self._handle = loop._spawn_process(
-                file,
-                args,
-                env_items,
-                cwd_text,
-                _stdio(child_fds, pass_fds),
-                flags,
-                0,
-                0,
-                self._exited,
-            )
+            self._handle = loop._spawn_process(file, args, env_items, cwd, child_fds, flags, 0, 0, self.exited)
         except BaseException:
             for opened in (self.stdin, self.stdout, self.stderr):
                 if opened is not None:
@@ -109,12 +141,11 @@ class Popen:
             for fd in child_fds:
                 if fd >= 0:
                     os.close(fd)
-            for fd, was_blocking in blocking.items():
-                os.set_blocking(fd, was_blocking)
 
-        self.pid: int = self._handle.get_pid()
+        assert self._handle is not None
+        self.pid = self._handle.get_pid()
 
-    def _exited(self, returncode: int) -> None:
+    def exited(self, returncode: int) -> None:
         self.returncode = returncode
         self._on_exit(returncode)
 
@@ -122,7 +153,11 @@ class Popen:
         return self.returncode
 
     def send_signal(self, signum: int) -> None:
-        self._handle.send_signal(signum)
+        if self._stdlib is not None:
+            self._stdlib.send_signal(signum)
+        else:  # pragma: no cover - platform path exercised by macOS CI
+            assert self._handle is not None
+            self._handle.send_signal(signum)
 
     def kill(self) -> None:
         # `BaseSubprocessTransport.close()` reaches for this on a child that is
@@ -130,31 +165,60 @@ class Popen:
         self.send_signal(signal.SIGKILL)
 
 
-def _stdio(child_fds: list[int], pass_fds: Sequence[int]) -> list[int]:
-    """The descriptors the child inherits, each at the index it will hold there.
+class ProcessReaper:
+    """Poll every stdlib child from one bounded process-wide reaper thread."""
 
-    A `pass_fds` entry keeps its own number, so it sits at that index. The gap
-    before it closes through close-on-exec defaults - libuv has no descriptor
-    close hook. The standard streams already claim 0-2, so naming one of those
-    asks for nothing new.
-    """
-    stdio = list(child_fds)
-    for fd in sorted(set(pass_fds)):
-        if fd < len(stdio):
-            continue
-        stdio.extend([-1] * (fd - len(stdio)))
-        stdio.append(fd)
-    return stdio
+    def __init__(self) -> None:
+        self.condition = threading.Condition()
+        self.processes: dict[int, tuple[subprocess.Popen[bytes], ConnectionOperations, Popen]] = {}
+        self.started = False
+
+    def register(self, process: subprocess.Popen[bytes], loop: ConnectionOperations, wrapper: Popen) -> None:
+        with self.condition:
+            self.processes[process.pid] = (process, loop, wrapper)
+            if not self.started:
+                threading.Thread(target=self.run, name="zuvloop-process-reaper", daemon=True).start()
+                self.started = True
+            self.condition.notify()
+
+    def run(self) -> None:
+        while True:
+            with self.condition:
+                while not self.processes:
+                    self.condition.wait()
+                processes = tuple(self.processes.items())
+
+            completed = False
+            for pid, (process, loop, wrapper) in processes:
+                returncode = process.poll()
+                if returncode is None:
+                    continue
+                completed = True
+                with self.condition:
+                    self.processes.pop(pid, None)
+                try:
+                    loop.call_soon_threadsafe(wrapper.exited, returncode)
+                except RuntimeError:  # pragma: no cover - loop closed while child exited
+                    pass
+
+            if not completed:
+                with self.condition:
+                    self.condition.wait(0.01)
 
 
-def _open_stream(index: int, request: Any, child_fds: list[int]) -> tuple[int, int | None]:
+process_reaper = ProcessReaper()
+
+
+def open_stream(  # pragma: no cover - platform helper exercised by macOS CI
+    index: int, request: Any, child_fds: list[int]
+) -> tuple[int, int | None]:
     """Returns the descriptor the child inherits, and ours if there is one.
 
     `child_fds` holds what the earlier streams resolved to, which is what lets a
     redirected stderr follow the child's stdout wherever it was pointed.
     """
     if request is None:
-        return -1 if index == 0 else _dup_std(index), None
+        return -1 if index == 0 else os.dup(index), None
     if request == subprocess.DEVNULL or request == _DEVNULL:
         return os.open(os.devnull, os.O_RDONLY if index == 0 else os.O_WRONLY), None
     if request == subprocess.PIPE:
@@ -172,7 +236,3 @@ def _open_stream(index: int, request: Any, child_fds: list[int]) -> tuple[int, i
         return os.dup(child_fds[1]), None
     fd = request if isinstance(request, int) else request.fileno()
     return os.dup(fd), None
-
-
-def _dup_std(index: int) -> int:
-    return os.dup(index)

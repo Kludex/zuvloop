@@ -332,6 +332,7 @@ async def test_pass_fds_leaves_the_gap_before_it_closed() -> None:
     spare_read, spare_write = os.pipe()
     read_fd, write_fd = os.pipe()
     assert 3 <= spare_write < write_fd
+    os.set_inheritable(spare_write, True)
     try:
         process = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -360,6 +361,22 @@ async def test_pass_fds_leaves_the_blocking_state_alone() -> None:
     finally:
         left.close()
         right.close()
+
+
+async def test_a_stdlib_fallback_child_can_be_signalled() -> None:
+    read_fd, write_fd = os.pipe()
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import time; time.sleep(30)",
+            pass_fds=(write_fd,),
+        )
+        process.terminate()
+        assert await asyncio.wait_for(process.wait(), 10) == -signal.SIGTERM
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
 
 
 async def test_pass_fds_rejects_a_negative_descriptor() -> None:
