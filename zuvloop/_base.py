@@ -12,6 +12,7 @@ import weakref
 from asyncio import events as _events
 from collections.abc import Callable, Coroutine
 from contextvars import Context
+from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
@@ -28,23 +29,19 @@ _ExceptionHandler = Callable[[asyncio.AbstractEventLoop, dict[str, Any]], object
 
 # Signal dispositions and the wakeup fd are process-global. Tokens let delayed
 # finalization tell whether another loop has replaced the state it installed.
+@dataclass(slots=True)
 class SignalOwner:
-    __slots__ = ("finalized",)
-
-    def __init__(self) -> None:
-        self.finalized = False
+    finalized: bool = False
 
     def is_finalized(self) -> bool:
         return self.finalized
 
 
+@dataclass(frozen=True, slots=True)
 class WakeupState:
-    __slots__ = ("fd", "owner", "was_attached")
-
-    def __init__(self, fd: int, owner: SignalOwner | None, was_attached: bool) -> None:
-        self.fd = fd
-        self.owner = owner
-        self.was_attached = was_attached
+    fd: int
+    owner: SignalOwner | None
+    was_attached: bool
 
 
 _signal_owners: dict[int, SignalOwner] = {}
