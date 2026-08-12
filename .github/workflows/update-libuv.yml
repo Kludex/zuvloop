@@ -72,7 +72,7 @@ jobs:
           VERSION: ${{ steps.update.outputs.version }}
           SIGNER: ${{ steps.update.outputs.signer }}
         run: |
-          git add -A vendor
+          git add -A -f vendor
           # The upstream tree is preserved verbatim, including its whitespace.
           git diff --cached --check -- vendor/README.md
           git diff --cached --binary -- vendor > libuv.patch
