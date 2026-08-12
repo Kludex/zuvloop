@@ -35,6 +35,7 @@ fn tupleItem(t: *py.Object, i: c.Py_ssize_t) py.Error!*py.Object {
 pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!c_int {
     out.* = .{};
     if (family == AF_UNIX) {
+        // SAFETY: each accepted address type assigns path, and every other type returns.
         var path: [*c]const u8 = undefined;
         var len: c.Py_ssize_t = 0;
         if (c.PyUnicode_Check(address) != 0) {

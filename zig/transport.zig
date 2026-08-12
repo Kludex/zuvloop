@@ -186,6 +186,7 @@ fn acquireWriteView(data: *py.Object, view: *c.Py_buffer) py.Error!void {
         return;
     }
 
+    // SAFETY: PyObject_GetBuffer initializes source or returns an error.
     var source: c.Py_buffer = undefined;
     if (c.PyObject_GetBuffer(data, &source, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
     defer c.PyBuffer_Release(&source);
@@ -895,6 +896,7 @@ pub fn startReadingMethod(self_obj: *py.Object) py.Error!*py.Object {
 
 fn write(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
     const self = asTransport(self_obj);
+    // SAFETY: acquireWriteView initializes the only element or returns an error.
     var views = [_]c.Py_buffer{undefined};
     try acquireWriteView(data, &views[0]);
     if (self.flags & EOF_WRITTEN != 0) {

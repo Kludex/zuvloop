@@ -187,6 +187,8 @@ $ uv pip install -e . --group dev
 $ uv run pytest
 $ uv run mypy
 $ uv run ruff check
+$ uv run ruff format --check
+$ ./scripts/check-zig  # requires ZLint 0.9.1 on PATH
 $ uv run --group bench python benchmarks/run.py
 ```
 

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Enforce Zig's canonical formatting and the repository's ZLint rules.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+if ! command -v zig >/dev/null; then
+    echo "zig 0.16.0 is required; install it from https://ziglang.org/download/" >&2
+    exit 2
+fi
+if [[ "$(zig version)" != "0.16.0" ]]; then
+    echo "zig 0.16.0 is required to match CI (found $(zig version))" >&2
+    exit 2
+fi
+if ! command -v zlint >/dev/null; then
+    echo "ZLint v0.9.1 is required; download it from https://github.com/DonIsaac/zlint/releases/tag/v0.9.1" >&2
+    echo "CI pins the Linux x86_64 binary to SHA-256 3290bd511d37e4f6ccca3621b9894cd6c378195cdaac27520d0bd894058b2b9b" >&2
+    exit 2
+fi
+if [[ "$(zlint --version)" != "v0.9.1" ]]; then
+    echo "ZLint v0.9.1 is required to match CI (found $(zlint --version))" >&2
+    exit 2
+fi
+
+zig fmt --check build.zig zig
+{
+    printf '%s\n' build.zig
+    find zig -type f -name '*.zig' -print | sort
+} | zlint --stdin --deny-warnings
