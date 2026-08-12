@@ -29,6 +29,10 @@ _ExceptionHandler = Callable[[asyncio.AbstractEventLoop, dict[str, Any]], object
 # finalization tell whether another loop has replaced the state it installed.
 _signal_owners: dict[int, object] = {}
 _wakeup_fd_owner: object | None = None
+# A stale deferred cleanup can observe a provisional replacement owner and skip
+# its reset. Registration rollback consumes this marker instead of resurrecting
+# the finalized owner.
+_finished_signal_cleanups: set[tuple[object, int]] = set()
 
 
 # The native methods are stricter than typeshed's AbstractEventLoop, which
@@ -313,14 +317,28 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         self._ssock.close()
         self._csock.close()
 
-    def _attach_wakeup_fd(self) -> None:
+    def _attach_wakeup_fd(self) -> tuple[int, object | None, bool] | None:
         # Only the main thread may own the wakeup fd, and only it runs Python
         # signal handlers - so a loop on any other thread simply skips this.
         if threading.current_thread() is threading.main_thread() and self._signal_handlers:
             global _wakeup_fd_owner
-            signal.set_wakeup_fd(self._csock.fileno())
+            previous = (signal.set_wakeup_fd(self._csock.fileno()), _wakeup_fd_owner, self._wakeup_fd_attached)
             _wakeup_fd_owner = self._signal_owner
             self._wakeup_fd_attached = True
+            return previous
+        return None
+
+    def _restore_wakeup_fd(self, previous: tuple[int, object | None, bool] | None, *, abandon: bool) -> None:
+        if previous is None:
+            return
+        global _wakeup_fd_owner
+        # Stale cleanup skips a replacement token, so this transaction remains
+        # the wakeup owner until it either commits or restores this snapshot.
+        assert _wakeup_fd_owner is self._signal_owner
+        fd, owner, was_attached = previous
+        signal.set_wakeup_fd(-1 if abandon else fd)
+        _wakeup_fd_owner = None if abandon else owner
+        self._wakeup_fd_attached = False if abandon else was_attached
 
     def _detach_wakeup_fd(self) -> None:
         # Registered handlers must keep the fd active between separate calls
@@ -387,6 +405,8 @@ def _finish_deferred_signal_cleanup(signals: tuple[int, ...], wakeup_fd: int, ow
                 del _signal_owners[sig]
                 handler = signal.default_int_handler if sig == signal.SIGINT else signal.SIG_DFL
                 signal.signal(sig, handler)
+            else:
+                _finished_signal_cleanups.add((owner, sig))
     finally:
         os.close(wakeup_fd)
 

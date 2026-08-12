@@ -9,7 +9,7 @@ from collections.abc import Callable
 from types import FrameType
 from typing import Any
 
-from ._base import _signal_owners
+from ._base import _finished_signal_cleanups, _signal_owners
 from ._connect import ConnectionOperations
 
 _MISSING_SIGNAL_OWNER = object()
@@ -38,33 +38,44 @@ class EventLoop(ConnectionOperations):
         entry = (callback, args, contextvars.copy_context())
         previous_entry = self._signal_handlers.get(sig)
         previous_owner = _signal_owners.get(sig, _MISSING_SIGNAL_OWNER)
-        previous_disposition = signal.getsignal(sig)
 
         # Publish ownership before touching process-global state. A pending
         # cleanup from an older loop can run between any two Python calls below;
         # seeing the new token makes it leave this registration alone.
         self._signal_handlers[sig] = entry
         _signal_owners[sig] = self._signal_owner
-        installed = False
+        wakeup_state: tuple[int, object | None, bool] | None = None
         try:
+            # Attach before signal.signal(), which implicitly enables syscall
+            # interruption. If attachment fails, rollback has no siginterrupt
+            # state to reconstruct (Python exposes a setter but no getter).
+            wakeup_state = self._attach_wakeup_fd()
             # Installing any Python handler is what makes CPython write the
             # signal number to the wakeup fd; the loop dispatches from there.
             signal.signal(sig, _noop_signal_handler)
-            installed = True
-            signal.siginterrupt(sig, False)
-            self._attach_wakeup_fd()
         except OSError as exc:
-            if installed:
-                signal.signal(sig, previous_disposition)
+            cleanup_finished = (
+                previous_owner is not _MISSING_SIGNAL_OWNER
+                and (previous_owner, sig) in _finished_signal_cleanups
+            )
+            if cleanup_finished:
+                _finished_signal_cleanups.discard((previous_owner, sig))
+                handler = signal.default_int_handler if sig == signal.SIGINT else signal.SIG_DFL
+                signal.signal(sig, handler)
             if previous_entry is None:
                 del self._signal_handlers[sig]
             else:
                 self._signal_handlers[sig] = previous_entry
-            if previous_owner is _MISSING_SIGNAL_OWNER:
+            if previous_owner is _MISSING_SIGNAL_OWNER or cleanup_finished:
                 _signal_owners.pop(sig, None)
             else:
                 _signal_owners[sig] = previous_owner
+            self._restore_wakeup_fd(wakeup_state, abandon=cleanup_finished)
             raise RuntimeError(f"sig {sig} cannot be caught") from exc
+
+        signal.siginterrupt(sig, False)
+        if previous_owner is not _MISSING_SIGNAL_OWNER:
+            _finished_signal_cleanups.discard((previous_owner, sig))
 
     def remove_signal_handler(self, sig: int) -> bool:
         _check_signal(sig)

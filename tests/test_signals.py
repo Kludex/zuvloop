@@ -6,6 +6,8 @@ import os
 import signal
 import threading
 import weakref
+from collections.abc import Callable
+from types import FrameType
 
 import pytest
 
@@ -77,17 +79,20 @@ async def test_uncatchable_signals_are_rejected() -> None:
 def test_failed_wakeup_attach_rolls_back_signal_ownership(monkeypatch: pytest.MonkeyPatch) -> None:
     original = signal.getsignal(signal.SIGUSR1)
     loop = zuvloop.new_event_loop()
+    siginterrupt_calls: list[tuple[int, bool]] = []
 
     def fail_to_attach() -> None:
         raise OSError("cannot attach")
 
     monkeypatch.setattr(loop, "_attach_wakeup_fd", fail_to_attach)
+    monkeypatch.setattr(signal, "siginterrupt", lambda sig, flag: siginterrupt_calls.append((sig, flag)))
     try:
         with pytest.raises(RuntimeError, match="cannot be caught"):
             loop.add_signal_handler(signal.SIGUSR1, print)
         assert signal.SIGUSR1 not in loop._signal_handlers
         assert _signal_owners.get(signal.SIGUSR1) is not loop._signal_owner
         assert signal.getsignal(signal.SIGUSR1) is original
+        assert siginterrupt_calls == []
     finally:
         loop.close()
         signal.signal(signal.SIGUSR1, original)
@@ -136,6 +141,37 @@ def test_stale_pending_cleanup_cannot_reset_a_registration_in_progress(monkeypat
         old.close()
         owner.close()
         signal.signal(signal.SIGUSR1, original)
+
+
+def test_failed_registration_does_not_resurrect_a_finalized_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = signal.getsignal(signal.SIGUSR1)
+    old = zuvloop.new_event_loop()
+    owner = zuvloop.new_event_loop()
+    cleanup_fd = os.dup(old._csock.fileno())
+    old.add_signal_handler(signal.SIGUSR1, print)
+    real_signal = signal.signal
+    first_call = True
+
+    def fail_after_stale_cleanup(
+        sig: int, handler: int | Callable[[int, FrameType | None], object]
+    ) -> int | Callable[[int, FrameType | None], object] | None:
+        nonlocal first_call
+        if first_call:
+            first_call = False
+            _finish_deferred_signal_cleanup((signal.SIGUSR1,), cleanup_fd, old._signal_owner)
+            raise OSError("cannot install")
+        return real_signal(sig, handler)
+
+    monkeypatch.setattr(signal, "signal", fail_after_stale_cleanup)
+    try:
+        with pytest.raises(RuntimeError, match="cannot be caught"):
+            owner.add_signal_handler(signal.SIGUSR1, print)
+        assert signal.SIGUSR1 not in _signal_owners
+        assert signal.getsignal(signal.SIGUSR1) is signal.SIG_DFL
+    finally:
+        old.close()
+        owner.close()
+        real_signal(signal.SIGUSR1, original)
 
 
 def test_signal_handlers_require_the_main_thread() -> None:
