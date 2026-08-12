@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import io
 import os
 import signal
 import subprocess
 import sys
 import threading
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any, cast
+from typing import IO, TYPE_CHECKING, Any
 
 from . import _zuvloop
 
@@ -68,9 +67,9 @@ class Popen:
                 raise ValueError("bad value(s) in pass_fds")
             os.fstat(fd)
 
-        self.stdin: io.BufferedWriter | None = None
-        self.stdout: io.BufferedReader | None = None
-        self.stderr: io.BufferedReader | None = None
+        self.stdin: IO[bytes] | None = None
+        self.stdout: IO[bytes] | None = None
+        self.stderr: IO[bytes] | None = None
         self.returncode: int | None = None
         self.pid: int
         self._on_exit = on_exit
@@ -95,18 +94,18 @@ class Popen:
                 pass_fds=pass_fds,
             )
             self._stdlib = process
-            self.stdin = cast(io.BufferedWriter | None, process.stdin)
-            self.stdout = cast(io.BufferedReader | None, process.stdout)
-            self.stderr = cast(io.BufferedReader | None, process.stderr)
+            self.stdin = process.stdin
+            self.stdout = process.stdout
+            self.stderr = process.stderr
             self.pid = process.pid
-            _register_stdlib_process(process, loop, self)
+            process_reaper.register(process, loop, self)
             return
 
-        self._spawn_libuv(  # pragma: no cover - platform path exercised by macOS CI
+        self.spawn_libuv(  # pragma: no cover - platform path exercised by macOS CI
             loop, args, file, env_items, cwd_text, stdin, stdout, stderr, start_new_session
         )
 
-    def _spawn_libuv(  # pragma: no cover - platform path exercised by macOS CI
+    def spawn_libuv(  # pragma: no cover - platform path exercised by macOS CI
         self,
         loop: ConnectionOperations,
         args: list[str],
@@ -121,7 +120,7 @@ class Popen:
         child_fds: list[int] = []
         try:
             for index, request in enumerate((stdin, stdout, stderr)):
-                child, mine = _open_stream(index, request, child_fds)
+                child, mine = open_stream(index, request, child_fds)
                 child_fds.append(child)
                 if mine is not None:
                     # Wrapping the descriptor hands it to the file object, which
@@ -129,7 +128,7 @@ class Popen:
                     setattr(self, _NAMES[index], open(mine, "wb" if index == 0 else "rb", 0))
 
             flags = _zuvloop.PROCESS_DETACHED if start_new_session else 0
-            self._handle = loop._spawn_process(file, args, env_items, cwd, child_fds, flags, 0, 0, self._exited)
+            self._handle = loop._spawn_process(file, args, env_items, cwd, child_fds, flags, 0, 0, self.exited)
         except BaseException:
             for opened in (self.stdin, self.stdout, self.stderr):
                 if opened is not None:
@@ -146,7 +145,7 @@ class Popen:
         assert self._handle is not None
         self.pid = self._handle.get_pid()
 
-    def _exited(self, returncode: int) -> None:
+    def exited(self, returncode: int) -> None:
         self.returncode = returncode
         self._on_exit(returncode)
 
@@ -166,48 +165,51 @@ class Popen:
         self.send_signal(signal.SIGKILL)
 
 
-_reaper_condition = threading.Condition()
-_reaper_processes: dict[int, tuple[subprocess.Popen[bytes], ConnectionOperations, Popen]] = {}
-_reaper_started = False
-
-
-def _register_stdlib_process(process: subprocess.Popen[bytes], loop: ConnectionOperations, wrapper: Popen) -> None:
-    global _reaper_started
-    with _reaper_condition:
-        _reaper_processes[process.pid] = (process, loop, wrapper)
-        if not _reaper_started:
-            threading.Thread(target=_reap_stdlib_processes, name="zuvloop-process-reaper", daemon=True).start()
-            _reaper_started = True
-        _reaper_condition.notify()
-
-
-def _reap_stdlib_processes() -> None:
+class ProcessReaper:
     """Poll every stdlib child from one bounded process-wide reaper thread."""
-    while True:
-        with _reaper_condition:
-            while not _reaper_processes:
-                _reaper_condition.wait()
-            processes = tuple(_reaper_processes.items())
 
-        completed = False
-        for pid, (process, loop, wrapper) in processes:
-            returncode = process.poll()
-            if returncode is None:
-                continue
-            completed = True
-            with _reaper_condition:
-                _reaper_processes.pop(pid, None)
-            try:
-                loop.call_soon_threadsafe(wrapper._exited, returncode)
-            except RuntimeError:  # pragma: no cover - loop closed while child exited
-                pass
+    def __init__(self) -> None:
+        self.condition = threading.Condition()
+        self.processes: dict[int, tuple[subprocess.Popen[bytes], ConnectionOperations, Popen]] = {}
+        self.started = False
 
-        if not completed:
-            with _reaper_condition:
-                _reaper_condition.wait(0.01)
+    def register(self, process: subprocess.Popen[bytes], loop: ConnectionOperations, wrapper: Popen) -> None:
+        with self.condition:
+            self.processes[process.pid] = (process, loop, wrapper)
+            if not self.started:
+                threading.Thread(target=self.run, name="zuvloop-process-reaper", daemon=True).start()
+                self.started = True
+            self.condition.notify()
+
+    def run(self) -> None:
+        while True:
+            with self.condition:
+                while not self.processes:
+                    self.condition.wait()
+                processes = tuple(self.processes.items())
+
+            completed = False
+            for pid, (process, loop, wrapper) in processes:
+                returncode = process.poll()
+                if returncode is None:
+                    continue
+                completed = True
+                with self.condition:
+                    self.processes.pop(pid, None)
+                try:
+                    loop.call_soon_threadsafe(wrapper.exited, returncode)
+                except RuntimeError:  # pragma: no cover - loop closed while child exited
+                    pass
+
+            if not completed:
+                with self.condition:
+                    self.condition.wait(0.01)
 
 
-def _open_stream(  # pragma: no cover - platform helper exercised by macOS CI
+process_reaper = ProcessReaper()
+
+
+def open_stream(  # pragma: no cover - platform helper exercised by macOS CI
     index: int, request: Any, child_fds: list[int]
 ) -> tuple[int, int | None]:
     """Returns the descriptor the child inherits, and ours if there is one.
@@ -216,7 +218,7 @@ def _open_stream(  # pragma: no cover - platform helper exercised by macOS CI
     redirected stderr follow the child's stdout wherever it was pointed.
     """
     if request is None:
-        return -1 if index == 0 else _dup_std(index), None
+        return -1 if index == 0 else os.dup(index), None
     if request == subprocess.DEVNULL or request == _DEVNULL:
         return os.open(os.devnull, os.O_RDONLY if index == 0 else os.O_WRONLY), None
     if request == subprocess.PIPE:
@@ -234,7 +236,3 @@ def _open_stream(  # pragma: no cover - platform helper exercised by macOS CI
         return os.dup(child_fds[1]), None
     fd = request if isinstance(request, int) else request.fileno()
     return os.dup(fd), None
-
-
-def _dup_std(index: int) -> int:  # pragma: no cover - platform helper exercised by macOS CI
-    return os.dup(index)
