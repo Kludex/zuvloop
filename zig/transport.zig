@@ -136,12 +136,12 @@ pub const Transport = extern struct {
 
 var handle_offset: usize = 0;
 
-/// A queued write: the libuv request, the buffer views keeping the caller's
-/// memory alive, and the vector libuv reads from - all in one allocation.
+/// A queued write: the libuv request, immutable buffer views, and the vector
+/// libuv reads from - all in one allocation.
 ///
-/// Retaining views rather than copying is what makes a large `write()` free:
-/// the exporter stays alive (and, for a bytearray, locked against resizing)
-/// until libuv reports the write complete.
+/// An exact `bytes` object is retained without copying. Every other exporter is
+/// snapshotted first, so its view owns immutable bytes rather than caller memory;
+/// either way the backing object stays alive until libuv reports completion.
 ///
 /// The request does not take another Python reference to `transport`. The
 /// loop-owned handle reference remains alive until `onClosed`, and libuv runs
@@ -176,6 +176,22 @@ var write_req_offset: usize = 0;
 
 fn releaseViews(views: []c.Py_buffer) void {
     for (views) |*view| c.PyBuffer_Release(view);
+}
+
+/// Hold immutable bytes directly; snapshot every other exporter before write()
+/// returns so queued I/O cannot observe later mutations by the caller.
+fn acquireWriteView(data: *py.Object, view: *c.Py_buffer) py.Error!void {
+    if (c.PyBytes_CheckExact(data) != 0) {
+        if (c.PyObject_GetBuffer(data, view, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
+        return;
+    }
+
+    var source: c.Py_buffer = undefined;
+    if (c.PyObject_GetBuffer(data, &source, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
+    defer c.PyBuffer_Release(&source);
+    const snapshot = c.PyBytes_FromStringAndSize(@ptrCast(source.buf), source.len) orelse return py.Error.Python;
+    defer py.decref(snapshot);
+    if (c.PyObject_GetBuffer(snapshot, view, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
 }
 
 // ---------------------------------------------------------------------------
@@ -876,7 +892,7 @@ pub fn startReadingMethod(self_obj: *py.Object) py.Error!*py.Object {
 fn write(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
     const self = asTransport(self_obj);
     var views = [_]c.Py_buffer{undefined};
-    if (c.PyObject_GetBuffer(data, &views[0], c.PyBUF_SIMPLE) < 0) return py.Error.Python;
+    try acquireWriteView(data, &views[0]);
     if (self.flags & EOF_WRITTEN != 0) {
         c.PyBuffer_Release(&views[0]);
         return py.errRuntime("Cannot call write() after write_eof()");
@@ -912,12 +928,12 @@ fn writelines(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
             return py.Error.Python;
         };
         // The buffer view keeps the exporter alive, so the item reference can go.
-        const acquired = c.PyObject_GetBuffer(item, &views[filled], c.PyBUF_SIMPLE);
-        py.decref(item);
-        if (acquired < 0) {
+        acquireWriteView(item, &views[filled]) catch {
+            py.decref(item);
             releaseViews(views[0..filled]);
             return py.Error.Python;
-        }
+        };
+        py.decref(item);
         bufs[filled] = .{ .base = @ptrCast(views[filled].buf), .len = @intCast(views[filled].len) };
     }
     try submitWrite(self, bufs, views);
