@@ -146,9 +146,9 @@ pub fn same(a: *const posix.sockaddr, a_len: c_int, b: *const posix.sockaddr, b_
         const x: *const posix.sockaddr.in6 = @ptrCast(@alignCast(a));
         const y: *const posix.sockaddr.in6 = @ptrCast(@alignCast(b));
         if (x.port != y.port or !std.mem.eql(u8, &x.addr, &y.addr)) return false;
-        // asyncio compares tuples, so it wants the scope stated rather than
-        // treating a zero as a wildcard.
-        return x.scope_id == y.scope_id;
+        // asyncio compares the complete tuples, so both ancillary fields must
+        // be stated exactly rather than treating zero as a wildcard.
+        return x.flowinfo == y.flowinfo and x.scope_id == y.scope_id;
     }
     return false;
 }
