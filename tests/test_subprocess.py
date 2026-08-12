@@ -332,6 +332,7 @@ async def test_pass_fds_leaves_the_gap_before_it_closed() -> None:
     spare_read, spare_write = os.pipe()
     read_fd, write_fd = os.pipe()
     assert 3 <= spare_write < write_fd
+    os.set_inheritable(spare_write, True)
     try:
         process = await asyncio.create_subprocess_exec(
             sys.executable,

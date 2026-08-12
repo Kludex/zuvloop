@@ -76,6 +76,7 @@ class Popen:
         # description the parent shares; the caller's state goes back after.
         blocking = {fd: os.get_blocking(fd) for fd in pass_fds}
         child_fds: list[int] = []
+        cloexec: list[int] = []
         try:
             for index, request in enumerate((stdin, stdout, stderr)):
                 child, mine = _open_stream(index, request, child_fds)
@@ -84,6 +85,20 @@ class Popen:
                     # Wrapping the descriptor hands it to the file object, which
                     # is what closes it from here.
                     setattr(self, _NAMES[index], open(mine, "wb" if index == 0 else "rb", 0))
+
+            # libuv's Unix fork path leaves unrelated inheritable descriptors
+            # alone. Temporarily put close-on-exec back on every descriptor the
+            # child did not explicitly request, matching Popen(close_fds=True).
+            inherited = set(child_fds) | set(pass_fds) | {0, 1, 2}
+            for fd in _open_fds():
+                try:
+                    if fd not in inherited and os.get_inheritable(fd):
+                        os.set_inheritable(fd, False)
+                        cloexec.append(fd)
+                except OSError:
+                    # A descriptor owned by another thread may close between
+                    # the directory snapshot and the flag query.
+                    pass
 
             flags = _zuvloop.PROCESS_DETACHED if start_new_session else 0
             self._handle = loop._spawn_process(
@@ -111,6 +126,11 @@ class Popen:
                     os.close(fd)
             for fd, was_blocking in blocking.items():
                 os.set_blocking(fd, was_blocking)
+            for fd in cloexec:
+                try:
+                    os.set_inheritable(fd, True)
+                except OSError:
+                    pass
 
         self.pid: int = self._handle.get_pid()
 
@@ -176,3 +196,22 @@ def _open_stream(index: int, request: Any, child_fds: list[int]) -> tuple[int, i
 
 def _dup_std(index: int) -> int:
     return os.dup(index)
+
+
+def _open_fds() -> list[int]:
+    """Snapshot the process descriptors without imposing a small fd limit."""
+    for directory in ("/proc/self/fd", "/dev/fd"):
+        try:
+            return [int(name) for name in os.listdir(directory) if name.isdecimal()]
+        except OSError:
+            pass
+    limit = os.sysconf("SC_OPEN_MAX")
+    return [fd for fd in range(3, limit) if _is_open(fd)]
+
+
+def _is_open(fd: int) -> bool:
+    try:
+        os.fstat(fd)
+    except OSError:
+        return False
+    return True
