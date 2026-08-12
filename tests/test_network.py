@@ -440,6 +440,24 @@ async def test_reentrant_writelines_cannot_queue_data_after_eof() -> None:
         await protocol.done
 
 
+async def test_reentrant_buffer_acquisition_cannot_queue_data_after_eof() -> None:
+    server, port, _ = await start_echo()
+    loop = running_loop()
+    async with server:
+        transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
+
+        class EofDuringBuffer:
+            def __buffer__(self, flags: int) -> memoryview:
+                transport.write_eof()
+                return memoryview(b"too late")
+
+        with pytest.raises(RuntimeError, match="write_eof"):
+            transport.writelines([EofDuringBuffer()])  # type: ignore[list-item]
+        transport.close()
+        assert protocol.done is not None
+        await protocol.done
+
+
 async def test_writes_after_close_are_dropped() -> None:
     """asyncio drops them; only `write_eof()` makes a later write an error."""
     server, port, echoes = await start_echo()
