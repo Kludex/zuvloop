@@ -34,6 +34,19 @@ async def test_a_shell_command_reports_its_exit_status() -> None:
     assert process.returncode == 3
 
 
+async def test_subprocess_strings_reject_embedded_nuls() -> None:
+    calls = (
+        asyncio.create_subprocess_exec("/bin/echo", "before\0after"),
+        asyncio.create_subprocess_exec("/bin/echo", executable="/bin/echo\0other"),
+        asyncio.create_subprocess_exec("/bin/echo", cwd="/tmp\0other"),
+        asyncio.create_subprocess_exec("/bin/echo", env={"VALUE": "before\0after"}),
+        asyncio.create_subprocess_exec("/bin/echo", env={"BEFORE\0AFTER": "value"}),
+    )
+    for call in calls:
+        with pytest.raises(ValueError, match="embedded null byte"):
+            await call
+
+
 async def test_stdin_reaches_the_child() -> None:
     process = await asyncio.create_subprocess_exec("/bin/cat", stdin=PIPE, stdout=PIPE)
     stdout, _stderr = await process.communicate(b"round trip")
