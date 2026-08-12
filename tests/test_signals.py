@@ -19,6 +19,13 @@ from zuvloop._loop import _noop_signal_handler
 pytestmark = pytest.mark.anyio
 
 
+def test_signal_owner_tokens_use_identity() -> None:
+    first = SignalOwner()
+    second = SignalOwner()
+    assert first != second
+    assert len({first, second}) == 2
+
+
 async def test_a_signal_reaches_its_handler() -> None:
     loop = running_loop()
     received = loop.create_future()
