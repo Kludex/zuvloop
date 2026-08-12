@@ -44,6 +44,15 @@ def test_failed_transport_open_does_not_corrupt_the_loop() -> None:
         loop.close()
 
 
+def test_failed_datagram_open_does_not_reopen_the_closing_handle() -> None:
+    loop = zuvloop.new_event_loop()
+    try:
+        with pytest.raises(OSError):
+            loop._make_datagram_transport(-1, socket.AF_INET, False, asyncio.DatagramProtocol(), {})
+    finally:
+        loop.close()
+
+
 def test_failed_transport_open_does_not_retain_the_loop() -> None:
     loop = zuvloop.new_event_loop()
     loop_ref = weakref.ref(loop)
