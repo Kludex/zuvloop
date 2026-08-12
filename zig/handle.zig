@@ -17,6 +17,7 @@ const inline_args = 3;
 const arg_alloc = std.heap.c_allocator;
 
 pub const CANCELLED: u32 = 1 << 0;
+const RUNNING: u32 = 1 << 1;
 
 pub const Handle = extern struct {
     ob_base: c.PyObject,
@@ -86,28 +87,15 @@ pub fn create(
 pub fn run(self: *Handle) void {
     if (self.isCancelled()) return;
     const callback = self.callback orelse return;
-    py.incref(callback);
-    defer py.decref(callback);
-
-    // cancel() is allowed to run reentrantly from the callback. Vectorcall only
-    // borrows its input array, so hold a private reference to every argument
-    // until the call has returned rather than exposing the handle's clearable
-    // storage directly.
-    const nargs: usize = @intCast(self.nargs);
-    var inline_storage: [inline_args]?*py.Object = undefined;
-    const stable = if (nargs <= inline_args) inline_storage[0..nargs] else arg_alloc.alloc(?*py.Object, nargs) catch {
-        _ = c.PyErr_NoMemory();
-        loopmod.callbackFailed(self.loop, @ptrCast(self));
-        return;
-    };
-    defer if (nargs > inline_args) arg_alloc.free(stable);
-    for (self.argv()[0..nargs], 0..) |arg, i| {
-        py.incref(arg.?);
-        stable[i] = arg;
+    self.flags |= RUNNING;
+    defer {
+        self.flags &= ~RUNNING;
+        if (self.isCancelled()) {
+            clearArgs(self);
+            py.clear(&self.callback);
+        }
     }
-    defer for (stable) |arg| py.decref(arg.?);
-
-    invoke(@ptrCast(self), self.loop, callback, stable.ptr, @intCast(nargs), self.context.?);
+    invoke(@ptrCast(self), self.loop, callback, self.argv(), self.nargs, self.context.?);
 }
 
 /// Calls `callback(*argv)` inside `ctx`, routing failures to `loop` with
@@ -189,8 +177,12 @@ fn cancel(self_obj: *py.Object) py.Error!*py.Object {
     const self: *Handle = @ptrCast(@alignCast(self_obj));
     if (!self.isCancelled()) {
         self.flags |= CANCELLED;
-        clearArgs(self);
-        py.clear(&self.callback);
+        // Vectorcall borrows these references. A callback may cancel its own
+        // handle, so release them when run() regains control instead.
+        if (self.flags & RUNNING == 0) {
+            clearArgs(self);
+            py.clear(&self.callback);
+        }
     }
     return py.noneRef();
 }
