@@ -28,14 +28,25 @@ def test_run_returns_the_coroutine_result() -> None:
     assert zuvloop.run(main()) == "done"
 
 
-def test_self_pipe_drain_stops_at_eof() -> None:
+def test_self_pipe_drain_stops_watching_at_eof() -> None:
     loop = zuvloop.new_event_loop()
-    try:
-        loop.remove_reader(loop._ssock.fileno())
-        loop._csock.close()
-        loop._drain_self_pipe(loop._ssock)
-    finally:
-        loop.close()
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            loop.run_forever()
+        except BaseException as exc:
+            errors.append(exc)
+
+    loop._csock.close()
+    loop.call_later(0.02, loop.stop)
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(1)
+    assert not thread.is_alive(), "event loop kept polling the self-pipe at EOF"
+    assert errors == []
+    assert loop.remove_reader(loop._ssock.fileno()) is False
+    loop.close()
 
 
 def test_run_honours_debug_mode() -> None:
