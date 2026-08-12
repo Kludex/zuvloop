@@ -20,7 +20,7 @@ tar xzf "$tmp/libuv.tar.gz" -C "$tmp"
 rm -rf "$here/libuv"
 mv "$tmp/libuv-v${version}" "$here/libuv"
 
-sed -i.bak -E "s/\*\*[0-9]+\.[0-9]+\.[0-9]+\*\*/**${version}**/; s|dist/v[0-9]+\.[0-9]+\.[0-9]+/libuv-v[0-9]+\.[0-9]+\.[0-9]+|dist/v${version}/libuv-v${version}|g; s|SHA-256: `[[:xdigit:]]{64}`|SHA-256: `${checksum}`|" "$here/README.md"
+sed -i.bak -E "s/\*\*[0-9]+\.[0-9]+\.[0-9]+\*\*/**${version}**/; s|dist/v[0-9]+\.[0-9]+\.[0-9]+/libuv-v[0-9]+\.[0-9]+\.[0-9]+|dist/v${version}/libuv-v${version}|g; s|SHA-256: \`[[:xdigit:]]{64}\`|SHA-256: \`${checksum}\`|" "$here/README.md"
 rm -f "$here/README.md.bak"
 
 echo "vendored libuv ${version} from ${url}"

@@ -10,6 +10,8 @@ The tree under `libuv/` is the upstream release tarball, extracted verbatim. **N
 Everything zuvloop adds lives in `zig/`, and `build.zig` compiles the vendored sources with the same
 defines and file lists as upstream's `CMakeLists.txt`.
 
-To update, verify the checksum through an independent channel, then run
+A weekly workflow checks for a new signed release, verifies its signer against
+`libuv-maintainer-keys.txt`, tests every supported target, and opens an update pull request. For a
+manual update, verify the checksum through an independent channel, then run
 `./vendor/update-libuv.sh <version> <sha256>` and re-check the file lists at the top of `build.zig`
 against the new `CMakeLists.txt`.
