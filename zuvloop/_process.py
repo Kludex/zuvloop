@@ -102,7 +102,9 @@ class Popen:
             _register_stdlib_process(process, loop, self)
             return
 
-        self._spawn_libuv(loop, args, file, env_items, cwd_text, stdin, stdout, stderr, start_new_session)
+        self._spawn_libuv(  # pragma: no cover - platform path exercised by macOS CI
+            loop, args, file, env_items, cwd_text, stdin, stdout, stderr, start_new_session
+        )
 
     def _spawn_libuv(  # pragma: no cover - platform path exercised by macOS CI
         self,
