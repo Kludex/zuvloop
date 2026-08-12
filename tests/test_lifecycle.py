@@ -43,10 +43,15 @@ def test_self_pipe_drain_stops_watching_at_eof() -> None:
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
     thread.join(1)
-    assert not thread.is_alive(), "event loop kept polling the self-pipe at EOF"
-    assert errors == []
-    assert loop.remove_reader(loop._ssock.fileno()) is False
-    loop.close()
+    try:
+        assert not thread.is_alive(), "event loop kept polling the self-pipe at EOF"
+        assert errors == []
+        assert loop.remove_reader(loop._ssock.fileno()) is False
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(1)
+        if not loop.is_running():  # pragma: no branch - watchdog failure may leave a daemon spinning
+            loop.close()
 
 
 def test_run_honours_debug_mode() -> None:
