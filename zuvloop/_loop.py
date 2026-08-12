@@ -55,8 +55,7 @@ class EventLoop(ConnectionOperations):
             signal.signal(sig, _noop_signal_handler)
         except OSError as exc:
             cleanup_finished = (
-                previous_owner is not _MISSING_SIGNAL_OWNER
-                and (previous_owner, sig) in _finished_signal_cleanups
+                previous_owner is not _MISSING_SIGNAL_OWNER and (previous_owner, sig) in _finished_signal_cleanups
             )
             if cleanup_finished:
                 _finished_signal_cleanups.discard((previous_owner, sig))
