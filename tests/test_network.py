@@ -761,6 +761,7 @@ async def test_create_connection_from_an_existing_socket() -> None:
         await asyncio.sleep(0.05)
         assert protocol.received == b"via sock"
         transport.close()
+        assert sock.fileno() == -1
         assert protocol.done is not None
         await protocol.done
 
