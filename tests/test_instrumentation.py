@@ -432,6 +432,13 @@ async def test_metrics_on_a_closed_loop_are_zero() -> None:
     assert loop._metrics()["loop_count"] == 0
 
 
+async def test_completed_tasks_have_no_call_graph(monkeypatch: pytest.MonkeyPatch) -> None:
+    task = asyncio.create_task(asyncio.sleep(0))
+    await task
+    monkeypatch.setattr(asyncio, "current_task", lambda: task)
+    assert capture_call_graph() is None
+
+
 async def test_the_stdlib_call_graph_apis_work_on_this_loop() -> None:
     """3.14's introspection reads real asyncio.Task objects, which is what zuvloop schedules."""
     import io
