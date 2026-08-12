@@ -35,7 +35,7 @@ def test_self_pipe_drain_stops_watching_at_eof() -> None:
     def run() -> None:
         try:
             loop.run_forever()
-        except BaseException as exc:
+        except BaseException as exc:  # pragma: no cover - assertion diagnostic
             errors.append(exc)
 
     loop._csock.close()
