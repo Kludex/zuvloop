@@ -136,12 +136,12 @@ pub const Transport = extern struct {
 
 var handle_offset: usize = 0;
 
-/// A queued write: the libuv request, the buffer views keeping the caller's
-/// memory alive, and the vector libuv reads from - all in one allocation.
+/// A queued write: the libuv request, immutable buffer views, and the vector
+/// libuv reads from - all in one allocation.
 ///
-/// Retaining views rather than copying is what makes a large `write()` free:
-/// the exporter stays alive (and, for a bytearray, locked against resizing)
-/// until libuv reports the write complete.
+/// An exact `bytes` object is retained without copying. Every other exporter is
+/// snapshotted first, so its view owns immutable bytes rather than caller memory;
+/// either way the backing object stays alive until libuv reports completion.
 ///
 /// The request does not take another Python reference to `transport`. The
 /// loop-owned handle reference remains alive until `onClosed`, and libuv runs
@@ -181,7 +181,7 @@ fn releaseViews(views: []c.Py_buffer) void {
 /// Hold immutable bytes directly; snapshot every other exporter before write()
 /// returns so queued I/O cannot observe later mutations by the caller.
 fn acquireWriteView(data: *py.Object, view: *c.Py_buffer) py.Error!void {
-    if (c.PyBytes_Check(data) != 0) {
+    if (c.PyBytes_CheckExact(data) != 0) {
         if (c.PyObject_GetBuffer(data, view, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
         return;
     }

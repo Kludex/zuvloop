@@ -151,6 +151,30 @@ async def test_queued_write_snapshots_a_mutable_buffer() -> None:
         await writer.wait_closed()
 
 
+async def test_queued_write_snapshots_a_bytes_subclass_buffer() -> None:
+    class MutableBytes(bytes):
+        payload: bytearray
+
+        def __new__(cls, payload: bytearray) -> MutableBytes:
+            instance = super().__new__(cls, b"immutable shell")
+            instance.payload = payload
+            return instance
+
+        def __buffer__(self, flags: int) -> memoryview:
+            return memoryview(self.payload)
+
+    server, port, _ = await start_echo()
+    payload = bytearray(b"custom buffer")
+    exporter = MutableBytes(payload)
+    async with server:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(exporter)
+        payload[:] = b"mutated later"
+        assert await reader.readexactly(13) == b"custom buffer"
+        writer.close()
+        await writer.wait_closed()
+
+
 async def test_queued_writelines_snapshot_mutable_buffers() -> None:
     server, port, _ = await start_echo()
     chunks = [bytearray(b"original "), bytearray(b"lines")]
