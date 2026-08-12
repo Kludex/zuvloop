@@ -12,6 +12,8 @@ from typing import Any
 from ._base import _signal_owners
 from ._connect import ConnectionOperations
 
+_MISSING_SIGNAL_OWNER = object()
+
 
 class EventLoop(ConnectionOperations):
     """An asyncio event loop backed by libuv.
@@ -33,16 +35,35 @@ class EventLoop(ConnectionOperations):
         _check_signal(sig)
         if threading.current_thread() is not threading.main_thread():
             raise RuntimeError("signal handlers can only be added from the main thread")
-        self._signal_handlers[sig] = (callback, args, contextvars.copy_context())
+        entry = (callback, args, contextvars.copy_context())
+        previous_entry = self._signal_handlers.get(sig)
+        previous_owner = _signal_owners.get(sig, _MISSING_SIGNAL_OWNER)
+        previous_disposition = signal.getsignal(sig)
+
+        # Publish ownership before touching process-global state. A pending
+        # cleanup from an older loop can run between any two Python calls below;
+        # seeing the new token makes it leave this registration alone.
+        self._signal_handlers[sig] = entry
+        _signal_owners[sig] = self._signal_owner
+        installed = False
         try:
             # Installing any Python handler is what makes CPython write the
             # signal number to the wakeup fd; the loop dispatches from there.
             signal.signal(sig, _noop_signal_handler)
+            installed = True
             signal.siginterrupt(sig, False)
-            _signal_owners[sig] = self._signal_owner
             self._attach_wakeup_fd()
         except OSError as exc:
-            del self._signal_handlers[sig]
+            if installed:
+                signal.signal(sig, previous_disposition)
+            if previous_entry is None:
+                del self._signal_handlers[sig]
+            else:
+                self._signal_handlers[sig] = previous_entry
+            if previous_owner is _MISSING_SIGNAL_OWNER:
+                _signal_owners.pop(sig, None)
+            else:
+                _signal_owners[sig] = previous_owner
             raise RuntimeError(f"sig {sig} cannot be caught") from exc
 
     def remove_signal_handler(self, sig: int) -> bool:

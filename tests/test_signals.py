@@ -11,6 +11,8 @@ import pytest
 
 import zuvloop
 from conftest import running_loop
+from zuvloop._base import _finish_deferred_signal_cleanup, _signal_owners
+from zuvloop._loop import _noop_signal_handler
 
 pytestmark = pytest.mark.anyio
 
@@ -70,6 +72,70 @@ async def test_uncatchable_signals_are_rejected() -> None:
     loop = running_loop()
     with pytest.raises(RuntimeError, match="cannot be caught"):
         loop.add_signal_handler(signal.SIGKILL, print)
+
+
+def test_failed_wakeup_attach_rolls_back_signal_ownership(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = signal.getsignal(signal.SIGUSR1)
+    loop = zuvloop.new_event_loop()
+
+    def fail_to_attach() -> None:
+        raise OSError("cannot attach")
+
+    monkeypatch.setattr(loop, "_attach_wakeup_fd", fail_to_attach)
+    try:
+        with pytest.raises(RuntimeError, match="cannot be caught"):
+            loop.add_signal_handler(signal.SIGUSR1, print)
+        assert signal.SIGUSR1 not in loop._signal_handlers
+        assert _signal_owners.get(signal.SIGUSR1) is not loop._signal_owner
+        assert signal.getsignal(signal.SIGUSR1) is original
+    finally:
+        loop.close()
+        signal.signal(signal.SIGUSR1, original)
+
+
+def test_failed_signal_reregistration_restores_the_existing_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = signal.getsignal(signal.SIGUSR1)
+    loop = zuvloop.new_event_loop()
+    loop.add_signal_handler(signal.SIGUSR1, print, "original")
+    previous = loop._signal_handlers[signal.SIGUSR1]
+
+    def fail_to_attach() -> None:
+        raise OSError("cannot attach")
+
+    monkeypatch.setattr(loop, "_attach_wakeup_fd", fail_to_attach)
+    try:
+        with pytest.raises(RuntimeError, match="cannot be caught"):
+            loop.add_signal_handler(signal.SIGUSR1, print, "replacement")
+        assert loop._signal_handlers[signal.SIGUSR1] is previous
+        assert _signal_owners[signal.SIGUSR1] is loop._signal_owner
+    finally:
+        loop.remove_signal_handler(signal.SIGUSR1)
+        loop.close()
+        signal.signal(signal.SIGUSR1, original)
+
+
+def test_stale_pending_cleanup_cannot_reset_a_registration_in_progress(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = signal.getsignal(signal.SIGUSR1)
+    old = zuvloop.new_event_loop()
+    owner = zuvloop.new_event_loop()
+    cleanup_fd = os.dup(old._csock.fileno())
+    old.add_signal_handler(signal.SIGUSR1, print)
+    real_siginterrupt = signal.siginterrupt
+
+    def run_pending_cleanup(sig: int, flag: bool) -> None:
+        _finish_deferred_signal_cleanup((signal.SIGUSR1,), cleanup_fd, old._signal_owner)
+        real_siginterrupt(sig, flag)
+
+    monkeypatch.setattr(signal, "siginterrupt", run_pending_cleanup)
+    try:
+        owner.add_signal_handler(signal.SIGUSR1, print)
+        assert _signal_owners[signal.SIGUSR1] is owner._signal_owner
+        assert signal.getsignal(signal.SIGUSR1) is _noop_signal_handler
+    finally:
+        owner.remove_signal_handler(signal.SIGUSR1)
+        old.close()
+        owner.close()
+        signal.signal(signal.SIGUSR1, original)
 
 
 def test_signal_handlers_require_the_main_thread() -> None:
