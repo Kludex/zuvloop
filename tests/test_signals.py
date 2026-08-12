@@ -214,10 +214,21 @@ def test_an_old_loop_finalizer_does_not_clobber_a_new_signal_owner() -> None:
     try:
         old.add_signal_handler(signal.SIGUSR1, print)
         owner.add_signal_handler(signal.SIGUSR1, received.append, "delivered")
+        held = [old]
+        del old
+
+        def finalize_old_owner() -> None:
+            abandoned = held.pop()
+            del abandoned
+            gc.collect()
 
         with pytest.warns(ResourceWarning, match="unclosed event loop"):
-            del old
-            gc.collect()
+            thread = threading.Thread(target=finalize_old_owner)
+            thread.start()
+            thread.join()
+        # Run the pending main-thread cleanup after the replacement owns both
+        # global resources; neither one may be reset by the old token.
+        gc.collect()
 
         os.kill(os.getpid(), signal.SIGUSR1)
         owner.run_until_complete(asyncio.sleep(0.01))
