@@ -162,9 +162,7 @@ _reaper_processes: dict[int, tuple[subprocess.Popen[bytes], ConnectionOperations
 _reaper_started = False
 
 
-def _register_stdlib_process(
-    process: subprocess.Popen[bytes], loop: ConnectionOperations, wrapper: Popen
-) -> None:
+def _register_stdlib_process(process: subprocess.Popen[bytes], loop: ConnectionOperations, wrapper: Popen) -> None:
     global _reaper_started
     with _reaper_condition:
         _reaper_processes[process.pid] = (process, loop, wrapper)
