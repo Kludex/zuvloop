@@ -81,19 +81,20 @@ async def test_cancelled_callback_does_not_run() -> None:
     assert seen == []
 
 
-async def test_callback_can_cancel_its_own_handle_during_vectorcall() -> None:
+@pytest.mark.parametrize("args", [(1, 2, 3), (1, 2, 3, 4, 5, 6)])
+async def test_callback_can_cancel_its_own_handle_during_vectorcall(args: tuple[int, ...]) -> None:
     loop = running_loop()
     handles: list[asyncio.Handle] = []
     seen: list[tuple[int, ...]] = []
 
-    def callback(*args: int) -> None:
+    def callback(*received: int) -> None:
         handles[0].cancel()
-        seen.append(args)
+        seen.append(received)
 
-    handles.append(loop.call_soon(callback, 1, 2, 3, 4, 5, 6))
+    handles.append(loop.call_soon(callback, *args))
     await asyncio.sleep(0)
     await asyncio.sleep(0)
-    assert seen == [(1, 2, 3, 4, 5, 6)]
+    assert seen == [args]
     assert handles[0].cancelled()
 
 
