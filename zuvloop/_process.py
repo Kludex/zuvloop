@@ -50,6 +50,14 @@ class Popen:
         if unsupported:
             name = next(iter(unsupported))
             raise ValueError(f"{name} is not supported by zuvloop's subprocess transport")
+
+        file = executable or args[0]
+        cwd_text = None if cwd is None else os.fsdecode(cwd)
+        env_items = None if env is None else [f"{key}={value}" for key, value in env.items()]
+        for value in (file, *args, cwd_text, *(env_items or ())):
+            if value is not None and "\0" in value:
+                raise ValueError("embedded null byte")
+
         # Before any pipe of ours can reuse a freshly closed number, and in the
         # parent, where the error beats the child's bare exit code 127.
         pass_fds = tuple(pass_fds)
@@ -79,10 +87,10 @@ class Popen:
 
             flags = _zuvloop.PROCESS_DETACHED if start_new_session else 0
             self._handle = loop._spawn_process(
-                executable or args[0],
+                file,
                 args,
-                None if env is None else [f"{k}={v}" for k, v in env.items()],
-                None if cwd is None else os.fspath(cwd),
+                env_items,
+                cwd_text,
                 _stdio(child_fds, pass_fds),
                 flags,
                 0,
