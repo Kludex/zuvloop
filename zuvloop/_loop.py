@@ -12,8 +12,6 @@ from typing import Any
 from ._base import SignalOwner, _signal_owners
 from ._connect import ConnectionOperations
 
-_MISSING_SIGNAL_OWNER = object()
-
 
 class EventLoop(ConnectionOperations):
     """An asyncio event loop backed by libuv.
@@ -37,7 +35,7 @@ class EventLoop(ConnectionOperations):
             raise RuntimeError("signal handlers can only be added from the main thread")
         entry = (callback, args, contextvars.copy_context())
         previous_entry = self._signal_handlers.get(sig)
-        previous_owner = _signal_owners.get(sig, _MISSING_SIGNAL_OWNER)
+        previous_owner: SignalOwner | None = _signal_owners.get(sig)
 
         # Publish ownership before touching process-global state. A pending
         # cleanup from an older loop can run between any two Python calls below;
@@ -54,7 +52,7 @@ class EventLoop(ConnectionOperations):
             # signal number to the wakeup fd; the loop dispatches from there.
             signal.signal(sig, _noop_signal_handler)
         except OSError as exc:
-            previous_finalized = isinstance(previous_owner, SignalOwner) and previous_owner.is_finalized()
+            previous_finalized = previous_owner is not None and previous_owner.is_finalized()
             if previous_finalized:
                 # A pending finalizer already skipped this provisional owner.
                 # Complete its reset instead of resurrecting that loop.
@@ -65,7 +63,7 @@ class EventLoop(ConnectionOperations):
                 del self._signal_handlers[sig]
             else:
                 self._signal_handlers[sig] = previous_entry
-            if isinstance(previous_owner, SignalOwner) and not previous_finalized:
+            if previous_owner is not None and not previous_finalized:
                 _signal_owners[sig] = previous_owner
                 # Finalization can run after the snapshot but before this dict
                 # assignment. Revalidate the token at the commit point; if it

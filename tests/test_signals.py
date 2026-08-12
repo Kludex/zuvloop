@@ -13,7 +13,7 @@ import pytest
 
 import zuvloop
 from conftest import running_loop
-from zuvloop._base import _finish_deferred_signal_cleanup, _signal_owners
+from zuvloop._base import SignalOwner, _finish_deferred_signal_cleanup, _signal_owners
 from zuvloop._loop import _noop_signal_handler
 
 pytestmark = pytest.mark.anyio
@@ -90,7 +90,7 @@ def test_failed_wakeup_attach_rolls_back_signal_ownership(monkeypatch: pytest.Mo
         with pytest.raises(RuntimeError, match="cannot be caught"):
             loop.add_signal_handler(signal.SIGUSR1, print)
         assert signal.SIGUSR1 not in loop._signal_handlers
-        assert _signal_owners.get(signal.SIGUSR1) is not loop._signal_owner
+        assert signal.SIGUSR1 not in _signal_owners
         assert signal.getsignal(signal.SIGUSR1) is original
         assert siginterrupt_calls == []
     finally:
@@ -258,7 +258,7 @@ def test_rollback_revalidates_an_owner_finalized_at_commit(monkeypatch: pytest.M
     real_signal = signal.signal
     first_signal_call = True
     finalized_checks = 0
-    real_is_finalized = old._signal_owner.is_finalized
+    real_is_finalized = SignalOwner.is_finalized
 
     def fail_registration_once(
         sig: int, handler: int | Callable[[int, FrameType | None], object]
@@ -269,15 +269,16 @@ def test_rollback_revalidates_an_owner_finalized_at_commit(monkeypatch: pytest.M
             raise OSError("cannot install")
         return real_signal(sig, handler)
 
-    def finalize_on_commit_check() -> bool:
+    def finalize_on_commit_check(token: SignalOwner) -> bool:
         nonlocal finalized_checks
-        finalized_checks += 1
-        if finalized_checks == 2:
-            _finish_deferred_signal_cleanup((signal.SIGUSR1,), cleanup_fd, old._signal_owner)
-        return real_is_finalized()
+        if token is old._signal_owner:  # pragma: no branch - this scenario queries only the old token
+            finalized_checks += 1
+            if finalized_checks == 2:
+                _finish_deferred_signal_cleanup((signal.SIGUSR1,), cleanup_fd, token)
+        return real_is_finalized(token)
 
     monkeypatch.setattr(signal, "signal", fail_registration_once)
-    monkeypatch.setattr(old._signal_owner, "is_finalized", finalize_on_commit_check)
+    monkeypatch.setattr(SignalOwner, "is_finalized", finalize_on_commit_check)
     try:
         with pytest.raises(RuntimeError, match="cannot be caught"):
             owner.add_signal_handler(signal.SIGUSR1, print)

@@ -29,6 +29,8 @@ _ExceptionHandler = Callable[[asyncio.AbstractEventLoop, dict[str, Any]], object
 # Signal dispositions and the wakeup fd are process-global. Tokens let delayed
 # finalization tell whether another loop has replaced the state it installed.
 class SignalOwner:
+    __slots__ = ("finalized",)
+
     def __init__(self) -> None:
         self.finalized = False
 
