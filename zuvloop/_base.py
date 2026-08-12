@@ -38,6 +38,15 @@ class SignalOwner:
         return self.finalized
 
 
+class WakeupState:
+    __slots__ = ("fd", "owner", "was_attached")
+
+    def __init__(self, fd: int, owner: SignalOwner | None, was_attached: bool) -> None:
+        self.fd = fd
+        self.owner = owner
+        self.was_attached = was_attached
+
+
 _signal_owners: dict[int, SignalOwner] = {}
 _wakeup_fd_owner: SignalOwner | None = None
 
@@ -324,7 +333,7 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         self._ssock.close()
         self._csock.close()
 
-    def _attach_wakeup_fd(self) -> tuple[int, SignalOwner | None, bool] | None:
+    def _attach_wakeup_fd(self) -> WakeupState | None:
         # Only the main thread may own the wakeup fd, and only it runs Python
         # signal handlers - so a loop on any other thread simply skips this.
         if threading.current_thread() is threading.main_thread() and self._signal_handlers:
@@ -347,30 +356,29 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
                     _wakeup_fd_owner = None
                 raise
             self._wakeup_fd_attached = True
-            return (previous_fd, previous_owner, previous_attached)
+            return WakeupState(previous_fd, previous_owner, previous_attached)
         return None
 
-    def _restore_wakeup_fd(self, previous: tuple[int, SignalOwner | None, bool] | None) -> None:
+    def _restore_wakeup_fd(self, previous: WakeupState | None) -> None:
         if previous is None:
             return
         global _wakeup_fd_owner
         # Stale cleanup skips a replacement token, so this transaction remains
         # the wakeup owner until it either commits or restores this snapshot.
         assert _wakeup_fd_owner is self._signal_owner
-        fd, owner, was_attached = previous
-        abandon = owner is not None and owner.is_finalized()
+        abandon = previous.owner is not None and previous.owner.is_finalized()
         try:
-            signal.set_wakeup_fd(-1 if abandon else fd)
+            signal.set_wakeup_fd(-1 if abandon else previous.fd)
         except OSError:  # pragma: no cover - fd closed between check and syscall
             # Finalization may close fd after the check but before the syscall.
             signal.set_wakeup_fd(-1)
             abandon = True
-        _wakeup_fd_owner = None if abandon else owner
-        self._wakeup_fd_attached = False if abandon else was_attached
+        _wakeup_fd_owner = None if abandon else previous.owner
+        self._wakeup_fd_attached = False if abandon else previous.was_attached
         # Revalidate after publishing: cleanup can run between any two Python
         # operations above. If it did, never leave its closed fd reinstalled.
         if (  # pragma: no cover - defensive recheck after deferred cleanup
-            owner is not None and owner.is_finalized() and _wakeup_fd_owner is owner
+            previous.owner is not None and previous.owner.is_finalized() and _wakeup_fd_owner is previous.owner
         ):
             signal.set_wakeup_fd(-1)
             _wakeup_fd_owner = None

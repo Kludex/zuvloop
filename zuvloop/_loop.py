@@ -9,7 +9,7 @@ from collections.abc import Callable
 from types import FrameType
 from typing import Any
 
-from ._base import SignalOwner, _signal_owners
+from ._base import SignalOwner, WakeupState, _signal_owners
 from ._connect import ConnectionOperations
 
 
@@ -42,7 +42,7 @@ class EventLoop(ConnectionOperations):
         # seeing the new token makes it leave this registration alone.
         self._signal_handlers[sig] = entry
         _signal_owners[sig] = self._signal_owner
-        wakeup_state: tuple[int, SignalOwner | None, bool] | None = None
+        wakeup_state: WakeupState | None = None
         try:
             # Attach before signal.signal(), which implicitly enables syscall
             # interruption. If attachment fails, rollback has no siginterrupt
