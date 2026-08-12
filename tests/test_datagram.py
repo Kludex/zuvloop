@@ -354,6 +354,8 @@ async def test_a_connected_v6_endpoint_tells_the_scope_apart() -> None:
             assert await asyncio.wait_for(protocol.done, 2) == b"re:v6"
             with pytest.raises(ValueError, match="connected"):
                 client.sendto(b"v6", (host, port, 0, 1))
+            with pytest.raises(ValueError, match="connected"):
+                client.sendto(b"v6", (host, port, 1, 0))
         finally:
             client.close()
     finally:
