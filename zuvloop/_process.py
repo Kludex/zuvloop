@@ -75,6 +75,7 @@ class Popen:
         self.pid: int
         self._on_exit = on_exit
         self._stdlib: subprocess.Popen[bytes] | None = None
+        self._handle: _zuvloop.Process | None = None
 
         # libuv's Linux fork path has no close_fds operation. Let stdlib do
         # Linux spawns: its child-side close preserves Popen's default even when
@@ -136,6 +137,7 @@ class Popen:
                 if fd >= 0:
                     os.close(fd)
 
+        assert self._handle is not None
         self.pid = self._handle.get_pid()
 
     def _exited(self, returncode: int) -> None:
@@ -149,6 +151,7 @@ class Popen:
         if self._stdlib is not None:
             self._stdlib.send_signal(signum)
         else:
+            assert self._handle is not None
             self._handle.send_signal(signum)
 
     def kill(self) -> None:
