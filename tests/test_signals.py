@@ -206,6 +206,28 @@ def test_finalizing_a_running_loop_leaves_it_running() -> None:
         loop.close()
 
 
+def test_an_old_loop_finalizer_does_not_clobber_a_new_signal_owner() -> None:
+    original = signal.getsignal(signal.SIGUSR1)
+    old = zuvloop.new_event_loop()
+    owner = zuvloop.new_event_loop()
+    received: list[str] = []
+    try:
+        old.add_signal_handler(signal.SIGUSR1, print)
+        owner.add_signal_handler(signal.SIGUSR1, received.append, "delivered")
+
+        with pytest.warns(ResourceWarning, match="unclosed event loop"):
+            del old
+            gc.collect()
+
+        os.kill(os.getpid(), signal.SIGUSR1)
+        owner.run_until_complete(asyncio.sleep(0.01))
+        assert received == ["delivered"]
+    finally:
+        owner.remove_signal_handler(signal.SIGUSR1)
+        owner.close()
+        signal.signal(signal.SIGUSR1, original)
+
+
 def test_a_loop_without_handlers_does_not_disable_another_loops_signals() -> None:
     original = signal.getsignal(signal.SIGUSR1)
     owner = zuvloop.new_event_loop()

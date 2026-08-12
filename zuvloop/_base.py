@@ -25,6 +25,11 @@ from ._instrumentation import (
 
 _ExceptionHandler = Callable[[asyncio.AbstractEventLoop, dict[str, Any]], object]
 
+# Signal dispositions and the wakeup fd are process-global. Tokens let delayed
+# finalization tell whether another loop has replaced the state it installed.
+_signal_owners: dict[int, object] = {}
+_wakeup_fd_owner: object | None = None
+
 
 # The native methods are stricter than typeshed's AbstractEventLoop, which
 # types several of them with TypeVarTuples this class cannot reproduce.
@@ -53,6 +58,7 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         # Which `sock_*` call owns the watcher currently on each (fd, write).
         self._sock_watchers: dict[tuple[int, bool], object] = {}
         self._wakeup_fd_attached = False
+        self._signal_owner = object()
         self._instrumentation = Instrumentation()
         self._monitoring_armed = False
         self._metrics_armed = False
@@ -71,7 +77,12 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
                     wakeup_fd = self._csock.fileno()
                     try:
                         self._defer_close(
-                            partial(_finish_deferred_signal_cleanup, tuple(self._signal_handlers), wakeup_fd)
+                            partial(
+                                _finish_deferred_signal_cleanup,
+                                tuple(self._signal_handlers),
+                                wakeup_fd,
+                                self._signal_owner,
+                            )
                         )
                     except BaseException:  # pragma: no cover - CPython pending-call queue exhaustion
                         try:
@@ -306,7 +317,9 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         # Only the main thread may own the wakeup fd, and only it runs Python
         # signal handlers - so a loop on any other thread simply skips this.
         if threading.current_thread() is threading.main_thread() and self._signal_handlers:
+            global _wakeup_fd_owner
             signal.set_wakeup_fd(self._csock.fileno())
+            _wakeup_fd_owner = self._signal_owner
             self._wakeup_fd_attached = True
 
     def _detach_wakeup_fd(self) -> None:
@@ -318,7 +331,10 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
             and self._wakeup_fd_attached
             and not self._signal_handlers
         ):
-            signal.set_wakeup_fd(-1)
+            global _wakeup_fd_owner
+            if _wakeup_fd_owner is self._signal_owner:
+                signal.set_wakeup_fd(-1)
+                _wakeup_fd_owner = None
             self._wakeup_fd_attached = False
 
     def _add_reader(self, fd: int, callback: Callable[..., object], *args: object) -> None:
@@ -360,12 +376,17 @@ def _stop_when_done(future: asyncio.Future[Any]) -> None:
     asyncio.futures._get_loop(future).stop()  # type: ignore[attr-defined]
 
 
-def _finish_deferred_signal_cleanup(signals: tuple[int, ...], wakeup_fd: int) -> None:
-    signal.set_wakeup_fd(-1)
+def _finish_deferred_signal_cleanup(signals: tuple[int, ...], wakeup_fd: int, owner: object) -> None:
+    global _wakeup_fd_owner
+    if _wakeup_fd_owner is owner:
+        signal.set_wakeup_fd(-1)
+        _wakeup_fd_owner = None
     try:
         for sig in signals:
-            handler = signal.default_int_handler if sig == signal.SIGINT else signal.SIG_DFL
-            signal.signal(sig, handler)
+            if _signal_owners.get(sig) is owner:
+                del _signal_owners[sig]
+                handler = signal.default_int_handler if sig == signal.SIGINT else signal.SIG_DFL
+                signal.signal(sig, handler)
     finally:
         os.close(wakeup_fd)
 

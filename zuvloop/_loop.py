@@ -9,6 +9,7 @@ from collections.abc import Callable
 from types import FrameType
 from typing import Any
 
+from ._base import _signal_owners
 from ._connect import ConnectionOperations
 
 
@@ -38,6 +39,7 @@ class EventLoop(ConnectionOperations):
             # signal number to the wakeup fd; the loop dispatches from there.
             signal.signal(sig, _noop_signal_handler)
             signal.siginterrupt(sig, False)
+            _signal_owners[sig] = self._signal_owner
             self._attach_wakeup_fd()
         except OSError as exc:
             del self._signal_handlers[sig]
@@ -47,8 +49,10 @@ class EventLoop(ConnectionOperations):
         _check_signal(sig)
         if self._signal_handlers.pop(sig, None) is None:
             return False
-        handler = signal.default_int_handler if sig == signal.SIGINT else signal.SIG_DFL
-        signal.signal(sig, handler)
+        if _signal_owners.get(sig) is self._signal_owner:
+            del _signal_owners[sig]
+            handler = signal.default_int_handler if sig == signal.SIGINT else signal.SIG_DFL
+            signal.signal(sig, handler)
         self._detach_wakeup_fd()
         return True
 
