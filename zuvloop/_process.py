@@ -4,8 +4,9 @@ import io
 import os
 import signal
 import subprocess
+import threading
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from . import _zuvloop
 
@@ -70,13 +71,38 @@ class Popen:
         self.stdout: io.BufferedReader | None = None
         self.stderr: io.BufferedReader | None = None
         self.returncode: int | None = None
+        self.pid: int
         self._on_exit = on_exit
+        self._stdlib: subprocess.Popen[bytes] | None = None
+
+        # libuv has no close_fds operation on its Unix fork path. Let stdlib do
+        # the spawn whenever descriptors must pass through: its child-side
+        # close avoids any process-wide inheritable-flag window in the parent.
+        if pass_fds:
+            process = subprocess.Popen(
+                args,
+                executable=executable,
+                env=env,
+                cwd=cwd,
+                stdin=stdin,
+                stdout=stdout,
+                stderr=stderr,
+                bufsize=0,
+                start_new_session=start_new_session,
+                pass_fds=pass_fds,
+            )
+            self._stdlib = process
+            self.stdin = cast(io.BufferedWriter | None, process.stdin)
+            self.stdout = cast(io.BufferedReader | None, process.stdout)
+            self.stderr = cast(io.BufferedReader | None, process.stderr)
+            self.pid = process.pid
+            threading.Thread(target=self._wait_stdlib, args=(loop, process), daemon=True).start()
+            return
 
         # libuv's posix_spawn path marks stdio slots blocking on the file
         # description the parent shares; the caller's state goes back after.
         blocking = {fd: os.get_blocking(fd) for fd in pass_fds}
         child_fds: list[int] = []
-        cloexec: list[int] = []
         try:
             for index, request in enumerate((stdin, stdout, stderr)):
                 child, mine = _open_stream(index, request, child_fds)
@@ -85,20 +111,6 @@ class Popen:
                     # Wrapping the descriptor hands it to the file object, which
                     # is what closes it from here.
                     setattr(self, _NAMES[index], open(mine, "wb" if index == 0 else "rb", 0))
-
-            # libuv's Unix fork path leaves unrelated inheritable descriptors
-            # alone. Temporarily put close-on-exec back on every descriptor the
-            # child did not explicitly request, matching Popen(close_fds=True).
-            inherited = set(child_fds) | set(pass_fds) | {0, 1, 2}
-            for fd in _open_fds():
-                try:
-                    if fd not in inherited and os.get_inheritable(fd):
-                        os.set_inheritable(fd, False)
-                        cloexec.append(fd)
-                except OSError:
-                    # A descriptor owned by another thread may close between
-                    # the directory snapshot and the flag query.
-                    pass
 
             flags = _zuvloop.PROCESS_DETACHED if start_new_session else 0
             self._handle = loop._spawn_process(
@@ -126,13 +138,17 @@ class Popen:
                     os.close(fd)
             for fd, was_blocking in blocking.items():
                 os.set_blocking(fd, was_blocking)
-            for fd in cloexec:
-                try:
-                    os.set_inheritable(fd, True)
-                except OSError:  # pragma: no cover - descriptor closed concurrently
-                    pass
 
-        self.pid: int = self._handle.get_pid()
+        self.pid = self._handle.get_pid()
+
+    def _wait_stdlib(self, loop: ConnectionOperations, process: subprocess.Popen[bytes]) -> None:
+        returncode = process.wait()
+        try:
+            loop.call_soon_threadsafe(self._exited, returncode)
+        except RuntimeError:
+            # Closing the loop already closes its subprocess transport; there
+            # is nowhere left to deliver the exit notification.
+            pass
 
     def _exited(self, returncode: int) -> None:
         self.returncode = returncode
@@ -142,7 +158,10 @@ class Popen:
         return self.returncode
 
     def send_signal(self, signum: int) -> None:
-        self._handle.send_signal(signum)
+        if self._stdlib is not None:
+            self._stdlib.send_signal(signum)
+        else:
+            self._handle.send_signal(signum)
 
     def kill(self) -> None:
         # `BaseSubprocessTransport.close()` reaches for this on a child that is
@@ -196,22 +215,3 @@ def _open_stream(index: int, request: Any, child_fds: list[int]) -> tuple[int, i
 
 def _dup_std(index: int) -> int:
     return os.dup(index)
-
-
-def _open_fds() -> list[int]:
-    """Snapshot the process descriptors without imposing a small fd limit."""
-    for directory in ("/proc/self/fd", "/dev/fd"):
-        try:
-            return [int(name) for name in os.listdir(directory) if name.isdecimal()]
-        except OSError:
-            pass
-    limit = os.sysconf("SC_OPEN_MAX")
-    return [fd for fd in range(3, limit) if _is_open(fd)]
-
-
-def _is_open(fd: int) -> bool:
-    try:
-        os.fstat(fd)
-    except OSError:
-        return False
-    return True
