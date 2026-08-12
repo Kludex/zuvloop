@@ -904,7 +904,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
         if (needs_close) {
             st.ready.deinit();
             st.timers.deinit();
-            }
+        }
         // The flush list owns one Python reference per transport regardless of
         // how the loop reached deallocation, including partially completed
         // explicit close paths.
@@ -951,8 +951,12 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
             if (r != 0) return r;
             transport = owned.owner_next;
         }
-        r = dns.traverse(st, visitproc, arg);
-        if (r != 0) return r;
+        // Once close hands resolver requests to the native reaper, their
+        // futures are gone and the request list mutates without the GIL.
+        if (!isReaping(st)) {
+            r = dns.traverse(st, visitproc, arg);
+            if (r != 0) return r;
+        }
         r = pollermod.traverse(st, visitproc, arg);
         if (r != 0) return r;
     }
