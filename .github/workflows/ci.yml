@@ -167,6 +167,9 @@ jobs:
 
 
   benchmarks:
+    # Pull-request code must never execute in a job that can mint an OIDC token.
+    # Pushes record the trusted benchmark after a change lands.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
