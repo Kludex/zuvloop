@@ -99,7 +99,7 @@ def capture_call_graph(handle: object = None) -> str | None:
     task = getattr(getattr(handle, "_callback", None), "__self__", None)
     if not isinstance(task, asyncio.Task):
         task = asyncio.current_task()
-    if task is None:
+    if task is None or task.done():
         return None
     return asyncio.format_call_graph(task)
 
