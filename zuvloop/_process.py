@@ -102,6 +102,20 @@ class Popen:
             _register_stdlib_process(process, loop, self)
             return
 
+        self._spawn_libuv(loop, args, file, env_items, cwd_text, stdin, stdout, stderr, start_new_session)
+
+    def _spawn_libuv(  # pragma: no cover - platform path exercised by macOS CI
+        self,
+        loop: ConnectionOperations,
+        args: list[str],
+        file: str,
+        env_items: list[str] | None,
+        cwd: str | None,
+        stdin: Any,
+        stdout: Any,
+        stderr: Any,
+        start_new_session: bool,
+    ) -> None:
         child_fds: list[int] = []
         try:
             for index, request in enumerate((stdin, stdout, stderr)):
@@ -113,17 +127,7 @@ class Popen:
                     setattr(self, _NAMES[index], open(mine, "wb" if index == 0 else "rb", 0))
 
             flags = _zuvloop.PROCESS_DETACHED if start_new_session else 0
-            self._handle = loop._spawn_process(
-                file,
-                args,
-                env_items,
-                cwd_text,
-                child_fds,
-                flags,
-                0,
-                0,
-                self._exited,
-            )
+            self._handle = loop._spawn_process(file, args, env_items, cwd, child_fds, flags, 0, 0, self._exited)
         except BaseException:
             for opened in (self.stdin, self.stdout, self.stderr):
                 if opened is not None:
@@ -150,7 +154,7 @@ class Popen:
     def send_signal(self, signum: int) -> None:
         if self._stdlib is not None:
             self._stdlib.send_signal(signum)
-        else:
+        else:  # pragma: no cover - platform path exercised by macOS CI
             assert self._handle is not None
             self._handle.send_signal(signum)
 
@@ -201,7 +205,9 @@ def _reap_stdlib_processes() -> None:
                 _reaper_condition.wait(0.01)
 
 
-def _open_stream(index: int, request: Any, child_fds: list[int]) -> tuple[int, int | None]:
+def _open_stream(  # pragma: no cover - platform helper exercised by macOS CI
+    index: int, request: Any, child_fds: list[int]
+) -> tuple[int, int | None]:
     """Returns the descriptor the child inherits, and ours if there is one.
 
     `child_fds` holds what the earlier streams resolved to, which is what lets a
@@ -228,5 +234,5 @@ def _open_stream(index: int, request: Any, child_fds: list[int]) -> tuple[int, i
     return os.dup(fd), None
 
 
-def _dup_std(index: int) -> int:
+def _dup_std(index: int) -> int:  # pragma: no cover - platform helper exercised by macOS CI
     return os.dup(index)
