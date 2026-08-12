@@ -7,7 +7,7 @@ import socket
 import ssl
 import struct
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import pytest
@@ -466,6 +466,42 @@ async def test_writes_after_write_eof_are_rejected() -> None:
             transport.writelines([b"too late"])
         with pytest.raises(RuntimeError, match=r"Cannot call writelines\(\) after write_eof"):
             transport.writelines([])
+        transport.close()
+        assert protocol.done is not None
+        await protocol.done
+
+
+async def test_reentrant_writelines_cannot_queue_data_after_eof() -> None:
+    server, port, _ = await start_echo()
+    loop = running_loop()
+    async with server:
+        transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
+
+        class EofDuringIteration:
+            def __iter__(self) -> Iterator[bytes]:
+                transport.write_eof()
+                yield b"too late"
+
+        with pytest.raises(RuntimeError, match="write_eof"):
+            transport.writelines(EofDuringIteration())
+        transport.close()
+        assert protocol.done is not None
+        await protocol.done
+
+
+async def test_reentrant_buffer_acquisition_cannot_queue_data_after_eof() -> None:
+    server, port, _ = await start_echo()
+    loop = running_loop()
+    async with server:
+        transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
+
+        class EofDuringBuffer:
+            def __buffer__(self, flags: int) -> memoryview:
+                transport.write_eof()
+                return memoryview(b"too late")
+
+        with pytest.raises(RuntimeError, match="write_eof"):
+            transport.writelines([EofDuringBuffer()])  # type: ignore[list-item]
         transport.close()
         assert protocol.done is not None
         await protocol.done
