@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from conftest import running_loop
+from zuvloop._process import _open_fds
 
 pytestmark = pytest.mark.anyio
 
@@ -278,6 +279,23 @@ async def test_non_default_popen_arguments_are_rejected() -> None:
 
 
 WRITE_TO_FD = "import os, sys; os.write(int(sys.argv[1]), b'through-the-pipe')"
+
+
+def test_open_fd_snapshot_falls_back_when_descriptor_directories_are_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable(_directory: str) -> list[str]:
+        raise OSError
+
+    def fstat(fd: int) -> os.stat_result:
+        if fd != 4:
+            raise OSError
+        return os.stat_result((0,) * 10)
+
+    monkeypatch.setattr(os, "listdir", unavailable)
+    monkeypatch.setattr(os, "sysconf", lambda _name: 6)
+    monkeypatch.setattr(os, "fstat", fstat)
+    assert _open_fds() == [4]
 
 
 async def test_pass_fds_reaches_the_child_at_the_same_number() -> None:

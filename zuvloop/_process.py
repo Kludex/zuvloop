@@ -129,7 +129,7 @@ class Popen:
             for fd in cloexec:
                 try:
                     os.set_inheritable(fd, True)
-                except OSError:
+                except OSError:  # pragma: no cover - descriptor closed concurrently
                     pass
 
         self.pid: int = self._handle.get_pid()
