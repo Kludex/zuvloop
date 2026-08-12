@@ -81,6 +81,22 @@ async def test_cancelled_callback_does_not_run() -> None:
     assert seen == []
 
 
+async def test_callback_can_cancel_its_own_handle_during_vectorcall() -> None:
+    loop = running_loop()
+    handles: list[asyncio.Handle] = []
+    seen: list[tuple[int, ...]] = []
+
+    def callback(*args: int) -> None:
+        handles[0].cancel()
+        seen.append(args)
+
+    handles.append(loop.call_soon(callback, 1, 2, 3, 4, 5, 6))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert seen == [(1, 2, 3, 4, 5, 6)]
+    assert handles[0].cancelled()
+
+
 async def test_handle_repr_names_the_callback() -> None:
     loop = running_loop()
     handle = loop.call_soon(print)

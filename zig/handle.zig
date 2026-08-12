@@ -86,7 +86,28 @@ pub fn create(
 pub fn run(self: *Handle) void {
     if (self.isCancelled()) return;
     const callback = self.callback orelse return;
-    invoke(@ptrCast(self), self.loop, callback, self.argv(), self.nargs, self.context.?);
+    py.incref(callback);
+    defer py.decref(callback);
+
+    // cancel() is allowed to run reentrantly from the callback. Vectorcall only
+    // borrows its input array, so hold a private reference to every argument
+    // until the call has returned rather than exposing the handle's clearable
+    // storage directly.
+    const nargs: usize = @intCast(self.nargs);
+    var inline_storage: [inline_args]?*py.Object = undefined;
+    const stable = if (nargs <= inline_args) inline_storage[0..nargs] else arg_alloc.alloc(?*py.Object, nargs) catch {
+        _ = c.PyErr_NoMemory();
+        loopmod.callbackFailed(self.loop, @ptrCast(self));
+        return;
+    };
+    defer if (nargs > inline_args) arg_alloc.free(stable);
+    for (self.argv()[0..nargs], 0..) |arg, i| {
+        py.incref(arg.?);
+        stable[i] = arg;
+    }
+    defer for (stable) |arg| py.decref(arg.?);
+
+    invoke(@ptrCast(self), self.loop, callback, stable.ptr, @intCast(nargs), self.context.?);
 }
 
 /// Calls `callback(*argv)` inside `ctx`, routing failures to `loop` with
@@ -179,7 +200,6 @@ fn cancelled(self_obj: *py.Object) py.Error!*py.Object {
     return py.boolRef(self.isCancelled());
 }
 
-
 fn getCallback(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
     const self: *Handle = @ptrCast(@alignCast(self_obj.?));
     return py.newref(self.callback orelse py.none());
@@ -242,7 +262,6 @@ var handle_spec = c.PyType_Spec{
     .flags = flags,
     .slots = &handle_slots,
 };
-
 
 pub fn register(module: *py.Object) py.Error!void {
     handle_type = @ptrCast(c.PyType_FromModuleAndSpec(module, &handle_spec, null) orelse return py.Error.Python);
