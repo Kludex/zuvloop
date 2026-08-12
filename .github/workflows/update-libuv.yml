@@ -116,7 +116,7 @@ jobs:
           git switch -C automation/update-libuv
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add vendor
+          git add -A -f vendor
           git commit -m "Update libuv to ${version}"
           git push --force origin HEAD
 
