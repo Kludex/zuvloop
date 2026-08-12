@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Mapping
+from types import MethodType
 
 import pytest
 from opentelemetry.trace import StatusCode
@@ -432,11 +433,15 @@ async def test_metrics_on_a_closed_loop_are_zero() -> None:
     assert loop._metrics()["loop_count"] == 0
 
 
-async def test_completed_tasks_have_no_call_graph(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_completed_task_recovered_from_a_handle_has_no_call_graph() -> None:
     task = asyncio.create_task(asyncio.sleep(0))
     await task
-    monkeypatch.setattr(asyncio, "current_task", lambda: task)
-    assert capture_call_graph() is None
+    callback = MethodType(lambda _task: None, task)
+    handle = running_loop().call_soon(callback)
+    try:
+        assert capture_call_graph(handle) is None
+    finally:
+        handle.cancel()
 
 
 async def test_the_stdlib_call_graph_apis_work_on_this_loop() -> None:
