@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from collections.abc import Mapping
 
@@ -407,6 +408,23 @@ async def test_the_sampling_interval_must_be_positive() -> None:
     loop = running_loop()
     with pytest.raises(ValueError, match="must be positive"):
         loop._start_metrics(0, print)
+
+
+def test_a_failed_metrics_start_restores_running_loop_state() -> None:
+    loop = zuvloop.new_event_loop()
+    old_hooks = sys.get_asyncgen_hooks()
+    loop.metrics_interval = 0
+    try:
+        with pytest.raises(ValueError, match="must be positive"):
+            loop.run_forever()
+        assert asyncio.events._get_running_loop() is None
+        assert sys.get_asyncgen_hooks() == old_hooks
+
+        loop.metrics_interval = 0.01
+        loop.call_soon(loop.stop)
+        loop.run_forever()
+    finally:
+        loop.close()
 
 
 async def test_a_failing_sampler_callback_is_reported() -> None:

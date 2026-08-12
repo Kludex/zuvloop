@@ -106,9 +106,9 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         sys.set_asyncgen_hooks(firstiter=self._asyncgen_firstiter, finalizer=self._asyncgen_finalizer)
         self._monitoring_armed = instrumentation_provider_installed()
         self._metrics_armed = metrics_provider_installed()
-        self._set_slow_callback_monitoring(self._monitoring_armed)
-        self._start_metrics(self.metrics_interval, self._on_sample)
         try:
+            self._set_slow_callback_monitoring(self._monitoring_armed)
+            self._start_metrics(self.metrics_interval, self._on_sample)
             self._run()
         finally:
             self._set_slow_callback_monitoring(False)
