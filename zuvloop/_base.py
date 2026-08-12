@@ -343,7 +343,13 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         """
         try:
             while True:
-                for signum in sock.recv(4096):
+                data = sock.recv(4096)
+                if not data:
+                    # EOF remains level-triggered readable forever. Stop
+                    # watching this dead pipe or the loop will spin on it.
+                    self.remove_reader(sock.fileno())
+                    break
+                for signum in data:
                     self._dispatch_signal(signum)
         except BlockingIOError, InterruptedError:
             pass
