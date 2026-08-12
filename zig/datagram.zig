@@ -392,6 +392,7 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
         return py.errValue("sendto() requires an address on an unconnected transport");
     }
 
+    // SAFETY: PyObject_GetBuffer initializes view or returns an error.
     var view: c.Py_buffer = undefined;
     if (c.PyObject_GetBuffer(args[0].?, &view, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
     defer c.PyBuffer_Release(&view);

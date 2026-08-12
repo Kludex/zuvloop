@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Enforce Zig's canonical formatting and the repository's ZLint rules.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+zig fmt --check build.zig zig
+{
+    printf '%s\n' build.zig
+    find zig -type f -name '*.zig' -print | sort
+} | zlint --stdin --deny-warnings
