@@ -18,7 +18,7 @@ from zuvloop import _connect, _zuvloop
 
 pytestmark = pytest.mark.anyio
 
-Address = tuple[str, int] | str | bytes
+Address = tuple[str, int] | str | bytes | None
 
 
 @contextlib.contextmanager
@@ -447,6 +447,22 @@ async def test_abstract_unix_datagram_sender_address_is_preserved() -> None:  # 
         assert protocol.done is not None
         assert await asyncio.wait_for(protocol.done, 2) == b"abstract"
         assert protocol.received == [(b"abstract", sender_name)]
+    finally:
+        sender.close()
+        receiver.close()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="abstract AF_UNIX names are a Linux feature")
+async def test_unnamed_unix_datagram_sender_has_no_address() -> None:  # pragma: no cover - Linux CI
+    loop = running_loop()
+    receiver_name = b"\0zuvloop-receiver-" + f"{os.getpid()}-{os.urandom(6).hex()}".encode()
+    receiver, protocol = await loop.create_datagram_endpoint(Collector, local_addr=receiver_name, family=socket.AF_UNIX)
+    sender, _sender_protocol = await loop.create_datagram_endpoint(Collector, family=socket.AF_UNIX)
+    try:
+        sender.sendto(b"unnamed", receiver_name)
+        assert protocol.done is not None
+        assert await asyncio.wait_for(protocol.done, 2) == b"unnamed"
+        assert protocol.received == [(b"unnamed", None)]
     finally:
         sender.close()
         receiver.close()

@@ -258,7 +258,7 @@ fn buildResults(res: ?*std.c.addrinfo) py.Error!*py.Object {
             cachedEnum(&kind_cache, socket_kind, ai.socktype),
             c.PyLong_FromLong(ai.protocol),
             if (ai.canonname) |cn| py.strZ(cn) else py.str(""),
-            addr.toPython(sa, 0) catch null,
+            addr.toPython(sa, @intCast(ai.addrlen)) catch null,
         };
         for (fields, 0..) |field, i| {
             if (field == null) {

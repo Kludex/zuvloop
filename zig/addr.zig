@@ -94,6 +94,7 @@ pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!c_
 pub fn toPython(sa: *const posix.sockaddr, sa_len: c_int) py.Error!*py.Object {
     const family: c_int = sa.family;
     if (family == AF_UNIX) {
+        if (sa_len <= UN_BASE) return py.noneRef();
         const un: *const posix.sockaddr.un = @ptrCast(@alignCast(sa));
         if (un.path[0] == 0) {
             return py.bytes(unixName(sa, sa_len)) orelse py.Error.Python;
