@@ -1271,9 +1271,7 @@ async def test_a_backlog_of_one_accepts_one_connection_per_wakeup() -> None:
 
 
 @pytest.mark.parametrize("error", [errno.EMFILE, errno.ENFILE, errno.ENOBUFS, errno.ENOMEM])
-async def test_accept_resource_exhaustion_backs_off(
-    error: int, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_accept_resource_exhaustion_backs_off(error: int, monkeypatch: pytest.MonkeyPatch) -> None:
     loop = running_loop()
     listener_sock, notifier = socket.socketpair()
     listener = ExhaustedListener(listener_sock, error)
