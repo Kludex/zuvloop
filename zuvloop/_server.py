@@ -59,25 +59,20 @@ class Server(asyncio.AbstractServer):
         return self._serving
 
     def _start_serving(self) -> None:
-        if self._serving or self._sockets is None:
+        sockets = self._sockets
+        if sockets is None:
             return
-        self._serving = True
-        for sock in self._sockets:
-            sock.listen(self._backlog)
+        if not self._serving:
+            self._serving = True
+            for sock in sockets:
+                sock.listen(self._backlog)
+        for sock in sockets:
             self._loop.add_reader(sock.fileno(), self._accept, sock)
 
     async def start_serving(self) -> None:
         self._start_serving()
         # Let the accept callbacks register before returning, matching asyncio.
         await asyncio.sleep(0)
-
-    def _retry_accept(self, sock: socket.socket) -> None:
-        sockets = self._sockets
-        if not self._serving or sockets is None or sock not in sockets:
-            return
-        fd = sock.fileno()
-        if fd != -1:
-            self._loop.add_reader(fd, self._accept, sock)
 
     def _accept(self, sock: socket.socket) -> None:
         for _ in range(self._backlog):
@@ -95,7 +90,7 @@ class Server(asyncio.AbstractServer):
                             "socket": trsock.TransportSocket(sock),
                         }
                     )
-                    self._loop.call_later(constants.ACCEPT_RETRY_DELAY, self._retry_accept, sock)
+                    self._loop.call_later(constants.ACCEPT_RETRY_DELAY, self._start_serving)
                     return
                 self._loop.call_exception_handler(
                     {
