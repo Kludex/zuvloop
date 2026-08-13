@@ -100,6 +100,72 @@ def test_call_soon_threadsafe(benchmark: BenchmarkFixture, loop: asyncio.Abstrac
 
 
 @pytest.mark.benchmark
+def test_threadsafe_flood_timer_fairness(
+    benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop
+) -> None:
+    """Bounded producer flood around a 10 ms timer, with cleanup between samples."""
+    delay = 0.01
+    producers = 4
+    limit_per_producer = 250_000
+    accepted_samples: list[int] = []
+
+    class Flood:
+        def __init__(self) -> None:
+            self.stop = threading.Event()
+            self.gate = threading.Event()
+            self.accepted = [0] * producers
+            self.started = 0.0
+            self.fired = 0.0
+            self.threads = [threading.Thread(target=self.produce, args=(index,)) for index in range(producers)]
+
+        def produce(self, index: int) -> None:
+            self.gate.wait()
+            count = 0
+            while count < limit_per_producer and not self.stop.is_set():
+                loop.call_soon_threadsafe(_noop)
+                count += 1
+                self.accepted[index] = count
+
+        def timer_fired(self) -> None:
+            self.stop.set()
+            self.fired = loop.time()
+            loop.stop()
+
+    def setup() -> tuple[tuple[Flood], dict[str, int]]:
+        flood = Flood()
+        for thread in flood.threads:
+            thread.start()
+        return (flood,), {}
+
+    def measure(flood: Flood) -> float:
+        flood.started = loop.time()
+        loop.call_later(delay, flood.timer_fired)
+        flood.gate.set()
+        loop.run_forever()
+        return flood.fired - flood.started
+
+    def teardown(flood: Flood) -> None:
+        try:
+            flood.stop.set()
+            flood.gate.set()
+        finally:
+            for thread in flood.threads:
+                thread.join()
+
+        # Every producer has stopped, so this FIFO marker runs after every
+        # callback it accepted and leaves the next benchmark sample clean.
+        drained: asyncio.Future[None] = loop.create_future()
+        loop.call_soon(drained.set_result, None)
+        loop.run_until_complete(drained)
+        accepted_samples.append(sum(flood.accepted))
+
+    latency = benchmark.pedantic(measure, setup=setup, teardown=teardown, rounds=10)
+    assert latency >= delay
+    assert accepted_samples
+    assert all(0 < accepted <= producers * limit_per_producer for accepted in accepted_samples)
+
+
+@pytest.mark.benchmark
 def test_call_soon_args(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
     """Arguments are where the handle layout shows: asyncio packs a tuple per call."""
     iterations = 10_000
