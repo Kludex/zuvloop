@@ -195,7 +195,9 @@ class ProcessReaper:
                     continue
                 completed = True
                 with self.condition:
-                    self.processes.pop(pid, None)
+                    current = self.processes.get(pid)
+                    if current is not None and current[0] is process:
+                        del self.processes[pid]
                 try:
                     loop.call_soon_threadsafe(wrapper.exited, returncode)
                 except RuntimeError:  # pragma: no cover - loop closed while child exited
