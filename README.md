@@ -18,7 +18,7 @@ Your code stays the same. The loop underneath gets faster. 🚀
 
 The key features are:
 
-- **Fast**: Scheduling, timers, sockets, and DNS run in native code, driven by [libuv](https://libuv.org) — the same engine behind Node.js. Up to **6x faster than asyncio** on core loop operations and faster than [uvloop](https://github.com/MagicStack/uvloop) on 10 of the 11 benchmarks below.
+- **Fast**: Scheduling, timers, sockets, and DNS run in native code, driven by [libuv](https://libuv.org) — the same engine behind Node.js. Over **20x faster than asyncio** at thread-safe scheduling and faster than [uvloop](https://github.com/MagicStack/uvloop) on 10 of the 11 benchmarks below.
 - **Drop-in**: One line to switch. Everything is standard `asyncio` — same `Task` objects, same protocols, same APIs.
 - **Fully typed**: Ships type hints for everything and passes **strict mypy**. Your editor will love it. ✨
 - **Observable**: Built-in [OpenTelemetry](https://opentelemetry.io) instrumentation — slow-callback spans, unhandled-exception spans, loop metrics. Zero cost until you turn it on.
@@ -31,7 +31,7 @@ The key features are:
 </p>
 
 Throughput relative to stock asyncio (higher is better), measured with the suite in
-`benchmarks/` on an M3 Max, macOS 26, CPython 3.14. The labels show the absolute numbers.
+`benchmarks/` on an M3 Max, macOS 26, CPython 3.14.3, and libuv 1.51.0. The labels show the absolute numbers.
 
 | Benchmark | asyncio | uvloop | zuvloop |
 | --- | ---: | ---: | ---: |
