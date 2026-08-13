@@ -10,8 +10,9 @@ import stat
 import subprocess
 from asyncio import base_subprocess, sslproto, staggered, trsock
 from asyncio.base_events import _interleave_addrinfos  # type: ignore[attr-defined]  # private, not in typeshed
+from asyncio.streams import StreamReaderProtocol
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from . import _zuvloop
 from ._process import Popen
@@ -21,6 +22,15 @@ from ._server import Server
 # What `getaddrinfo` hands back: family, kind, protocol, canonical name, address.
 type _AddrInfo = tuple[int, int, int, str, tuple[str, int] | tuple[str, int, int, int]]
 _SSLArg = ssl_module.SSLContext | bool | None
+
+
+class _BufferedStreamReader(Protocol):
+    _buffer: bytearray
+
+
+class _BufferedStreamProtocol(Protocol):
+    @property
+    def _stream_reader(self) -> _BufferedStreamReader | None: ...
 
 
 class ConnectionOperations(SendfileOperations):
@@ -523,6 +533,11 @@ class ConnectionOperations(SendfileOperations):
         )
         stream = cast("asyncio.Transport", transport)
         stream.pause_reading()
+        if server_side and isinstance(protocol, StreamReaderProtocol):
+            stream_reader = cast("_BufferedStreamProtocol", protocol)._stream_reader
+            if stream_reader is not None and stream_reader._buffer:
+                ssl_protocol._incoming.write(stream_reader._buffer)  # type: ignore[attr-defined]
+                stream_reader._buffer.clear()
         stream.set_protocol(ssl_protocol)
         self.call_soon(ssl_protocol.connection_made, stream)
         self.call_soon(stream.resume_reading)
