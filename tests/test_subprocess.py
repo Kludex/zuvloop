@@ -9,8 +9,9 @@ import socket
 import subprocess
 import sys
 from asyncio.subprocess import Process
+from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from typing import NoReturn, cast
 
 import pytest
 
@@ -24,18 +25,52 @@ PIPE = asyncio.subprocess.PIPE
 
 
 def test_process_reaper_does_not_discard_a_reused_pid() -> None:
-    reaper = ProcessReaper()
-    old_process = cast("subprocess.Popen[bytes]", object())
-    new_process = cast("subprocess.Popen[bytes]", object())
-    loop = cast("ConnectionOperations", object())
-    wrapper = cast("Popen", object())
-    replacement = (new_process, loop, wrapper)
-    reaper.processes[42] = replacement
+    class StopReaper(Exception):
+        pass
 
-    assert reaper._discard_process(42, old_process) is False
+    class ReplacementProcess:
+        def poll(self) -> NoReturn:
+            raise StopReaper
+
+    class RecordingLoop:
+        def call_soon_threadsafe(self, callback: Callable[[int], None], returncode: int) -> None:
+            callback(returncode)
+
+    class RecordingWrapper:
+        def __init__(self) -> None:
+            self.returncodes: list[int] = []
+
+        def exited(self, returncode: int) -> None:
+            self.returncodes.append(returncode)
+
+    class ReplacedProcess:
+        def __init__(
+            self,
+            reaper: ProcessReaper,
+            replacement: tuple[subprocess.Popen[bytes], ConnectionOperations, Popen],
+        ) -> None:
+            self.reaper = reaper
+            self.replacement = replacement
+
+        def poll(self) -> int:
+            with self.reaper.condition:
+                self.reaper.processes[42] = self.replacement
+            return 0
+
+    reaper = ProcessReaper()
+    new_process = cast("subprocess.Popen[bytes]", ReplacementProcess())
+    loop = cast("ConnectionOperations", RecordingLoop())
+    recording_wrapper = RecordingWrapper()
+    wrapper = cast("Popen", recording_wrapper)
+    replacement = (new_process, loop, wrapper)
+    old_process = cast("subprocess.Popen[bytes]", ReplacedProcess(reaper, replacement))
+    reaper.processes[42] = (old_process, loop, wrapper)
+
+    with pytest.raises(StopReaper):
+        reaper.run()
+
     assert reaper.processes[42] is replacement
-    assert reaper._discard_process(42, new_process) is True
-    assert reaper.processes == {}
+    assert recording_wrapper.returncodes == [0]
 
 
 async def test_a_command_runs_and_reports_its_output() -> None:
