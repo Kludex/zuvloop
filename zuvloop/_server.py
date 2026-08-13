@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import os
 import socket
-from asyncio import trsock
+from asyncio import constants, trsock
 from collections.abc import Callable, Sequence
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
@@ -70,15 +71,38 @@ class Server(asyncio.AbstractServer):
         # Let the accept callbacks register before returning, matching asyncio.
         await asyncio.sleep(0)
 
+    def _retry_accept(self, sock: socket.socket) -> None:
+        sockets = self._sockets
+        if not self._serving or sockets is None or sock not in sockets:
+            return
+        fd = sock.fileno()
+        if fd != -1:
+            self._loop.add_reader(fd, self._accept, sock)
+
     def _accept(self, sock: socket.socket) -> None:
         for _ in range(self._backlog):
             try:
                 conn, _addr = sock.accept()
             except BlockingIOError, InterruptedError:
                 return
-            except OSError as exc:  # pragma: no cover - needs descriptor exhaustion
+            except OSError as exc:
+                if exc.errno in (errno.EMFILE, errno.ENFILE, errno.ENOBUFS, errno.ENOMEM):
+                    self._loop.remove_reader(sock.fileno())
+                    self._loop.call_exception_handler(
+                        {
+                            "message": "socket.accept() out of system resource",
+                            "exception": exc,
+                            "socket": trsock.TransportSocket(sock),
+                        }
+                    )
+                    self._loop.call_later(constants.ACCEPT_RETRY_DELAY, self._retry_accept, sock)
+                    return
                 self._loop.call_exception_handler(
-                    {"message": "Error accepting a connection", "exception": exc, "socket": sock}
+                    {
+                        "message": "Error accepting a connection",
+                        "exception": exc,
+                        "socket": trsock.TransportSocket(sock),
+                    }
                 )
                 return
             conn.setblocking(False)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import gc
 import os
 import socket
@@ -8,9 +9,10 @@ import ssl
 import struct
 import sys
 import tempfile
+from asyncio import constants, trsock
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, cast
 
 import pytest
 
@@ -77,6 +79,26 @@ class Collector(asyncio.Protocol):
     def connection_lost(self, exc: BaseException | None) -> None:
         assert self.done is not None
         self.done.set_result(bytes(self.received))
+
+
+class ExhaustedListener:
+    def __init__(self, sock: socket.socket, error: int) -> None:
+        self.sock = sock
+        self.error = error
+        self.accepts = 0
+
+    def listen(self, _backlog: int) -> None:
+        pass
+
+    def fileno(self) -> int:
+        return self.sock.fileno()
+
+    def accept(self) -> NoReturn:
+        self.accepts += 1
+        raise OSError(self.error, os.strerror(self.error))
+
+    def close(self) -> None:
+        self.sock.close()
 
 
 async def start_echo(backlog: int = 100) -> tuple[zuvloop.Server, int, list[Echo]]:
@@ -1275,6 +1297,136 @@ async def test_a_backlog_of_one_accepts_one_connection_per_wakeup() -> None:
         for writer in writers:
             writer.close()
             await writer.wait_closed()
+
+
+@pytest.mark.parametrize("error", [errno.EMFILE, errno.ENFILE, errno.ENOBUFS, errno.ENOMEM])
+async def test_accept_resource_exhaustion_backs_off(error: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    loop = running_loop()
+    listener_sock, notifier = socket.socketpair()
+    listener = ExhaustedListener(listener_sock, error)
+    server = Server(loop, [cast("socket.socket", listener)], Echo, None, 100, None, None)
+    reports: list[tuple[str | None, BaseException | None]] = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(
+        lambda _loop, context: reports.append((context.get("message"), context.get("exception")))
+    )
+    monkeypatch.setattr(constants, "ACCEPT_RETRY_DELAY", 0.02)
+
+    try:
+        await server.start_serving()
+        notifier.send(b"ready")
+        async with asyncio.timeout(1):
+            while not reports:
+                await asyncio.sleep(0)
+
+        assert listener.accepts == 1
+        assert len(reports) == 1
+        message, reported_error = reports[0]
+        assert message == "socket.accept() out of system resource"
+        assert isinstance(reported_error, OSError)
+        assert reported_error.errno == error
+
+        async with asyncio.timeout(1):
+            while listener.accepts < 2:
+                await asyncio.sleep(0)
+        assert listener.accepts >= 2
+
+        server.close()
+        accepts_after_close = listener.accepts
+        server._retry_accept(cast("socket.socket", listener))
+        assert listener.accepts == accepts_after_close
+    finally:
+        server.close()
+        notifier.close()
+        loop.set_exception_handler(previous_handler)
+
+
+async def test_accept_other_oserror_is_reported() -> None:
+    loop = running_loop()
+    listener_sock, notifier = socket.socketpair()
+    listener = ExhaustedListener(listener_sock, errno.EINVAL)
+    server = Server(loop, [cast("socket.socket", listener)], Echo, None, 100, None, None)
+    reports: list[tuple[str | None, BaseException | None, trsock.TransportSocket | None]] = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(
+        lambda _loop, context: reports.append((context.get("message"), context.get("exception"), context.get("socket")))
+    )
+
+    try:
+        loop.call_soon(server._accept, cast("socket.socket", listener))
+        await asyncio.sleep(0)
+
+        assert listener.accepts == 1
+        assert len(reports) == 1
+        message, reported_error, socket_view = reports[0]
+        assert message == "Error accepting a connection"
+        assert isinstance(reported_error, OSError)
+        assert reported_error.errno == errno.EINVAL
+        assert isinstance(socket_view, trsock.TransportSocket)
+        assert not hasattr(socket_view, "close")
+    finally:
+        server.close()
+        notifier.close()
+        loop.set_exception_handler(previous_handler)
+
+
+async def test_retry_accept_ignores_a_closed_listener() -> None:
+    loop = running_loop()
+    listener_sock, notifier = socket.socketpair()
+    listener = ExhaustedListener(listener_sock, errno.EMFILE)
+    server = Server(loop, [cast("socket.socket", listener)], Echo, None, 100, None, None)
+
+    try:
+        server._start_serving()
+        loop.remove_reader(listener.fileno())
+        listener.close()
+        server._retry_accept(cast("socket.socket", listener))
+        await asyncio.sleep(0)
+        assert listener.accepts == 0
+    finally:
+        server.close()
+        notifier.close()
+
+
+async def test_accept_resource_handler_can_close_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    loop = running_loop()
+    listener_sock, notifier = socket.socketpair()
+    listener = ExhaustedListener(listener_sock, errno.EMFILE)
+    server = Server(loop, [cast("socket.socket", listener)], Echo, None, 100, None, None)
+    reports: list[tuple[str | None, trsock.TransportSocket | None]] = []
+    previous_handler = loop.get_exception_handler()
+
+    def close_server(
+        _loop: asyncio.AbstractEventLoop, context: dict[str, str | BaseException | trsock.TransportSocket]
+    ) -> None:
+        message = context.get("message")
+        socket_view = context.get("socket")
+        reports.append(
+            (
+                message if isinstance(message, str) else None,
+                socket_view if isinstance(socket_view, trsock.TransportSocket) else None,
+            )
+        )
+        server.close()
+
+    loop.set_exception_handler(close_server)
+    monkeypatch.setattr(constants, "ACCEPT_RETRY_DELAY", 0.01)
+
+    try:
+        await server.start_serving()
+        notifier.send(b"ready")
+        async with asyncio.timeout(1):
+            while not reports:
+                await asyncio.sleep(0)
+
+        assert len(reports) == 1
+        assert reports[0][0] == "socket.accept() out of system resource"
+        assert isinstance(reports[0][1], trsock.TransportSocket)
+        assert not server.is_serving()
+    finally:
+        server.close()
+        notifier.close()
+        loop.set_exception_handler(previous_handler)
 
 
 async def test_wait_closed_tolerates_a_cancelled_waiter() -> None:
