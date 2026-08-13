@@ -438,9 +438,7 @@ async def test_abstract_unix_datagram_sender_address_is_preserved() -> None:
     suffix = f"{os.getpid()}-{os.urandom(6).hex()}".encode()
     receiver_name = b"\0zuvloop-receiver-" + suffix
     sender_name = b"\0zuvloop-sender-" + suffix
-    receiver, protocol = await loop.create_datagram_endpoint(
-        Collector, local_addr=receiver_name, family=socket.AF_UNIX
-    )
+    receiver, protocol = await loop.create_datagram_endpoint(Collector, local_addr=receiver_name, family=socket.AF_UNIX)
     sender, _sender_protocol = await loop.create_datagram_endpoint(
         Collector, local_addr=sender_name, family=socket.AF_UNIX
     )

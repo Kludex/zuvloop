@@ -616,9 +616,7 @@ class ConnectionOperations(SendfileOperations):
             raise
         return sock, resolved_remote is not None
 
-    async def _resolve_datagram(
-        self, address: _DatagramAddress | None, family: int, proto: int, flags: int
-    ) -> Any:
+    async def _resolve_datagram(self, address: _DatagramAddress | None, family: int, proto: int, flags: int) -> Any:
         if address is None:
             return None
         if family == socket.AF_UNIX:
