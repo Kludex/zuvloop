@@ -1,0 +1,78 @@
+diff --git a/include/uv.h b/include/uv.h
+--- a/include/uv.h
++++ b/include/uv.h
+@@ -727,6 +727,8 @@ struct uv_udp_s {
+    * Number of send requests currently in the queue awaiting to be processed.
+    */
+   size_t send_queue_count;
++  /* Length of the source address passed to the current receive callback. */
++  size_t recv_addrlen;
+   UV_UDP_PRIVATE_FIELDS
+ };
+ 
+@@ -790,6 +792,7 @@ UV_EXTERN int uv_udp_using_recvmmsg(const uv_udp_t* handle);
+ UV_EXTERN int uv_udp_recv_stop(uv_udp_t* handle);
+ UV_EXTERN size_t uv_udp_get_send_queue_size(const uv_udp_t* handle);
+ UV_EXTERN size_t uv_udp_get_send_queue_count(const uv_udp_t* handle);
++UV_EXTERN size_t uv_udp_get_recv_addrlen(const uv_udp_t* handle);
+ 
+ 
+ /*
+diff --git a/src/unix/udp.c b/src/unix/udp.c
+--- a/src/unix/udp.c
++++ b/src/unix/udp.c
+@@ -203,6 +203,7 @@ static int uv__udp_recvmmsg(uv_udp_t* handle, uv_buf_t* buf) {
+         flags |= UV_UDP_PARTIAL;
+ 
+       chunk_buf = uv_buf_init(iov[k].iov_base, iov[k].iov_len);
++      handle->recv_addrlen = msgs[k].msg_hdr.msg_namelen;
+       handle->recv_cb(handle,
+                       msgs[k].msg_len,
+                       &chunk_buf,
+@@ -275,6 +276,7 @@ static void uv__udp_recvmsg(uv_udp_t* handle) {
+       if (h.msg_flags & MSG_TRUNC)
+         flags |= UV_UDP_PARTIAL;
+ 
++      handle->recv_addrlen = h.msg_namelen;
+       handle->recv_cb(handle, nread, &buf, (const struct sockaddr*) &peer, flags);
+     }
+     count--;
+@@ -1260,9 +1262,23 @@ static int uv__udp_prep_pkt(struct msghdr* h,
+   case AF_INET6:
+     h->msg_namelen = sizeof(struct sockaddr_in6);
+     return 0;
+-  case AF_UNIX:
++  case AF_UNIX: {
++#if defined(__linux__)
++    const struct sockaddr_un* un;
++    size_t path_len;
++
++    un = (const struct sockaddr_un*) addr;
++    if (un->sun_path[0] == '\0') {
++      path_len = sizeof(un->sun_path);
++      while (path_len > 1 && un->sun_path[path_len - 1] == '\0')
++        path_len--;
++      h->msg_namelen = offsetof(struct sockaddr_un, sun_path) + path_len;
++      return 0;
++    }
++#endif
+     h->msg_namelen = sizeof(struct sockaddr_un);
+     return 0;
++  }
+   case AF_UNSPEC:
+     h->msg_name = NULL;
+     return 0;
+diff --git a/src/uv-data-getter-setters.c b/src/uv-data-getter-setters.c
+--- a/src/uv-data-getter-setters.c
++++ b/src/uv-data-getter-setters.c
+@@ -86,6 +86,10 @@ size_t uv_udp_get_send_queue_count(const uv_udp_t* handle) {
+   return handle->send_queue_count;
+ }
+ 
++size_t uv_udp_get_recv_addrlen(const uv_udp_t* handle) {
++  return handle->recv_addrlen;
++}
++
+ uv_pid_t uv_process_get_pid(const uv_process_t* proc) {
+   return proc->pid;
+ }

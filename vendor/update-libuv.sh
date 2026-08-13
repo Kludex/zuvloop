@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Replace vendor/libuv with a pristine upstream release tarball.
+# Replace vendor/libuv with an upstream release and reapply zuvloop's patches.
 set -euo pipefail
 
 version="${1:?usage: update-libuv.sh <version> <sha256>, e.g. 1.51.0 5f0557...}"
@@ -21,6 +21,7 @@ trap 'rm -rf "$tmp"' EXIT
 curl -fsSL "$url" -o "$tmp/libuv.tar.gz"
 printf '%s  %s\n' "$checksum" "$tmp/libuv.tar.gz" | shasum -a 256 -c -
 tar xzf "$tmp/libuv.tar.gz" -C "$tmp"
+patch --batch --forward -d "$tmp/libuv-v${version}" -p1 < "$here/patches/libuv/0001-expose-udp-recv-address-length.patch"
 rm -rf "$here/libuv"
 mv "$tmp/libuv-v${version}" "$here/libuv"
 
