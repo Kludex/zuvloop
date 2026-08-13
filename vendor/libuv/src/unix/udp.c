@@ -1260,9 +1260,23 @@ static int uv__udp_prep_pkt(struct msghdr* h,
   case AF_INET6:
     h->msg_namelen = sizeof(struct sockaddr_in6);
     return 0;
-  case AF_UNIX:
+  case AF_UNIX: {
+#if defined(__linux__)
+    const struct sockaddr_un* un;
+    size_t path_len;
+
+    un = (const struct sockaddr_un*) addr;
+    if (un->sun_path[0] == '\0') {
+      path_len = sizeof(un->sun_path);
+      while (path_len > 1 && un->sun_path[path_len - 1] == '\0')
+        path_len--;
+      h->msg_namelen = offsetof(struct sockaddr_un, sun_path) + path_len;
+      return 0;
+    }
+#endif
     h->msg_namelen = sizeof(struct sockaddr_un);
     return 0;
+  }
   case AF_UNSPEC:
     h->msg_name = NULL;
     return 0;

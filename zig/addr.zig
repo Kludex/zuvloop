@@ -95,8 +95,16 @@ pub fn toPython(sa: *const posix.sockaddr) py.Error!*py.Object {
     const family: c_int = sa.family;
     if (family == AF_UNIX) {
         const un: *const posix.sockaddr.un = @ptrCast(@alignCast(sa));
+        if (un.path[0] == 0) {
+            // libuv zeroes the sockaddr_storage before recvmsg but does not
+            // expose msg_namelen, so retain the abstract prefix and trim only
+            // the unused zero-filled tail.
+            var len = un.path.len;
+            while (len > 1 and un.path[len - 1] == 0) len -= 1;
+            return py.bytes(un.path[0..len]) orelse py.Error.Python;
+        }
         const len = std.mem.indexOfScalar(u8, &un.path, 0) orelse un.path.len;
-        return py.str(un.path[0..len]) orelse py.Error.Python;
+        return c.PyUnicode_DecodeFSDefaultAndSize(@ptrCast(&un.path), @intCast(len)) orelse py.Error.Python;
     }
     if (family != AF_INET and family != AF_INET6) return py.noneRef();
 

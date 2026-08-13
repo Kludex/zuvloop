@@ -20,6 +20,7 @@ from ._server import Server
 
 # What `getaddrinfo` hands back: family, kind, protocol, canonical name, address.
 type _AddrInfo = tuple[int, int, int, str, tuple[str, int] | tuple[str, int, int, int]]
+type _DatagramAddress = tuple[str, int] | str | bytes
 _SSLArg = ssl_module.SSLContext | bool | None
 
 
@@ -538,8 +539,8 @@ class ConnectionOperations(SendfileOperations):
     async def create_datagram_endpoint(  # type: ignore[override]  # typeshed omits reuse_port
         self,
         protocol_factory: Callable[[], asyncio.BaseProtocol],
-        local_addr: tuple[str, int] | str | None = None,
-        remote_addr: tuple[str, int] | str | None = None,
+        local_addr: _DatagramAddress | None = None,
+        remote_addr: _DatagramAddress | None = None,
         *,
         family: int = 0,
         proto: int = 0,
@@ -579,8 +580,8 @@ class ConnectionOperations(SendfileOperations):
 
     async def _bind_datagram(
         self,
-        local_addr: tuple[str, int] | str | None,
-        remote_addr: tuple[str, int] | str | None,
+        local_addr: _DatagramAddress | None,
+        remote_addr: _DatagramAddress | None,
         family: int,
         proto: int,
         flags: int,
@@ -616,7 +617,7 @@ class ConnectionOperations(SendfileOperations):
         return sock, resolved_remote is not None
 
     async def _resolve_datagram(
-        self, address: tuple[str, int] | str | None, family: int, proto: int, flags: int
+        self, address: _DatagramAddress | None, family: int, proto: int, flags: int
     ) -> Any:
         if address is None:
             return None
