@@ -100,9 +100,7 @@ def test_call_soon_threadsafe(benchmark: BenchmarkFixture, loop: asyncio.Abstrac
 
 
 @pytest.mark.benchmark
-def test_threadsafe_flood_timer_fairness(
-    benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop
-) -> None:
+def test_threadsafe_flood_timer_fairness(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
     """Bounded producer flood around a 10 ms timer, with cleanup between samples."""
     delay = 0.01
     producers = 4
