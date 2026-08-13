@@ -114,7 +114,9 @@ def test_threadsafe_flood_timer_fairness(benchmark: BenchmarkFixture, loop: asyn
             self.accepted = [0] * producers
             self.started = 0.0
             self.fired = 0.0
-            self.threads = [threading.Thread(target=self.produce, args=(index,)) for index in range(producers)]
+            self.threads = [
+                threading.Thread(target=self.produce, args=(index,), daemon=True) for index in range(producers)
+            ]
 
         def produce(self, index: int) -> None:
             self.gate.wait()
@@ -122,7 +124,7 @@ def test_threadsafe_flood_timer_fairness(benchmark: BenchmarkFixture, loop: asyn
             while count < limit_per_producer and not self.stop.is_set():
                 loop.call_soon_threadsafe(_noop)
                 count += 1
-                self.accepted[index] = count
+            self.accepted[index] = count
 
         def timer_fired(self) -> None:
             self.stop.set()
