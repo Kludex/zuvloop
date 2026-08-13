@@ -1056,6 +1056,29 @@ async def test_unix_server_cleanup_tolerates_a_missing_path() -> None:
         await server.wait_closed()
 
 
+async def test_unix_server_cleanup_error_still_wakes_waiters(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    loop = running_loop()
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "denied.sock"
+        server = await loop.create_unix_server(Echo, path)
+        waiting = loop.create_task(server.wait_closed())
+        await asyncio.sleep(0)
+
+        def denied_stat(
+            target: int | str | bytes | os.PathLike[str], *, dir_fd: int | None = None, follow_symlinks: bool = True
+        ) -> os.stat_result:
+            raise PermissionError(target)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "stat", denied_stat)
+            server.close()
+            await asyncio.wait_for(waiting, 2)
+
+        assert "Unable to clean up listening UNIX socket" in caplog.text
+
+
 async def test_unix_server_cleanup_tolerates_a_path_unlinked_while_binding() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
