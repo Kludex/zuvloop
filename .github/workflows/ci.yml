@@ -81,6 +81,51 @@ jobs:
           uv run coverage report
 
 
+  # musl has only ever been compiled for, never run. It is a different libc under
+  # the same Zig `std.c` shapes - a third of the published wheels - and the class
+  # of defect that keeps reaching users is exactly the one a host cannot see.
+  #
+  # Alpine runs in a plain container rather than as a job `container:`, because
+  # the Actions runner needs a glibc Node to start one and Alpine has none. Zig
+  # is fetched as its own static tarball for the same reason.
+  musl:
+    runs-on: ubuntu-latest
+
+    steps:
+      # The workspace is mounted into a container that then runs package code
+      # from the index, and a persisted token would be sitting in `.git/config`
+      # where that code could read it. Nothing here pushes.
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test under musl
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src python:3.14-alpine sh -euc '
+            apk add --no-cache curl xz build-base openssl
+
+            # Checked against the digest ziglang.org publishes for this exact
+            # tarball, because nothing else here verifies what the pipe carries -
+            # `setup-zig` does its own checking and cannot run in this container.
+            curl -fsSLO https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+            echo "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  zig-x86_64-linux-0.16.0.tar.xz" \
+              | sha256sum -c -
+            tar -xJf zig-x86_64-linux-0.16.0.tar.xz -C /opt
+            rm zig-x86_64-linux-0.16.0.tar.xz
+            export PATH="/opt/zig-x86_64-linux-0.16.0:$PATH"
+            zig version
+
+            pip install --no-cache-dir --quiet uv
+            # The interpreter in the image is the one to test against; uv would
+            # otherwise fetch a managed build, and those are linked against glibc.
+            export UV_PYTHON_PREFERENCE=only-system
+            uv sync --python "$(command -v python3)" --group dev --group bench
+
+            uv run python -c "import zuvloop; print(zuvloop.libuv_version())"
+            uv run pytest -q
+          '
+
+
   # The Zig layer reaches libc through `std.c`, whose shape differs per target,
   # and the tests only ever run on the host. Two bugs have shipped that a
   # compile for the other target would have caught on the way in.
@@ -143,7 +188,9 @@ jobs:
           enable-cache: true
 
       - name: Install
-        run: uv sync --python 3.14 --group dev
+        # `bench` carries aiohttp and uvicorn: the framework tests are worth
+        # more here than anywhere, with the bounds checks left on.
+        run: uv sync --python 3.14 --group dev --group bench
 
       # Built straight with zig rather than through the wheel hook, which pins
       # `ReleaseFast`. The install step puts it where the package expects.
