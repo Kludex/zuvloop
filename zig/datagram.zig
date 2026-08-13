@@ -249,7 +249,7 @@ fn onSent(req: ?*uv.UdpSend, status: c_int) callconv(.c) void {
 
     // A failed datagram is reported to the protocol, never raised: asyncio
     // treats the endpoint as still usable.
-    if (status < 0 and self.flags & CONN_LOST == 0) {
+    if (status < 0 and self.flags & (CLOSING | CONN_LOST) == 0) {
         if (takeUvError(status)) |exc| {
             defer py.decref(exc);
             callProtocol(self, self.cb_error_received, exc);
@@ -295,6 +295,7 @@ fn maybePauseProtocol(self: *Datagram) void {
 }
 
 fn maybeResumeProtocol(self: *Datagram) void {
+    if (self.flags & (CLOSING | CONN_LOST) != 0) return;
     if (self.flags & PROTOCOL_PAUSED == 0) return;
     if (self.write_buffer_size > self.low_water) return;
     self.flags &= ~PROTOCOL_PAUSED;
