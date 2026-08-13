@@ -9,6 +9,7 @@ import struct
 import tempfile
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -1434,6 +1435,22 @@ async def test_an_ssl_handshake_timeout_without_ssl_is_rejected() -> None:
     finally:
         left.close()
         right.close()
+
+
+async def test_a_failed_protocol_factory_closes_an_accepted_socket() -> None:
+    loop = running_loop()
+    sock, peer = socket.socketpair()
+
+    def fail() -> NoReturn:
+        raise RuntimeError("factory failed")
+
+    try:
+        with pytest.raises(RuntimeError, match="factory failed"):
+            await loop.connect_accepted_socket(fail, sock)
+        assert sock.fileno() == -1
+    finally:
+        sock.close()
+        peer.close()
 
 
 async def test_an_ssl_shutdown_timeout_without_ssl_is_rejected() -> None:
