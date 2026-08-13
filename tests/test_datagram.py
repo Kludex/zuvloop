@@ -201,10 +201,10 @@ async def test_shutdown_does_not_resume_or_report_cancelled_sends(abort: bool) -
                 events.append("pause")
 
             def resume_writing(self) -> None:
-                events.append("resume")
+                events.append("resume")  # pragma: no cover - the assertion is that this never runs
 
             def error_received(self, exc: BaseException) -> None:
-                events.append(type(exc).__name__)
+                events.append(type(exc).__name__)  # pragma: no cover - the assertion is that this never runs
 
             def connection_lost(self, exc: BaseException | None) -> None:
                 events.append("lost")
@@ -214,7 +214,7 @@ async def test_shutdown_does_not_resume_or_report_cancelled_sends(abort: bool) -
         transport = cast("_zuvloop.DatagramTransport", raw)
         transport.set_write_buffer_limits(high=1, low=0)
         try:
-            for _ in range(100):
+            for _ in range(100):  # pragma: no branch - exhaustion fails via the assertion below
                 transport.sendto(b"x" * 1024, receiver_path)
                 if transport.get_write_buffer_size() != 0:
                     break
