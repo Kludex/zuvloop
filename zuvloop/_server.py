@@ -174,11 +174,9 @@ class Server(asyncio.AbstractServer):
         try:
             await self._serving_forever
         except asyncio.CancelledError:
-            # Whether the cancellation came from `close()` or from the caller,
-            # the connections still up are the server's to see out before it can
-            # honestly say it has stopped.
             try:
                 self.close()
+                self.close_clients()
                 await self.wait_closed()
             finally:
                 raise
