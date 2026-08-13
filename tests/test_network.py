@@ -1286,7 +1286,9 @@ async def test_accept_resource_exhaustion_backs_off(error: int, monkeypatch: pyt
     try:
         await server.start_serving()
         notifier.send(b"ready")
-        await asyncio.sleep(0.005)
+        async with asyncio.timeout(1):
+            while not reports:
+                await asyncio.sleep(0)
 
         assert listener.accepts == 1
         assert len(reports) == 1
@@ -1295,12 +1297,14 @@ async def test_accept_resource_exhaustion_backs_off(error: int, monkeypatch: pyt
         assert isinstance(reported_error, OSError)
         assert reported_error.errno == error
 
-        await asyncio.sleep(0.03)
+        async with asyncio.timeout(1):
+            while listener.accepts < 2:
+                await asyncio.sleep(0)
         assert listener.accepts >= 2
 
         server.close()
         accepts_after_close = listener.accepts
-        await asyncio.sleep(0.03)
+        server._retry_accept(cast("socket.socket", listener))
         assert listener.accepts == accepts_after_close
     finally:
         server.close()
@@ -1371,7 +1375,9 @@ async def test_accept_resource_handler_can_close_server(monkeypatch: pytest.Monk
     try:
         await server.start_serving()
         notifier.send(b"ready")
-        await asyncio.sleep(0.02)
+        async with asyncio.timeout(1):
+            while not reports:
+                await asyncio.sleep(0)
 
         assert reports == ["socket.accept() out of system resource"]
         assert not server.is_serving()
