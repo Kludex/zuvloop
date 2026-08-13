@@ -7,7 +7,7 @@ import socket
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
-from typing import cast
+from typing import NoReturn, cast
 
 import pytest
 
@@ -388,6 +388,30 @@ async def test_a_socket_that_cannot_be_bound_is_closed() -> None:
     with pytest.raises(OSError):
         # TEST-NET-1: routable as an address, never assigned to an interface.
         await running_loop().create_datagram_endpoint(Collector, local_addr=("192.0.2.1", 0))
+
+
+async def test_a_failed_protocol_factory_closes_its_internal_datagram_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_socket = socket.socket
+    created: list[socket.socket] = []
+
+    def track(
+        family: int = -1, type: int = -1, proto: int = -1, fileno: int | None = None
+    ) -> socket.socket:
+        sock = real_socket(family, type, proto) if fileno is None else real_socket(family, type, proto, fileno)
+        created.append(sock)
+        return sock
+
+    def fail() -> NoReturn:
+        raise RuntimeError("factory failed")
+
+    monkeypatch.setattr(socket, "socket", track)
+    with pytest.raises(RuntimeError, match="factory failed"):
+        await running_loop().create_datagram_endpoint(fail, local_addr=("127.0.0.1", 0))
+
+    assert len(created) == 1
+    assert created[0].fileno() == -1
 
 
 async def test_a_transport_that_fails_to_adopt_releases_the_socket(monkeypatch: pytest.MonkeyPatch) -> None:
