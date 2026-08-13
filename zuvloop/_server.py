@@ -89,7 +89,11 @@ class Server(asyncio.AbstractServer):
                 if exc.errno in (errno.EMFILE, errno.ENFILE, errno.ENOBUFS, errno.ENOMEM):
                     self._loop.remove_reader(sock.fileno())
                     self._loop.call_exception_handler(
-                        {"message": "socket.accept() out of system resource", "exception": exc, "socket": sock}
+                        {
+                            "message": "socket.accept() out of system resource",
+                            "exception": exc,
+                            "socket": trsock.TransportSocket(sock),
+                        }
                     )
                     self._loop.call_later(constants.ACCEPT_RETRY_DELAY, self._retry_accept, sock)
                     return

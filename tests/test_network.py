@@ -8,8 +8,8 @@ import socket
 import ssl
 import struct
 import tempfile
-from asyncio import constants
-from collections.abc import Iterator, Mapping, Sequence
+from asyncio import constants, trsock
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import NoReturn, cast
 
@@ -1385,12 +1385,20 @@ async def test_accept_resource_handler_can_close_server(monkeypatch: pytest.Monk
     listener_sock, notifier = socket.socketpair()
     listener = ExhaustedListener(listener_sock, errno.EMFILE)
     server = Server(loop, [cast("socket.socket", listener)], Echo, None, 100, None, None)
-    reports: list[str | None] = []
+    reports: list[tuple[str | None, trsock.TransportSocket | None]] = []
     previous_handler = loop.get_exception_handler()
 
-    def close_server(_loop: asyncio.AbstractEventLoop, context: Mapping[str, object]) -> None:
+    def close_server(
+        _loop: asyncio.AbstractEventLoop, context: dict[str, str | BaseException | trsock.TransportSocket]
+    ) -> None:
         message = context.get("message")
-        reports.append(message if isinstance(message, str) else None)
+        socket_view = context.get("socket")
+        reports.append(
+            (
+                message if isinstance(message, str) else None,
+                socket_view if isinstance(socket_view, trsock.TransportSocket) else None,
+            )
+        )
         server.close()
 
     loop.set_exception_handler(close_server)
@@ -1403,7 +1411,9 @@ async def test_accept_resource_handler_can_close_server(monkeypatch: pytest.Monk
             while not reports:
                 await asyncio.sleep(0)
 
-        assert reports == ["socket.accept() out of system resource"]
+        assert len(reports) == 1
+        assert reports[0][0] == "socket.accept() out of system resource"
+        assert isinstance(reports[0][1], trsock.TransportSocket)
         assert not server.is_serving()
     finally:
         server.close()
