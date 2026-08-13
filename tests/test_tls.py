@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import socket
 import ssl
-from typing import Protocol, runtime_checkable
 
 import pytest
 
@@ -12,12 +11,6 @@ from conftest import collect_contexts, running_loop
 from zuvloop._server import Server
 
 pytestmark = pytest.mark.anyio
-
-
-@runtime_checkable
-class BufferedStreamReader(Protocol):
-    _buffer: bytearray
-    _paused: bool
 
 
 async def echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -171,14 +164,14 @@ async def test_start_tls_consumes_a_buffered_client_hello(
     async def handle_target(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             assert await reader.readline() == proxy_line
-            assert isinstance(reader, BufferedStreamReader)
+            buffer: bytearray = getattr(reader, "_buffer")
             async with asyncio.timeout(1):
-                while not reader._paused:  # pragma: no cover - TCP chunking varies by platform
+                while not getattr(reader, "_paused"):  # pragma: no cover - TCP chunking varies by platform
                     await asyncio.sleep(0)
-            buffered = len(reader._buffer)
+            buffered = len(buffer)
             assert buffered > 0
             await writer.start_tls(server_context)
-            assert reader._paused is False
+            assert getattr(reader, "_paused") is False
             payload = await reader.readexactly(6)
             writer.write(payload)
             await writer.drain()

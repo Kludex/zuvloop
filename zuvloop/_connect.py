@@ -10,8 +10,9 @@ import stat
 import subprocess
 from asyncio import base_subprocess, sslproto, staggered, trsock
 from asyncio.base_events import _interleave_addrinfos  # type: ignore[attr-defined]  # private, not in typeshed
+from asyncio.streams import StreamReaderProtocol
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import Any, Protocol, cast
 
 from . import _zuvloop
 from ._process import Popen
@@ -26,12 +27,6 @@ _SSLArg = ssl_module.SSLContext | bool | None
 class _BufferedStreamReader(Protocol):
     _buffer: bytearray
     _paused: bool
-
-
-@runtime_checkable
-class _BufferedStreamProtocol(Protocol):
-    @property
-    def _stream_reader(self) -> _BufferedStreamReader | None: ...  # pragma: no cover - typing-only protocol
 
 
 class ConnectionOperations(SendfileOperations):
@@ -543,8 +538,8 @@ class ConnectionOperations(SendfileOperations):
         )
         stream = cast("asyncio.Transport", transport)
         stream.pause_reading()
-        if server_side and isinstance(protocol, _BufferedStreamProtocol):
-            stream_reader = protocol._stream_reader
+        if server_side and isinstance(protocol, StreamReaderProtocol):
+            stream_reader: _BufferedStreamReader | None = getattr(protocol, "_stream_reader", None)
             if stream_reader is not None and stream_reader._buffer:  # pragma: no branch - only data needs transfer
                 ssl_protocol._incoming.write(stream_reader._buffer)  # type: ignore[attr-defined]
                 stream_reader._buffer.clear()
