@@ -70,7 +70,8 @@ class Server(asyncio.AbstractServer):
             self._loop.add_reader(sock.fileno(), self._accept, sock)
 
     async def start_serving(self) -> None:
-        self._start_serving()
+        if not self._serving:
+            self._start_serving()
         # Let the accept callbacks register before returning, matching asyncio.
         await asyncio.sleep(0)
 
@@ -194,7 +195,8 @@ class Server(asyncio.AbstractServer):
         if self._sockets is None:
             raise RuntimeError(f"server {self!r} is closed")
 
-        self._start_serving()
+        if not self._serving:
+            self._start_serving()
         self._serving_forever = self._loop.create_future()
         try:
             await self._serving_forever
