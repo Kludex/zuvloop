@@ -73,7 +73,11 @@ pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!c_
         var len: c.Py_ssize_t = 0;
         const s = c.PyUnicode_AsUTF8AndSize(host_obj, &len) orelse return py.Error.Python;
         if (len >= host_buf.len) return py.errValue("host name too long");
-        @memcpy(host_buf[0..@intCast(len)], s[0..@intCast(len)]);
+        const host_len: usize = @intCast(len);
+        if (std.mem.indexOfScalar(u8, s[0..host_len], 0) != null) {
+            return py.errValue("embedded null character");
+        }
+        @memcpy(host_buf[0..host_len], s[0..host_len]);
         host_buf[@intCast(len)] = 0;
         break :blk @ptrCast(&host_buf);
     };
@@ -81,8 +85,18 @@ pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!c_
     if (family == AF_INET6 or (family == 0 and std.mem.indexOfScalar(u8, std.mem.span(host), ':') != null)) {
         const sin6: *posix.sockaddr.in6 = @ptrCast(out);
         try py.errUvIfNeg(uv.uv_ip6_addr(host, port, sin6));
-        if (size >= 3) sin6.flowinfo = @intCast(try py.asCInt(try tupleItem(address, 2)));
-        if (size >= 4) sin6.scope_id = @intCast(try py.asCInt(try tupleItem(address, 3)));
+        if (size >= 3) {
+            const flowinfo = try py.asIsizeClamped(try tupleItem(address, 2));
+            if (flowinfo < 0 or flowinfo > 0xfffff) return py.errOverflow("flowinfo must be 0-1048575");
+            sin6.flowinfo = @intCast(flowinfo);
+        }
+        if (size >= 4) {
+            const scope_id = try py.asIsizeClamped(try tupleItem(address, 3));
+            if (scope_id < 0 or scope_id > std.math.maxInt(u32)) {
+                return py.errOverflow("scope_id must be 0-4294967295");
+            }
+            sin6.scope_id = @intCast(scope_id);
+        }
         return @sizeOf(posix.sockaddr.in6);
     }
     const sin: *posix.sockaddr.in = @ptrCast(out);

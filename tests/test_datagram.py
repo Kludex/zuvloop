@@ -362,6 +362,30 @@ async def test_a_connected_v6_endpoint_tells_the_scope_apart() -> None:
         server.close()
 
 
+@pytest.mark.parametrize(
+    "address",
+    [
+        ("::1", 9, -1, 0),
+        ("::1", 9, 1_048_576, 0),
+        ("::1", 9, 0, -1),
+        ("::1", 9, 0, 1 << 32),
+    ],
+)
+async def test_ipv6_send_rejects_out_of_range_ancillary_fields(
+    address: tuple[str, int, int, int],
+) -> None:
+    loop = running_loop()
+    try:
+        transport, _protocol = await loop.create_datagram_endpoint(Collector, local_addr=("::1", 0))
+    except OSError:  # pragma: no cover - host without IPv6 loopback
+        pytest.skip("no IPv6 loopback")
+    try:
+        with pytest.raises(OverflowError):
+            transport.sendto(b"x", address)
+    finally:
+        transport.close()
+
+
 async def test_a_cancelled_setup_closes_the_socket(monkeypatch: pytest.MonkeyPatch) -> None:
     # With the waiter never resolved, the setup stays parked exactly where a
     # cancellation has to unwind it.
