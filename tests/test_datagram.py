@@ -396,9 +396,7 @@ async def test_a_failed_protocol_factory_closes_its_internal_datagram_socket(
     real_socket = socket.socket
     created: list[socket.socket] = []
 
-    def track(
-        family: int = -1, type: int = -1, proto: int = -1, fileno: int | None = None
-    ) -> socket.socket:
+    def track(family: int = -1, type: int = -1, proto: int = -1, fileno: int | None = None) -> socket.socket:
         sock = real_socket(family, type, proto) if fileno is None else real_socket(family, type, proto, fileno)
         created.append(sock)
         return sock
