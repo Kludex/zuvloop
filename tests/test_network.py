@@ -1880,6 +1880,25 @@ async def test_serve_forever_on_a_closed_server_is_rejected() -> None:
         await server.serve_forever()
 
 
+async def test_serve_forever_starts_a_non_serving_server() -> None:
+    loop = running_loop()
+    server = await loop.create_server(Echo, "127.0.0.1", 0, start_serving=False)
+    port = server.sockets[0].getsockname()[1]
+    serving = loop.create_task(server.serve_forever())
+    await asyncio.sleep(0)
+
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"forever")
+        assert await reader.readexactly(7) == b"forever"
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        serving.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await serving
+
+
 async def test_serve_forever_twice_is_rejected() -> None:
     server, _port, _ = await start_echo()
     loop = running_loop()
