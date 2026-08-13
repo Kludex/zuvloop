@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 import ssl
 
 import pytest
 
 from conftest import collect_contexts, running_loop
+from zuvloop._server import Server
 
 pytestmark = pytest.mark.anyio
 
@@ -57,6 +59,39 @@ async def test_tls_rejects_an_untrusted_certificate(server_context: ssl.SSLConte
     finally:
         server.close()
         loop.set_exception_handler(None)
+
+
+async def test_cancelling_a_server_handshake_disarms_the_accepted_socket_before_close(
+    server_context: ssl.SSLContext,
+) -> None:
+    loop = running_loop()
+
+    class CloseTrackingSocket(socket.socket):
+        close_calls = 0
+
+        def close(self) -> None:  # pragma: no cover - the assertion is that this never runs
+            self.close_calls += 1
+            super().close()
+
+    raw, peer = socket.socketpair()
+    accepted = CloseTrackingSocket(fileno=raw.detach())
+    accepted.setblocking(False)
+    server = Server(loop, (), asyncio.Protocol, server_context, 1, None, None)
+    server._active = 1
+
+    try:
+        handshake = loop.create_task(loop._accept_tls(accepted, asyncio.Protocol, server))
+        await asyncio.sleep(0)
+        handshake.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await handshake
+        await asyncio.sleep(0)
+
+        assert accepted.close_calls == 0
+        assert accepted.fileno() == -1
+        assert server._active == 0
+    finally:
+        peer.close()
 
 
 async def test_a_failed_handshake_is_reported(server_context: ssl.SSLContext) -> None:

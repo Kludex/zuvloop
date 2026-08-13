@@ -784,6 +784,7 @@ async def test_create_connection_from_an_existing_socket() -> None:
         await asyncio.sleep(0.05)
         assert protocol.received == b"via sock"
         transport.close()
+        assert sock.fileno() == -1
         assert protocol.done is not None
         await protocol.done
 
@@ -1340,10 +1341,10 @@ async def test_accept_other_oserror_is_reported() -> None:
     listener_sock, notifier = socket.socketpair()
     listener = ExhaustedListener(listener_sock, errno.EINVAL)
     server = Server(loop, [cast("socket.socket", listener)], Echo, None, 100, None, None)
-    reports: list[tuple[str | None, BaseException | None]] = []
+    reports: list[tuple[str | None, BaseException | None, trsock.TransportSocket | None]] = []
     previous_handler = loop.get_exception_handler()
     loop.set_exception_handler(
-        lambda _loop, context: reports.append((context.get("message"), context.get("exception")))
+        lambda _loop, context: reports.append((context.get("message"), context.get("exception"), context.get("socket")))
     )
 
     try:
@@ -1352,10 +1353,12 @@ async def test_accept_other_oserror_is_reported() -> None:
 
         assert listener.accepts == 1
         assert len(reports) == 1
-        message, reported_error = reports[0]
+        message, reported_error, socket_view = reports[0]
         assert message == "Error accepting a connection"
         assert isinstance(reported_error, OSError)
         assert reported_error.errno == errno.EINVAL
+        assert isinstance(socket_view, trsock.TransportSocket)
+        assert not hasattr(socket_view, "close")
     finally:
         server.close()
         notifier.close()
@@ -1584,6 +1587,22 @@ async def test_an_ssl_handshake_timeout_without_ssl_is_rejected() -> None:
     finally:
         left.close()
         right.close()
+
+
+async def test_a_failed_protocol_factory_closes_an_accepted_socket() -> None:
+    loop = running_loop()
+    sock, peer = socket.socketpair()
+
+    def fail() -> NoReturn:
+        raise RuntimeError("factory failed")
+
+    try:
+        with pytest.raises(RuntimeError, match="factory failed"):
+            await loop.connect_accepted_socket(fail, sock)
+        assert sock.fileno() == -1
+    finally:
+        sock.close()
+        peer.close()
 
 
 async def test_an_ssl_shutdown_timeout_without_ssl_is_rejected() -> None:
@@ -1871,27 +1890,24 @@ async def test_closing_a_server_releases_serve_forever() -> None:
         await asyncio.wait_for(task, 5)
 
 
-async def test_cancelling_serve_forever_waits_for_its_connections() -> None:
-    """asyncio closes and waits before re-raising, so "stopped" means stopped."""
+async def test_cancelling_serve_forever_closes_its_connections() -> None:
     loop = running_loop()
     server, port, _ = await start_echo()
     task = loop.create_task(server.serve_forever())
     await asyncio.sleep(0.02)
-    _reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
     await asyncio.sleep(0.02)
 
     task.cancel()
-    stopping = asyncio.ensure_future(task)
-    await asyncio.sleep(0.05)
-    assert not stopping.done()  # still seeing the connection out
-
-    writer.close()
-    await writer.wait_closed()
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(stopping, 5)
+        await asyncio.wait_for(task, 5)
+    assert await asyncio.wait_for(reader.read(), 5) == b""
     assert not server.is_serving()
     with pytest.raises(ConnectionRefusedError):
         await asyncio.open_connection("127.0.0.1", port)
+
+    writer.close()
+    await writer.wait_closed()
 
 
 async def test_aborting_a_backed_up_transport_reports_no_reason() -> None:

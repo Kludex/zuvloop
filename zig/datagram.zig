@@ -249,7 +249,7 @@ fn onSent(req: ?*uv.UdpSend, status: c_int) callconv(.c) void {
 
     // A failed datagram is reported to the protocol, never raised: asyncio
     // treats the endpoint as still usable.
-    if (status < 0 and self.flags & CONN_LOST == 0) {
+    if (status < 0 and self.flags & (CLOSING | CONN_LOST) == 0) {
         if (takeUvError(status)) |exc| {
             defer py.decref(exc);
             callProtocol(self, self.cb_error_received, exc);
@@ -295,6 +295,7 @@ fn maybePauseProtocol(self: *Datagram) void {
 }
 
 fn maybeResumeProtocol(self: *Datagram) void {
+    if (self.flags & (CLOSING | CONN_LOST) != 0) return;
     if (self.flags & PROTOCOL_PAUSED == 0) return;
     if (self.write_buffer_size > self.low_water) return;
     self.flags &= ~PROTOCOL_PAUSED;
@@ -318,7 +319,6 @@ fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     st.gilEnter();
     defer st.gilExit();
 
-    releaseSocketView(self);
     self.flags |= CONN_LOST;
     scheduleCall(self, self.cb_connection_lost, self.conn_lost_exc orelse py.none());
     py.decref(self);
@@ -331,7 +331,11 @@ fn shutdownAndClose(self: *Datagram) void {
         _ = uv.uv_udp_recv_stop(self.udp());
         self.flags &= ~READING;
     }
-    uv.uv_close(uv.asHandle(self.udp()), onClosed);
+    // As with streams, uv_close closes the descriptor before its callback.
+    // Detach the Python socket while the number still names our endpoint.
+    releaseSocketView(self);
+    const handle = uv.asHandle(self.udp());
+    if (uv.uv_is_closing(handle) == 0) uv.uv_close(handle, onClosed);
 }
 
 /// Closes a datagram endpoint discovered while the owning loop shuts down.
@@ -343,7 +347,8 @@ pub fn closeFromLoop(handle: *uv.Handle) void {
         _ = uv.uv_udp_recv_stop(self.udp());
         self.flags &= ~READING;
     }
-    uv.uv_close(handle, onClosed);
+    releaseSocketView(self);
+    if (uv.uv_is_closing(handle) == 0) uv.uv_close(handle, onClosed);
 }
 
 // ---------------------------------------------------------------------------

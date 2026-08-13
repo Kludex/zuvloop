@@ -706,8 +706,9 @@ fn shutdownWrite(self: *Transport) void {
 // teardown
 
 /// libuv owns the descriptor, so the socket object handed out through
-/// `get_extra_info("socket")` must be detached rather than closed - otherwise
-/// Python would close a descriptor libuv has already closed and reused.
+/// `get_extra_info("socket")` must be detached rather than closed. The object
+/// is disarmed before libuv closes the number, preventing a second close after
+/// another thread reuses it.
 fn releaseSocketView(self: *Transport) void {
     const view = self.socket_view orelse return;
     self.socket_view = null;
@@ -723,7 +724,6 @@ fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     st.gilEnter();
     defer st.gilExit();
 
-    releaseSocketView(self);
     self.flags |= CONN_LOST;
     scheduleCall(self, self.cb_connection_lost, self.conn_lost_exc orelse py.none());
     if (self.server) |server| {
@@ -759,7 +759,12 @@ fn shutdownAndClose(self: *Transport) void {
         _ = uv.uv_read_stop(self.stream());
         self.flags &= ~READING;
     }
-    uv.uv_close(uv.asHandle(self.stream()), onClosed);
+    // uv_close closes a stream descriptor synchronously. Disarm the Python
+    // object first, or code that still holds the accepted socket can close the
+    // same number after another thread has already reused it.
+    releaseSocketView(self);
+    const handle = uv.asHandle(self.stream());
+    if (uv.uv_is_closing(handle) == 0) uv.uv_close(handle, onClosed);
 }
 
 /// Closes a transport discovered while the owning loop is shutting down.
@@ -773,7 +778,8 @@ pub fn closeFromLoop(handle: *uv.Handle) void {
         _ = uv.uv_read_stop(self.stream());
         self.flags &= ~READING;
     }
-    uv.uv_close(handle, onClosed);
+    releaseSocketView(self);
+    if (uv.uv_is_closing(handle) == 0) uv.uv_close(handle, onClosed);
 }
 
 fn closeTransport(self: *Transport) void {
