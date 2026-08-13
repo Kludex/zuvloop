@@ -173,6 +173,68 @@ async def test_abort_closes_immediately() -> None:
     await asyncio.wait_for(protocol.lost, 2)
 
 
+@pytest.mark.parametrize("abort", [False, True])
+async def test_shutdown_does_not_resume_or_report_cancelled_sends(abort: bool) -> None:
+    loop = running_loop()
+    with unix_socket_dir() as directory:
+        receiver_path = str(directory / "receiver")
+        sender_path = str(directory / "sender")
+        receiver = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        receiver.bind(receiver_path)
+        receiver.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2048)
+
+        sender = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        sender.bind(sender_path)
+        sender.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2048)
+        sender.setblocking(False)
+
+        events: list[str] = []
+
+        class FlowControl(asyncio.DatagramProtocol):
+            def __init__(self) -> None:
+                self.lost: asyncio.Future[None] = loop.create_future()
+
+            def connection_made(self, transport: asyncio.BaseTransport) -> None:
+                events.append("made")
+
+            def pause_writing(self) -> None:
+                events.append("pause")
+
+            def resume_writing(self) -> None:
+                events.append("resume")  # pragma: no cover - the assertion is that this never runs
+
+            def error_received(self, exc: BaseException) -> None:
+                events.append(type(exc).__name__)  # pragma: no cover - the assertion is that this never runs
+
+            def connection_lost(self, exc: BaseException | None) -> None:
+                events.append("lost")
+                self.lost.set_result(None)
+
+        raw, protocol = await loop.create_datagram_endpoint(FlowControl, sock=sender)
+        transport = cast("_zuvloop.DatagramTransport", raw)
+        transport.set_write_buffer_limits(high=1, low=0)
+        try:
+            for _ in range(100):  # pragma: no branch - exhaustion fails via the assertion below
+                transport.sendto(b"x" * 1024, receiver_path)
+                if transport.get_write_buffer_size() != 0:
+                    break
+            assert transport.get_write_buffer_size() != 0
+            assert events == ["made", "pause"]
+
+            if abort:
+                transport.abort()
+            else:
+                transport.close()
+            receiver.close()
+            await asyncio.wait_for(protocol.lost, 2)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert events == ["made", "pause", "lost"]
+        finally:
+            receiver.close()
+            transport.abort()
+
+
 async def test_sending_after_close_is_dropped() -> None:
     """asyncio drops it; a shutdown race should not raise out of user code."""
     loop = running_loop()
