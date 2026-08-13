@@ -137,9 +137,11 @@ async def test_start_tls_consumes_a_buffered_client_hello(
         try:
             assert await reader.readline() == proxy_line
             stream_reader = cast("BufferedStreamReader", reader)
+            async with asyncio.timeout(1):
+                while not stream_reader._paused:  # pragma: no cover - TCP chunking varies by platform
+                    await asyncio.sleep(0)
             buffered = len(stream_reader._buffer)
             assert buffered > 0
-            assert stream_reader._paused is True
             await writer.start_tls(server_context)
             assert stream_reader._paused is False
             payload = await reader.readexactly(6)
