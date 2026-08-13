@@ -727,6 +727,8 @@ struct uv_udp_s {
    * Number of send requests currently in the queue awaiting to be processed.
    */
   size_t send_queue_count;
+  /* Length of the source address passed to the current receive callback. */
+  size_t recv_addrlen;
   UV_UDP_PRIVATE_FIELDS
 };
 
@@ -790,6 +792,7 @@ UV_EXTERN int uv_udp_using_recvmmsg(const uv_udp_t* handle);
 UV_EXTERN int uv_udp_recv_stop(uv_udp_t* handle);
 UV_EXTERN size_t uv_udp_get_send_queue_size(const uv_udp_t* handle);
 UV_EXTERN size_t uv_udp_get_send_queue_count(const uv_udp_t* handle);
+UV_EXTERN size_t uv_udp_get_recv_addrlen(const uv_udp_t* handle);
 
 
 /*

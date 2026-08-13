@@ -203,6 +203,7 @@ static int uv__udp_recvmmsg(uv_udp_t* handle, uv_buf_t* buf) {
         flags |= UV_UDP_PARTIAL;
 
       chunk_buf = uv_buf_init(iov[k].iov_base, iov[k].iov_len);
+      handle->recv_addrlen = msgs[k].msg_hdr.msg_namelen;
       handle->recv_cb(handle,
                       msgs[k].msg_len,
                       &chunk_buf,
@@ -275,6 +276,7 @@ static void uv__udp_recvmsg(uv_udp_t* handle) {
       if (h.msg_flags & MSG_TRUNC)
         flags |= UV_UDP_PARTIAL;
 
+      handle->recv_addrlen = h.msg_namelen;
       handle->recv_cb(handle, nread, &buf, (const struct sockaddr*) &peer, flags);
     }
     count--;

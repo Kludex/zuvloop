@@ -214,7 +214,7 @@ fn onRecv(
         return;
     };
     defer py.decref(data);
-    const sender = addr.toPython(from.?) catch {
+    const sender = addr.toPython(from.?, @intCast(uv.uv_udp_get_recv_addrlen(handle.?))) catch {
         // The datagram cannot be delivered without naming its sender, and a
         // receive failure is what `error_received` exists to report.
         const exc = c.PyErr_GetRaisedException() orelse return;
