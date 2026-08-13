@@ -12,7 +12,7 @@ import tempfile
 from asyncio import constants, trsock
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import NoReturn, cast
+from typing import NoReturn
 
 import pytest
 
@@ -81,24 +81,18 @@ class Collector(asyncio.Protocol):
         self.done.set_result(bytes(self.received))
 
 
-class ExhaustedListener:
+class ExhaustedListener(socket.socket):
     def __init__(self, sock: socket.socket, error: int) -> None:
-        self.sock = sock
+        super().__init__(fileno=sock.detach())
         self.error = error
         self.accepts = 0
 
-    def listen(self, _backlog: int) -> None:
+    def listen(self, _backlog: int = 0, /) -> None:
         pass
-
-    def fileno(self) -> int:
-        return self.sock.fileno()
 
     def accept(self) -> NoReturn:
         self.accepts += 1
         raise OSError(self.error, os.strerror(self.error))
-
-    def close(self) -> None:
-        self.sock.close()
 
 
 async def start_echo(backlog: int = 100) -> tuple[zuvloop.Server, int, list[Echo]]:
@@ -1304,7 +1298,7 @@ async def test_accept_resource_exhaustion_backs_off(error: int, monkeypatch: pyt
     loop = running_loop()
     listener_sock, notifier = socket.socketpair()
     listener = ExhaustedListener(listener_sock, error)
-    server = Server(loop, [cast("socket.socket", listener)], Echo, None, 100, None, None)
+    server = Server(loop, [listener], Echo, None, 100, None, None)
     reports: list[tuple[str | None, BaseException | None]] = []
     previous_handler = loop.get_exception_handler()
     loop.set_exception_handler(
@@ -1333,7 +1327,7 @@ async def test_accept_resource_exhaustion_backs_off(error: int, monkeypatch: pyt
 
         server.close()
         accepts_after_close = listener.accepts
-        server._retry_accept(cast("socket.socket", listener))
+        server._start_serving()
         assert listener.accepts == accepts_after_close
     finally:
         server.close()
@@ -1345,7 +1339,7 @@ async def test_accept_other_oserror_is_reported() -> None:
     loop = running_loop()
     listener_sock, notifier = socket.socketpair()
     listener = ExhaustedListener(listener_sock, errno.EINVAL)
-    server = Server(loop, [cast("socket.socket", listener)], Echo, None, 100, None, None)
+    server = Server(loop, [listener], Echo, None, 100, None, None)
     reports: list[tuple[str | None, BaseException | None, trsock.TransportSocket | None]] = []
     previous_handler = loop.get_exception_handler()
     loop.set_exception_handler(
@@ -1353,7 +1347,7 @@ async def test_accept_other_oserror_is_reported() -> None:
     )
 
     try:
-        loop.call_soon(server._accept, cast("socket.socket", listener))
+        loop.call_soon(server._accept, listener)
         await asyncio.sleep(0)
 
         assert listener.accepts == 1
@@ -1370,17 +1364,17 @@ async def test_accept_other_oserror_is_reported() -> None:
         loop.set_exception_handler(previous_handler)
 
 
-async def test_retry_accept_ignores_a_closed_listener() -> None:
+async def test_start_serving_ignores_a_closed_server() -> None:
     loop = running_loop()
     listener_sock, notifier = socket.socketpair()
     listener = ExhaustedListener(listener_sock, errno.EMFILE)
-    server = Server(loop, [cast("socket.socket", listener)], Echo, None, 100, None, None)
+    server = Server(loop, [listener], Echo, None, 100, None, None)
 
     try:
         server._start_serving()
         loop.remove_reader(listener.fileno())
-        listener.close()
-        server._retry_accept(cast("socket.socket", listener))
+        server.close()
+        server._start_serving()
         await asyncio.sleep(0)
         assert listener.accepts == 0
     finally:
@@ -1392,7 +1386,7 @@ async def test_accept_resource_handler_can_close_server(monkeypatch: pytest.Monk
     loop = running_loop()
     listener_sock, notifier = socket.socketpair()
     listener = ExhaustedListener(listener_sock, errno.EMFILE)
-    server = Server(loop, [cast("socket.socket", listener)], Echo, None, 100, None, None)
+    server = Server(loop, [listener], Echo, None, 100, None, None)
     reports: list[tuple[str | None, trsock.TransportSocket | None]] = []
     previous_handler = loop.get_exception_handler()
 
