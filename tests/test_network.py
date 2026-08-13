@@ -10,7 +10,7 @@ import struct
 import sys
 import tempfile
 from asyncio import constants, trsock
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import NoReturn
 
@@ -1301,10 +1301,16 @@ async def test_accept_resource_exhaustion_backs_off(error: int, monkeypatch: pyt
     server = Server(loop, [listener], Echo, None, 100, None, None)
     reports: list[tuple[str | None, BaseException | None]] = []
     previous_handler = loop.get_exception_handler()
+    retries: list[Callable[[], None]] = []
+
+    def capture_retry(delay: float, callback: Callable[[], None]) -> None:
+        assert delay == constants.ACCEPT_RETRY_DELAY
+        retries.append(callback)
+
     loop.set_exception_handler(
         lambda _loop, context: reports.append((context.get("message"), context.get("exception")))
     )
-    monkeypatch.setattr(constants, "ACCEPT_RETRY_DELAY", 0.02)
+    monkeypatch.setattr(loop, "call_later", capture_retry)
 
     try:
         await server.start_serving()
@@ -1319,13 +1325,23 @@ async def test_accept_resource_exhaustion_backs_off(error: int, monkeypatch: pyt
         assert message == "socket.accept() out of system resource"
         assert isinstance(reported_error, OSError)
         assert reported_error.errno == error
+        assert len(retries) == 1
 
+        # Neither public start path may bypass the resource-exhaustion delay.
+        await server.start_serving()
+        serving_forever = loop.create_task(server.serve_forever())
+        await asyncio.sleep(0)
+        assert listener.accepts == 1
+
+        retries.pop()()
         async with asyncio.timeout(1):
             while listener.accepts < 2:
                 await asyncio.sleep(0)
         assert listener.accepts >= 2
 
-        server.close()
+        serving_forever.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await serving_forever
         accepts_after_close = listener.accepts
         server._start_serving()
         assert listener.accepts == accepts_after_close
