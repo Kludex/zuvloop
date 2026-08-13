@@ -6,17 +6,71 @@ import errno
 import os
 import signal
 import socket
+import subprocess
 import sys
 from asyncio.subprocess import Process
+from collections.abc import Callable
 from pathlib import Path
+from typing import NoReturn, cast
 
 import pytest
 
 from conftest import running_loop
+from zuvloop._connect import ConnectionOperations
+from zuvloop._process import Popen, ProcessReaper
 
 pytestmark = pytest.mark.anyio
 
 PIPE = asyncio.subprocess.PIPE
+
+
+def test_process_reaper_does_not_discard_a_reused_pid() -> None:
+    class StopReaper(Exception):
+        pass
+
+    class ReplacementProcess:
+        def poll(self) -> NoReturn:
+            raise StopReaper
+
+    class RecordingLoop:
+        def call_soon_threadsafe(self, callback: Callable[[int], None], returncode: int) -> None:
+            callback(returncode)
+
+    class RecordingWrapper:
+        def __init__(self) -> None:
+            self.returncodes: list[int] = []
+
+        def exited(self, returncode: int) -> None:
+            self.returncodes.append(returncode)
+
+    class ReplacedProcess:
+        def __init__(
+            self,
+            reaper: ProcessReaper,
+            replacement: tuple[subprocess.Popen[bytes], ConnectionOperations, Popen],
+        ) -> None:
+            self.reaper = reaper
+            self.replacement = replacement
+
+        def poll(self) -> int:
+            with self.reaper.condition:
+                self.reaper.processes[42] = self.replacement
+            return 0
+
+    reaper = ProcessReaper()
+    new_process = cast("subprocess.Popen[bytes]", ReplacementProcess())
+    loop = cast("ConnectionOperations", RecordingLoop())
+    recording_wrapper = RecordingWrapper()
+    wrapper = cast("Popen", recording_wrapper)
+    replacement = (new_process, loop, wrapper)
+    old_process = cast("subprocess.Popen[bytes]", ReplacedProcess(reaper, replacement))
+    reaper.processes[42] = (old_process, loop, wrapper)
+
+    with pytest.raises(StopReaper):
+        reaper.run()
+
+    assert reaper.processes[42] is replacement
+    assert recording_wrapper.returncodes == [0]
 
 
 async def test_a_command_runs_and_reports_its_output() -> None:
@@ -32,6 +86,19 @@ async def test_a_shell_command_reports_its_exit_status() -> None:
     stdout, _stderr = await process.communicate()
     assert stdout == b"shell\n"
     assert process.returncode == 3
+
+
+async def test_subprocess_strings_reject_embedded_nuls() -> None:
+    calls = (
+        asyncio.create_subprocess_exec("/bin/echo", "before\0after"),
+        asyncio.create_subprocess_exec("/bin/echo", executable="/bin/echo\0other"),
+        asyncio.create_subprocess_exec("/bin/echo", cwd="/tmp\0other"),
+        asyncio.create_subprocess_exec("/bin/echo", env={"VALUE": "before\0after"}),
+        asyncio.create_subprocess_exec("/bin/echo", env={"BEFORE\0AFTER": "value"}),
+    )
+    for call in calls:
+        with pytest.raises(ValueError, match="embedded null byte"):
+            await call
 
 
 async def test_stdin_reaches_the_child() -> None:
@@ -319,6 +386,7 @@ async def test_pass_fds_leaves_the_gap_before_it_closed() -> None:
     spare_read, spare_write = os.pipe()
     read_fd, write_fd = os.pipe()
     assert 3 <= spare_write < write_fd
+    os.set_inheritable(spare_write, True)
     try:
         process = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -347,6 +415,22 @@ async def test_pass_fds_leaves_the_blocking_state_alone() -> None:
     finally:
         left.close()
         right.close()
+
+
+async def test_a_stdlib_fallback_child_can_be_signalled() -> None:
+    read_fd, write_fd = os.pipe()
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import time; time.sleep(30)",
+            pass_fds=(write_fd,),
+        )
+        process.terminate()
+        assert await asyncio.wait_for(process.wait(), 10) == -signal.SIGTERM
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
 
 
 async def test_pass_fds_rejects_a_negative_descriptor() -> None:

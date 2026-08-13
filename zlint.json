@@ -1,0 +1,13 @@
+{
+  "rules": {
+    "avoid-as": "error",
+    "empty-file": "error",
+    "homeless-try": "error",
+    "must-return-ref": "error",
+    "no-catch-return": "error",
+    "no-unresolved": "error",
+    "returned-stack-reference": "error",
+    "unsafe-undefined": "error",
+    "useless-error-return": "error"
+  }
+}

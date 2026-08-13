@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import gc
 import os
 import socket
 import ssl
 import struct
+import sys
 import tempfile
-from collections.abc import Sequence
+from asyncio import constants, trsock
+from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -77,6 +81,20 @@ class Collector(asyncio.Protocol):
         self.done.set_result(bytes(self.received))
 
 
+class ExhaustedListener(socket.socket):
+    def __init__(self, sock: socket.socket, error: int) -> None:
+        super().__init__(fileno=sock.detach())
+        self.error = error
+        self.accepts = 0
+
+    def listen(self, _backlog: int = 0, /) -> None:
+        pass
+
+    def accept(self) -> NoReturn:
+        self.accepts += 1
+        raise OSError(self.error, os.strerror(self.error))
+
+
 async def start_echo(backlog: int = 100) -> tuple[zuvloop.Server, int, list[Echo]]:
     protocols: list[Echo] = []
 
@@ -135,6 +153,55 @@ async def test_large_payload_survives_partial_writes() -> None:
         writer.write(payload)
         await writer.drain()
         assert await reader.readexactly(len(payload)) == payload
+        writer.close()
+        await writer.wait_closed()
+
+
+async def test_queued_write_snapshots_a_mutable_buffer() -> None:
+    server, port, _ = await start_echo()
+    payload = bytearray(b"original write")
+    async with server:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(payload)
+        payload[:] = b"mutated later!"
+        assert await reader.readexactly(14) == b"original write"
+        writer.close()
+        await writer.wait_closed()
+
+
+async def test_queued_write_snapshots_a_bytes_subclass_buffer() -> None:
+    class MutableBytes(bytes):
+        payload: bytearray
+
+        def __new__(cls, payload: bytearray) -> MutableBytes:
+            instance = super().__new__(cls, b"immutable shell")
+            instance.payload = payload
+            return instance
+
+        def __buffer__(self, flags: int) -> memoryview:
+            return memoryview(self.payload)
+
+    server, port, _ = await start_echo()
+    payload = bytearray(b"custom buffer")
+    exporter = MutableBytes(payload)
+    async with server:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(exporter)
+        payload[:] = b"mutated later"
+        assert await reader.readexactly(13) == b"custom buffer"
+        writer.close()
+        await writer.wait_closed()
+
+
+async def test_queued_writelines_snapshot_mutable_buffers() -> None:
+    server, port, _ = await start_echo()
+    chunks = [bytearray(b"original "), bytearray(b"lines")]
+    async with server:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.writelines(chunks)
+        chunks[0][:] = b"mutated! "
+        chunks[1][:] = b"later"
+        assert await reader.readexactly(14) == b"original lines"
         writer.close()
         await writer.wait_closed()
 
@@ -422,6 +489,42 @@ async def test_writes_after_write_eof_are_rejected() -> None:
         await protocol.done
 
 
+async def test_reentrant_writelines_cannot_queue_data_after_eof() -> None:
+    server, port, _ = await start_echo()
+    loop = running_loop()
+    async with server:
+        transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
+
+        class EofDuringIteration:
+            def __iter__(self) -> Iterator[bytes]:
+                transport.write_eof()
+                yield b"too late"
+
+        with pytest.raises(RuntimeError, match="write_eof"):
+            transport.writelines(EofDuringIteration())
+        transport.close()
+        assert protocol.done is not None
+        await protocol.done
+
+
+async def test_reentrant_buffer_acquisition_cannot_queue_data_after_eof() -> None:
+    server, port, _ = await start_echo()
+    loop = running_loop()
+    async with server:
+        transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port)
+
+        class EofDuringBuffer:
+            def __buffer__(self, flags: int) -> memoryview:
+                transport.write_eof()
+                return memoryview(b"too late")
+
+        with pytest.raises(RuntimeError, match="write_eof"):
+            transport.writelines([EofDuringBuffer()])  # type: ignore[list-item]
+        transport.close()
+        assert protocol.done is not None
+        await protocol.done
+
+
 async def test_writes_after_close_are_dropped() -> None:
     """asyncio drops them; only `write_eof()` makes a later write an error."""
     server, port, echoes = await start_echo()
@@ -594,12 +697,16 @@ async def test_write_buffer_limits_validate_their_arguments() -> None:
         assert transport.get_write_buffer_limits() == (16384, 65536)
         transport.set_write_buffer_limits(high=8192)
         assert transport.get_write_buffer_limits() == (2048, 8192)
+        transport.set_write_buffer_limits(low=256)
+        assert transport.get_write_buffer_limits() == (256, 1024)
         with pytest.raises(ValueError, match="high water mark"):
             transport.set_write_buffer_limits(high=10, low=100)
         with pytest.raises(ValueError, match="high water mark must be non-negative"):
             transport.set_write_buffer_limits(high=-1)
         with pytest.raises(ValueError, match="low water mark must be non-negative"):
             transport.set_write_buffer_limits(low=-1)
+        with pytest.raises(OverflowError, match="high water mark is too large"):
+            transport.set_write_buffer_limits(low=sys.maxsize)
         with pytest.raises(TypeError, match="unexpected keyword"):
             transport.set_write_buffer_limits(medium=1)  # type: ignore[call-arg]
         with pytest.raises(TypeError, match="at most 2"):
@@ -676,6 +783,7 @@ async def test_create_connection_from_an_existing_socket() -> None:
         await asyncio.sleep(0.05)
         assert protocol.received == b"via sock"
         transport.close()
+        assert sock.fileno() == -1
         assert protocol.done is not None
         await protocol.done
 
@@ -971,6 +1079,29 @@ async def test_unix_server_cleanup_tolerates_a_missing_path() -> None:
         await server.wait_closed()
 
 
+async def test_unix_server_cleanup_error_still_wakes_waiters(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    loop = running_loop()
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "denied.sock"
+        server = await loop.create_unix_server(Echo, path)
+        waiting = loop.create_task(server.wait_closed())
+        await asyncio.sleep(0)
+
+        def denied_stat(
+            target: int | str | bytes | os.PathLike[str], *, dir_fd: int | None = None, follow_symlinks: bool = True
+        ) -> os.stat_result:
+            raise PermissionError(target)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "stat", denied_stat)
+            server.close()
+            await asyncio.wait_for(waiting, 2)
+
+        assert "Unable to clean up listening UNIX socket" in caplog.text
+
+
 async def test_unix_server_cleanup_tolerates_a_path_unlinked_while_binding() -> None:
     loop = running_loop()
     with tempfile.TemporaryDirectory() as directory:
@@ -1162,6 +1293,136 @@ async def test_a_backlog_of_one_accepts_one_connection_per_wakeup() -> None:
             await writer.wait_closed()
 
 
+@pytest.mark.parametrize("error", [errno.EMFILE, errno.ENFILE, errno.ENOBUFS, errno.ENOMEM])
+async def test_accept_resource_exhaustion_backs_off(error: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    loop = running_loop()
+    listener_sock, notifier = socket.socketpair()
+    listener = ExhaustedListener(listener_sock, error)
+    server = Server(loop, [listener], Echo, None, 100, None, None)
+    reports: list[tuple[str | None, BaseException | None]] = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(
+        lambda _loop, context: reports.append((context.get("message"), context.get("exception")))
+    )
+    monkeypatch.setattr(constants, "ACCEPT_RETRY_DELAY", 0.02)
+
+    try:
+        await server.start_serving()
+        notifier.send(b"ready")
+        async with asyncio.timeout(1):
+            while not reports:
+                await asyncio.sleep(0)
+
+        assert listener.accepts == 1
+        assert len(reports) == 1
+        message, reported_error = reports[0]
+        assert message == "socket.accept() out of system resource"
+        assert isinstance(reported_error, OSError)
+        assert reported_error.errno == error
+
+        async with asyncio.timeout(1):
+            while listener.accepts < 2:
+                await asyncio.sleep(0)
+        assert listener.accepts >= 2
+
+        server.close()
+        accepts_after_close = listener.accepts
+        server._start_serving()
+        assert listener.accepts == accepts_after_close
+    finally:
+        server.close()
+        notifier.close()
+        loop.set_exception_handler(previous_handler)
+
+
+async def test_accept_other_oserror_is_reported() -> None:
+    loop = running_loop()
+    listener_sock, notifier = socket.socketpair()
+    listener = ExhaustedListener(listener_sock, errno.EINVAL)
+    server = Server(loop, [listener], Echo, None, 100, None, None)
+    reports: list[tuple[str | None, BaseException | None, trsock.TransportSocket | None]] = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(
+        lambda _loop, context: reports.append((context.get("message"), context.get("exception"), context.get("socket")))
+    )
+
+    try:
+        loop.call_soon(server._accept, listener)
+        await asyncio.sleep(0)
+
+        assert listener.accepts == 1
+        assert len(reports) == 1
+        message, reported_error, socket_view = reports[0]
+        assert message == "Error accepting a connection"
+        assert isinstance(reported_error, OSError)
+        assert reported_error.errno == errno.EINVAL
+        assert isinstance(socket_view, trsock.TransportSocket)
+        assert not hasattr(socket_view, "close")
+    finally:
+        server.close()
+        notifier.close()
+        loop.set_exception_handler(previous_handler)
+
+
+async def test_start_serving_ignores_a_closed_server() -> None:
+    loop = running_loop()
+    listener_sock, notifier = socket.socketpair()
+    listener = ExhaustedListener(listener_sock, errno.EMFILE)
+    server = Server(loop, [listener], Echo, None, 100, None, None)
+
+    try:
+        server._start_serving()
+        loop.remove_reader(listener.fileno())
+        server.close()
+        server._start_serving()
+        await asyncio.sleep(0)
+        assert listener.accepts == 0
+    finally:
+        server.close()
+        notifier.close()
+
+
+async def test_accept_resource_handler_can_close_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    loop = running_loop()
+    listener_sock, notifier = socket.socketpair()
+    listener = ExhaustedListener(listener_sock, errno.EMFILE)
+    server = Server(loop, [listener], Echo, None, 100, None, None)
+    reports: list[tuple[str | None, trsock.TransportSocket | None]] = []
+    previous_handler = loop.get_exception_handler()
+
+    def close_server(
+        _loop: asyncio.AbstractEventLoop, context: dict[str, str | BaseException | trsock.TransportSocket]
+    ) -> None:
+        message = context.get("message")
+        socket_view = context.get("socket")
+        reports.append(
+            (
+                message if isinstance(message, str) else None,
+                socket_view if isinstance(socket_view, trsock.TransportSocket) else None,
+            )
+        )
+        server.close()
+
+    loop.set_exception_handler(close_server)
+    monkeypatch.setattr(constants, "ACCEPT_RETRY_DELAY", 0.01)
+
+    try:
+        await server.start_serving()
+        notifier.send(b"ready")
+        async with asyncio.timeout(1):
+            while not reports:
+                await asyncio.sleep(0)
+
+        assert len(reports) == 1
+        assert reports[0][0] == "socket.accept() out of system resource"
+        assert isinstance(reports[0][1], trsock.TransportSocket)
+        assert not server.is_serving()
+    finally:
+        server.close()
+        notifier.close()
+        loop.set_exception_handler(previous_handler)
+
+
 async def test_wait_closed_tolerates_a_cancelled_waiter() -> None:
     loop = running_loop()
     server, port, _ = await start_echo()
@@ -1325,6 +1586,22 @@ async def test_an_ssl_handshake_timeout_without_ssl_is_rejected() -> None:
     finally:
         left.close()
         right.close()
+
+
+async def test_a_failed_protocol_factory_closes_an_accepted_socket() -> None:
+    loop = running_loop()
+    sock, peer = socket.socketpair()
+
+    def fail() -> NoReturn:
+        raise RuntimeError("factory failed")
+
+    try:
+        with pytest.raises(RuntimeError, match="factory failed"):
+            await loop.connect_accepted_socket(fail, sock)
+        assert sock.fileno() == -1
+    finally:
+        sock.close()
+        peer.close()
 
 
 async def test_an_ssl_shutdown_timeout_without_ssl_is_rejected() -> None:
@@ -1612,27 +1889,24 @@ async def test_closing_a_server_releases_serve_forever() -> None:
         await asyncio.wait_for(task, 5)
 
 
-async def test_cancelling_serve_forever_waits_for_its_connections() -> None:
-    """asyncio closes and waits before re-raising, so "stopped" means stopped."""
+async def test_cancelling_serve_forever_closes_its_connections() -> None:
     loop = running_loop()
     server, port, _ = await start_echo()
     task = loop.create_task(server.serve_forever())
     await asyncio.sleep(0.02)
-    _reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
     await asyncio.sleep(0.02)
 
     task.cancel()
-    stopping = asyncio.ensure_future(task)
-    await asyncio.sleep(0.05)
-    assert not stopping.done()  # still seeing the connection out
-
-    writer.close()
-    await writer.wait_closed()
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(stopping, 5)
+        await asyncio.wait_for(task, 5)
+    assert await asyncio.wait_for(reader.read(), 5) == b""
     assert not server.is_serving()
     with pytest.raises(ConnectionRefusedError):
         await asyncio.open_connection("127.0.0.1", port)
+
+    writer.close()
+    await writer.wait_closed()
 
 
 async def test_aborting_a_backed_up_transport_reports_no_reason() -> None:

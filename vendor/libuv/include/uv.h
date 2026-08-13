@@ -727,6 +727,8 @@ struct uv_udp_s {
    * Number of send requests currently in the queue awaiting to be processed.
    */
   size_t send_queue_count;
+  /* Length of the source address passed to the current receive callback. */
+  size_t recv_addrlen;
   UV_UDP_PRIVATE_FIELDS
 };
 
@@ -773,10 +775,22 @@ UV_EXTERN int uv_udp_send(uv_udp_send_t* req,
                           unsigned int nbufs,
                           const struct sockaddr* addr,
                           uv_udp_send_cb send_cb);
+UV_EXTERN int uv_udp_send_with_addrlen(uv_udp_send_t* req,
+                                       uv_udp_t* handle,
+                                       const uv_buf_t bufs[],
+                                       unsigned int nbufs,
+                                       const struct sockaddr* addr,
+                                       unsigned int addrlen,
+                                       uv_udp_send_cb send_cb);
 UV_EXTERN int uv_udp_try_send(uv_udp_t* handle,
                               const uv_buf_t bufs[],
                               unsigned int nbufs,
                               const struct sockaddr* addr);
+UV_EXTERN int uv_udp_try_send_with_addrlen(uv_udp_t* handle,
+                                           const uv_buf_t bufs[],
+                                           unsigned int nbufs,
+                                           const struct sockaddr* addr,
+                                           unsigned int addrlen);
 UV_EXTERN int uv_udp_try_send2(uv_udp_t* handle,
                                unsigned int count,
                                uv_buf_t* bufs[/*count*/],
@@ -790,6 +804,7 @@ UV_EXTERN int uv_udp_using_recvmmsg(const uv_udp_t* handle);
 UV_EXTERN int uv_udp_recv_stop(uv_udp_t* handle);
 UV_EXTERN size_t uv_udp_get_send_queue_size(const uv_udp_t* handle);
 UV_EXTERN size_t uv_udp_get_send_queue_count(const uv_udp_t* handle);
+UV_EXTERN size_t uv_udp_get_recv_addrlen(const uv_udp_t* handle);
 
 
 /*

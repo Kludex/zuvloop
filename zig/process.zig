@@ -347,11 +347,11 @@ var methods = [_]c.PyMethodDef{
 };
 
 var slots = [_]c.PyType_Slot{
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @constCast(@ptrCast(&dealloc)) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @constCast(@ptrCast(&traverse)) },
-    .{ .slot = c.Py_tp_clear, .pfunc = @constCast(@ptrCast(&clear_)) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
+    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&clear_)) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
-    .{ .slot = c.Py_tp_doc, .pfunc = @constCast(@ptrCast("A libuv-backed child process.")) },
+    .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("A libuv-backed child process.")) },
     .{ .slot = 0, .pfunc = null },
 };
 

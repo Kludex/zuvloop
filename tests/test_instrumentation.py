@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from collections.abc import Mapping
+from types import MethodType
 
 import pytest
 from opentelemetry.trace import StatusCode
@@ -39,7 +41,10 @@ async def test_slow_callbacks_are_reported_without_debug_mode(telemetry: Telemet
         for span in telemetry.spans("zuvloop.slow_callback")
         if "slow_callback" in str(attribute(span, "code.callback"))
     )
-    assert span.status.status_code is StatusCode.ERROR
+    # A slow callback is a warning, not an error: the span status stays unset
+    # and the severity is carried as Logfire's numeric level.
+    assert span.status.status_code is StatusCode.UNSET
+    assert numeric_attribute(span, "logfire.level_num") == 13
     assert numeric_attribute(span, "duration") >= 0.01
     assert "Handle" in str(attribute(span, "code.callback"))
     assert telemetry.counted("zuvloop.slow_callbacks") >= 1
@@ -212,6 +217,103 @@ async def test_gauges_sample_on_a_native_timer(monkeypatch: pytest.MonkeyPatch) 
     assert len(snapshots) == before
 
 
+async def test_monitoring_arms_when_a_provider_appears_mid_run(
+    telemetry: Telemetry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Providers configured from inside the loop - logfire.configure() in
+    main() - must still arm slow-callback monitoring."""
+    installed = False
+    monkeypatch.setattr("zuvloop._base.instrumentation_provider_installed", lambda: installed)
+
+    def main() -> None:
+        loop = zuvloop.new_event_loop()
+        loop.metrics_interval = 0.02
+        loop.slow_callback_duration = 0.01
+
+        def blocks_before_provider() -> None:
+            time.sleep(0.02)
+
+        def blocks_after_provider() -> None:
+            time.sleep(0.02)
+
+        async def scenario() -> None:
+            nonlocal installed
+            loop.call_soon(blocks_before_provider)
+            await asyncio.sleep(0.01)
+            installed = True
+            # More than metrics_interval, so the sampler has re-checked.
+            await asyncio.sleep(0.06)
+            loop.call_soon(blocks_after_provider)
+            await asyncio.sleep(0.05)
+
+        try:
+            loop.run_until_complete(scenario())
+        finally:
+            loop.close()
+
+    await asyncio.to_thread(main)
+    callbacks = [str(attribute(span, "code.callback")) for span in telemetry.spans("zuvloop.slow_callback")]
+    assert not any("blocks_before_provider" in callback for callback in callbacks)
+    assert any("blocks_after_provider" in callback for callback in callbacks)
+
+
+async def test_provider_checks_stop_once_a_provider_is_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The armed flags are latches: after a provider says yes, later sampler
+    ticks publish without asking again."""
+    snapshots: list[dict[str, int]] = []
+    checks = 0
+    installed = False
+
+    def probe() -> bool:
+        nonlocal checks
+        checks += 1
+        return installed
+
+    monkeypatch.setattr("zuvloop._base.publish_metrics", snapshots.append)
+    monkeypatch.setattr("zuvloop._base.metrics_provider_installed", probe)
+
+    def main() -> None:
+        loop = zuvloop.new_event_loop()
+        loop.metrics_interval = 0.02
+
+        async def scenario() -> None:
+            nonlocal installed
+            await asyncio.sleep(0.05)
+            assert not snapshots
+            installed = True
+            await asyncio.sleep(0.05)
+            assert snapshots
+            checks_when_armed = checks
+            published = len(snapshots)
+            await asyncio.sleep(0.05)
+            assert len(snapshots) > published
+            assert checks == checks_when_armed
+
+        try:
+            loop.run_until_complete(scenario())
+        finally:
+            loop.close()
+
+    await asyncio.to_thread(main)
+
+
+async def test_gauges_stay_unpublished_without_a_meter_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    snapshots: list[dict[str, int]] = []
+    monkeypatch.setattr("zuvloop._base.publish_metrics", snapshots.append)
+    monkeypatch.setattr("zuvloop._base.metrics_provider_installed", lambda: False)
+
+    def main() -> None:
+        loop = zuvloop.new_event_loop()
+        loop.metrics_interval = 0.02
+        try:
+            loop.run_until_complete(asyncio.sleep(0.07))
+        finally:
+            loop.close()
+
+    await asyncio.to_thread(main)
+    assert snapshots == []
+
+
 async def test_gauges_reach_the_exporter(telemetry: Telemetry) -> None:
     def main() -> None:
         loop = zuvloop.new_event_loop()
@@ -309,6 +411,34 @@ async def test_the_sampling_interval_must_be_positive() -> None:
         loop._start_metrics(0, print)
 
 
+async def test_an_infinite_sampling_interval_does_not_overflow() -> None:
+    loop = running_loop()
+    snapshots: list[dict[str, int]] = []
+    loop._start_metrics(float("inf"), snapshots.append)
+    try:
+        await asyncio.sleep(0.01)
+    finally:
+        loop._stop_metrics()
+    assert snapshots == []
+
+
+def test_a_failed_metrics_start_restores_running_loop_state() -> None:
+    loop = zuvloop.new_event_loop()
+    old_hooks = sys.get_asyncgen_hooks()
+    loop.metrics_interval = 0
+    try:
+        with pytest.raises(ValueError, match="must be positive"):
+            loop.run_forever()
+        assert asyncio.events._get_running_loop() is None
+        assert sys.get_asyncgen_hooks() == old_hooks
+
+        loop.metrics_interval = 0.01
+        loop.call_soon(loop.stop)
+        loop.run_forever()
+    finally:
+        loop.close()
+
+
 async def test_a_failing_sampler_callback_is_reported() -> None:
     loop = running_loop()
 
@@ -330,6 +460,17 @@ async def test_metrics_on_a_closed_loop_are_zero() -> None:
     loop = zuvloop.new_event_loop()
     loop.close()
     assert loop._metrics()["loop_count"] == 0
+
+
+async def test_completed_task_recovered_from_a_handle_has_no_call_graph() -> None:
+    task = asyncio.create_task(asyncio.sleep(0))
+    await task
+    callback = MethodType(lambda _task: None, task)
+    handle = running_loop().call_soon(callback)
+    try:
+        assert capture_call_graph(handle) is None
+    finally:
+        handle.cancel()
 
 
 async def test_the_stdlib_call_graph_apis_work_on_this_loop() -> None:

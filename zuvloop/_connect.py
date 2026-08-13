@@ -10,20 +10,27 @@ import stat
 import subprocess
 from asyncio import base_subprocess, sslproto, staggered, trsock
 from asyncio.base_events import _interleave_addrinfos  # type: ignore[attr-defined]  # private, not in typeshed
+from asyncio.streams import StreamReaderProtocol
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 from . import _zuvloop
 from ._process import Popen
+from ._sendfile import SendfileOperations
 from ._server import Server
-from ._sockets import SocketOperations
 
 # What `getaddrinfo` hands back: family, kind, protocol, canonical name, address.
 type _AddrInfo = tuple[int, int, int, str, tuple[str, int] | tuple[str, int, int, int]]
+type _DatagramAddress = tuple[str, int] | str | bytes
 _SSLArg = ssl_module.SSLContext | bool | None
 
 
-class ConnectionOperations(SocketOperations):
+class _BufferedStreamReader(Protocol):
+    _buffer: bytearray
+    _paused: bool
+
+
+class ConnectionOperations(SendfileOperations):
     """Connection and server setup.
 
     Sockets are created and bound here; once connected the descriptor is handed
@@ -471,24 +478,33 @@ class ConnectionOperations(SocketOperations):
         ssl_shutdown_timeout: float | None,
         server: Server | None,
     ) -> tuple[asyncio.Transport, Any]:
-        protocol = protocol_factory()
-        waiter = self.create_future()
-        if ssl:
-            context = _resolve_context(ssl, server_side)
-            driver: asyncio.BaseProtocol = sslproto.SSLProtocol(
-                self,
-                protocol,
-                context,
-                waiter,
-                server_side,
-                server_hostname,
-                ssl_handshake_timeout=ssl_handshake_timeout,  # type: ignore[arg-type]  # typeshed says int
-                ssl_shutdown_timeout=ssl_shutdown_timeout,
-            )
-            transport = self._attach_transport(sock, driver, None, server)
-        else:
-            driver = protocol
-            transport = self._attach_transport(sock, driver, waiter, server)
+        try:
+            protocol = protocol_factory()
+            waiter = self.create_future()
+            if ssl:
+                context = _resolve_context(ssl, server_side)
+                driver: asyncio.BaseProtocol = sslproto.SSLProtocol(
+                    self,
+                    protocol,
+                    context,
+                    waiter,
+                    server_side,
+                    server_hostname,
+                    ssl_handshake_timeout=ssl_handshake_timeout,  # type: ignore[arg-type]  # typeshed says int
+                    ssl_shutdown_timeout=ssl_shutdown_timeout,
+                )
+                transport = self._attach_transport(sock, driver, None, server)
+            else:
+                driver = protocol
+                transport = self._attach_transport(sock, driver, waiter, server)
+        except BaseException:
+            # Before native adoption, accepting the socket makes every setup
+            # failure ours to close. After adoption the socket view is detached.
+            # TLS server accepts have an outer owner that must also detach the
+            # server count; leaving its live descriptor intact tells it to do both.
+            if server is None and sock.fileno() != -1:
+                sock.close()
+            raise
         try:
             await waiter
         except BaseException:
@@ -523,6 +539,12 @@ class ConnectionOperations(SocketOperations):
         )
         stream = cast("asyncio.Transport", transport)
         stream.pause_reading()
+        if server_side and isinstance(protocol, StreamReaderProtocol):
+            stream_reader: _BufferedStreamReader | None = getattr(protocol, "_stream_reader", None)
+            if stream_reader is not None and stream_reader._buffer:  # pragma: no branch - only data needs transfer
+                ssl_protocol._incoming.write(stream_reader._buffer)  # type: ignore[attr-defined]
+                stream_reader._buffer.clear()
+                stream_reader._paused = False
         stream.set_protocol(ssl_protocol)
         self.call_soon(ssl_protocol.connection_made, stream)
         self.call_soon(stream.resume_reading)
@@ -538,8 +560,8 @@ class ConnectionOperations(SocketOperations):
     async def create_datagram_endpoint(  # type: ignore[override]  # typeshed omits reuse_port
         self,
         protocol_factory: Callable[[], asyncio.BaseProtocol],
-        local_addr: tuple[str, int] | str | None = None,
-        remote_addr: tuple[str, int] | str | None = None,
+        local_addr: _DatagramAddress | None = None,
+        remote_addr: _DatagramAddress | None = None,
         *,
         family: int = 0,
         proto: int = 0,
@@ -559,9 +581,9 @@ class ConnectionOperations(SocketOperations):
                 local_addr, remote_addr, family, proto, flags, reuse_port, allow_broadcast
             )
 
-        protocol = protocol_factory()
-        waiter = self.create_future()
         try:
+            protocol = protocol_factory()
+            waiter = self.create_future()
             transport = self._attach_datagram(sock, protocol, connected)
         except BaseException:
             # Until libuv adopts the descriptor, the socket is still ours.
@@ -579,8 +601,8 @@ class ConnectionOperations(SocketOperations):
 
     async def _bind_datagram(
         self,
-        local_addr: tuple[str, int] | str | None,
-        remote_addr: tuple[str, int] | str | None,
+        local_addr: _DatagramAddress | None,
+        remote_addr: _DatagramAddress | None,
         family: int,
         proto: int,
         flags: int,
@@ -615,9 +637,7 @@ class ConnectionOperations(SocketOperations):
             raise
         return sock, resolved_remote is not None
 
-    async def _resolve_datagram(
-        self, address: tuple[str, int] | str | None, family: int, proto: int, flags: int
-    ) -> Any:
+    async def _resolve_datagram(self, address: _DatagramAddress | None, family: int, proto: int, flags: int) -> Any:
         if address is None:
             return None
         if family == socket.AF_UNIX:
@@ -647,7 +667,12 @@ class ConnectionOperations(SocketOperations):
         # and `create_datagram_endpoint(sock=...)` callers go on using it.
         extra["socket"] = trsock.TransportSocket(sock)
         transport = self._make_datagram_transport(fd, sock.family, connected, protocol, extra)
-        transport._adopt_socket_view(sock)
+        try:
+            transport._adopt_socket_view(sock)
+        except BaseException:
+            sock.detach()
+            transport.abort()
+            raise
         return transport
 
     async def subprocess_shell(
@@ -913,7 +938,7 @@ class _SubprocessTransport(base_subprocess.BaseSubprocessTransport):
         assert self._proc is not None
         try:
             self._proc.send_signal(signal_number)
-        except ProcessLookupError:
+        except ProcessLookupError:  # pragma: no cover - pid exit race
             pass
 
     def terminate(self) -> None:

@@ -28,6 +28,32 @@ def test_run_returns_the_coroutine_result() -> None:
     assert zuvloop.run(main()) == "done"
 
 
+def test_self_pipe_drain_stops_watching_at_eof() -> None:
+    loop = zuvloop.new_event_loop()
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            loop.run_forever()
+        except BaseException as exc:  # pragma: no cover - assertion diagnostic
+            errors.append(exc)
+
+    loop._csock.close()
+    loop.call_later(0.02, loop.stop)
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(1)
+    try:
+        assert not thread.is_alive(), "event loop kept polling the self-pipe at EOF"
+        assert errors == []
+        assert loop.remove_reader(loop._ssock.fileno()) is False
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(1)
+        if not loop.is_running():  # pragma: no branch - watchdog failure may leave a daemon spinning
+            loop.close()
+
+
 def test_run_honours_debug_mode() -> None:
     async def main() -> bool:
         return running_loop().get_debug()
@@ -40,6 +66,15 @@ def test_failed_transport_open_does_not_corrupt_the_loop() -> None:
     try:
         with pytest.raises(OSError):
             loop._make_transport(-1, 0, asyncio.Protocol(), None, None, None)
+    finally:
+        loop.close()
+
+
+def test_failed_datagram_open_does_not_reopen_the_closing_handle() -> None:
+    loop = zuvloop.new_event_loop()
+    try:
+        with pytest.raises(OSError):
+            loop._make_datagram_transport(-1, socket.AF_INET, False, asyncio.DatagramProtocol(), {})
     finally:
         loop.close()
 

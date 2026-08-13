@@ -81,6 +81,23 @@ async def test_cancelled_callback_does_not_run() -> None:
     assert seen == []
 
 
+@pytest.mark.parametrize("args", [(1, 2, 3), (1, 2, 3, 4, 5, 6)])
+async def test_callback_can_cancel_its_own_handle_during_vectorcall(args: tuple[int, ...]) -> None:
+    loop = running_loop()
+    handles: list[asyncio.Handle] = []
+    seen: list[tuple[int, ...]] = []
+
+    def callback(*received: int) -> None:
+        handles[0].cancel()
+        seen.append(received)
+
+    handles.append(loop.call_soon(callback, *args))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert seen == [args]
+    assert handles[0].cancelled()
+
+
 async def test_handle_repr_names_the_callback() -> None:
     loop = running_loop()
     handle = loop.call_soon(print)
@@ -104,6 +121,20 @@ async def test_call_later_ordering() -> None:
     loop.call_later(0.02, seen.append, "second")
     await asyncio.sleep(0.08)
     assert seen == ["first", "second", "third"]
+
+
+@pytest.mark.parametrize("delay", [float("inf"), 1e300])
+async def test_oversized_timer_delays_are_effectively_infinite(delay: float) -> None:
+    loop = running_loop()
+    seen: list[str] = []
+    later = loop.call_later(delay, seen.append, "later")
+    absolute = loop.call_at(delay, seen.append, "absolute")
+    try:
+        await asyncio.wait_for(asyncio.sleep(0.01), timeout=float("inf"))
+        assert seen == []
+    finally:
+        later.cancel()
+        absolute.cancel()
 
 
 async def test_loop_time_is_time_monotonic() -> None:

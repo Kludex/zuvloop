@@ -21,7 +21,7 @@ jobs:
         python-version: ["3.14"]
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - uses: mlugg/setup-zig@v2
         with:
@@ -51,10 +51,26 @@ jobs:
           fi
           rm -f zuvloop/_zuvloop.cpucheck-*.so
 
-      - name: Lint
+      - name: Lint and format Python
         run: |
           uv run ruff check
           uv run ruff format --check
+
+      - name: Install ZLint
+        if: runner.os == 'Linux'
+        run: |
+          curl -fsSL \
+            https://github.com/DonIsaac/zlint/releases/download/v0.9.1/zlint-linux-x86_64 \
+            -o /tmp/zlint
+          printf '%s  %s\n' \
+            3290bd511d37e4f6ccca3621b9894cd6c378195cdaac27520d0bd894058b2b9b \
+            /tmp/zlint | sha256sum -c -
+          chmod +x /tmp/zlint
+          echo /tmp >> "$GITHUB_PATH"
+
+      - name: Lint and format Zig
+        if: runner.os == 'Linux'
+        run: ./scripts/check-zig
 
       - name: Type check
         run: uv run mypy
@@ -128,7 +144,7 @@ jobs:
           - aarch64-macos
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - uses: mlugg/setup-zig@v2
         with:
@@ -161,7 +177,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - uses: mlugg/setup-zig@v2
         with:
@@ -214,6 +230,9 @@ jobs:
 
 
   benchmarks:
+    # Pull-request code must never execute in a job that can mint an OIDC token.
+    # Pushes record the trusted benchmark after a change lands.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -223,7 +242,7 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - uses: mlugg/setup-zig@v2
         with:
@@ -247,7 +266,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - uses: astral-sh/setup-uv@v7
         with:
