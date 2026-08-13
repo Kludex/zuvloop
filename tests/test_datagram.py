@@ -250,6 +250,8 @@ async def test_an_existing_socket_can_be_adopted() -> None:
         client.sendto(b"adopted", address)
         assert protocol.done is not None
         assert await asyncio.wait_for(protocol.done, 2) == b"re:adopted"
+        client.close()
+        assert sock.fileno() == -1
     finally:
         client.close()
         server.close()

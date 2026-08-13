@@ -318,7 +318,6 @@ fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     st.gilEnter();
     defer st.gilExit();
 
-    releaseSocketView(self);
     self.flags |= CONN_LOST;
     scheduleCall(self, self.cb_connection_lost, self.conn_lost_exc orelse py.none());
     py.decref(self);
@@ -331,7 +330,11 @@ fn shutdownAndClose(self: *Datagram) void {
         _ = uv.uv_udp_recv_stop(self.udp());
         self.flags &= ~READING;
     }
-    uv.uv_close(uv.asHandle(self.udp()), onClosed);
+    // As with streams, uv_close closes the descriptor before its callback.
+    // Detach the Python socket while the number still names our endpoint.
+    releaseSocketView(self);
+    const handle = uv.asHandle(self.udp());
+    if (uv.uv_is_closing(handle) == 0) uv.uv_close(handle, onClosed);
 }
 
 /// Closes a datagram endpoint discovered while the owning loop shuts down.
@@ -343,7 +346,8 @@ pub fn closeFromLoop(handle: *uv.Handle) void {
         _ = uv.uv_udp_recv_stop(self.udp());
         self.flags &= ~READING;
     }
-    uv.uv_close(handle, onClosed);
+    releaseSocketView(self);
+    if (uv.uv_is_closing(handle) == 0) uv.uv_close(handle, onClosed);
 }
 
 // ---------------------------------------------------------------------------
