@@ -104,13 +104,17 @@ pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!c_
     return @sizeOf(posix.sockaddr.in);
 }
 
-/// Builds the tuple `socket.getsockname()` would return for `sa`.
-pub fn toPython(sa: *const posix.sockaddr) py.Error!*py.Object {
+/// Builds the Python address that corresponds to `sa` and its kernel-reported length.
+pub fn toPython(sa: *const posix.sockaddr, sa_len: c_int) py.Error!*py.Object {
     const family: c_int = sa.family;
     if (family == AF_UNIX) {
+        if (sa_len <= UN_BASE) return py.noneRef();
         const un: *const posix.sockaddr.un = @ptrCast(@alignCast(sa));
-        const len = std.mem.indexOfScalar(u8, &un.path, 0) orelse un.path.len;
-        return py.str(un.path[0..len]) orelse py.Error.Python;
+        if (un.path[0] == 0) {
+            return py.bytes(unixName(sa, sa_len)) orelse py.Error.Python;
+        }
+        const path = unixName(sa, sa_len);
+        return c.PyUnicode_DecodeFSDefaultAndSize(@ptrCast(path.ptr), @intCast(path.len)) orelse py.Error.Python;
     }
     if (family != AF_INET and family != AF_INET6) return py.noneRef();
 

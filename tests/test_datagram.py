@@ -5,6 +5,7 @@ import contextlib
 import os
 import shutil
 import socket
+import sys
 import tempfile
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -17,7 +18,7 @@ from zuvloop import _connect, _zuvloop
 
 pytestmark = pytest.mark.anyio
 
-Address = tuple[str, int] | str
+Address = tuple[str, int] | str | bytes | None
 
 
 @contextlib.contextmanager
@@ -78,9 +79,9 @@ class Collector(asyncio.DatagramProtocol):
             self.lost.set_result(exc)
 
 
-async def start_echo() -> tuple[asyncio.DatagramTransport, Echo, Address]:
+async def start_echo() -> tuple[asyncio.DatagramTransport, Echo, tuple[str, int]]:
     transport, protocol = await running_loop().create_datagram_endpoint(Echo, local_addr=("127.0.0.1", 0))
-    return transport, protocol, transport.get_extra_info("sockname")
+    return transport, protocol, cast("tuple[str, int]", transport.get_extra_info("sockname"))
 
 
 async def test_datagram_round_trip() -> None:
@@ -589,6 +590,42 @@ async def test_unix_datagram_endpoints_round_trip() -> None:
         finally:
             client.close()
             server.close()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="abstract AF_UNIX names are a Linux feature")
+async def test_abstract_unix_datagram_sender_address_is_preserved() -> None:  # pragma: no cover - Linux CI
+    loop = running_loop()
+    suffix = f"{os.getpid()}-{os.urandom(6).hex()}".encode()
+    receiver_name = b"\0zuvloop-receiver-" + suffix + b"\0"
+    sender_name = b"\0zuvloop-sender-" + suffix + b"\0"
+    receiver, protocol = await loop.create_datagram_endpoint(Collector, local_addr=receiver_name, family=socket.AF_UNIX)
+    sender, _sender_protocol = await loop.create_datagram_endpoint(
+        Collector, local_addr=sender_name, family=socket.AF_UNIX
+    )
+    try:
+        sender.sendto(b"abstract", receiver_name)
+        assert protocol.done is not None
+        assert await asyncio.wait_for(protocol.done, 2) == b"abstract"
+        assert protocol.received == [(b"abstract", sender_name)]
+    finally:
+        sender.close()
+        receiver.close()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="abstract AF_UNIX names are a Linux feature")
+async def test_unnamed_unix_datagram_sender_has_no_address() -> None:  # pragma: no cover - Linux CI
+    loop = running_loop()
+    receiver_name = b"\0zuvloop-receiver-" + f"{os.getpid()}-{os.urandom(6).hex()}".encode()
+    receiver, protocol = await loop.create_datagram_endpoint(Collector, local_addr=receiver_name, family=socket.AF_UNIX)
+    sender, _sender_protocol = await loop.create_datagram_endpoint(Collector, family=socket.AF_UNIX)
+    try:
+        sender.sendto(b"unnamed", receiver_name)
+        assert protocol.done is not None
+        assert await asyncio.wait_for(protocol.done, 2) == b"unnamed"
+        assert protocol.received == [(b"unnamed", None)]
+    finally:
+        sender.close()
+        receiver.close()
 
 
 async def test_a_connected_unix_endpoint_accepts_the_path_it_is_connected_to() -> None:

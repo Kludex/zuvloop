@@ -214,7 +214,7 @@ fn onRecv(
         return;
     };
     defer py.decref(data);
-    const sender = addr.toPython(from.?) catch {
+    const sender = addr.toPython(from.?, @intCast(uv.uv_udp_get_recv_addrlen(handle.?))) catch {
         // The datagram cannot be delivered without naming its sender, and a
         // receive failure is what `error_received` exists to report.
         const exc = c.PyErr_GetRaisedException() orelse return;
@@ -259,7 +259,7 @@ fn onSent(req: ?*uv.UdpSend, status: c_int) callconv(.c) void {
     if (self.write_buffer_size == 0 and self.flags & CLOSING != 0) shutdownAndClose(self);
 }
 
-fn queueSend(self: *Datagram, buf: uv.Buf, dest: ?*const std.posix.sockaddr) py.Error!void {
+fn queueSend(self: *Datagram, buf: uv.Buf, dest: ?*const std.posix.sockaddr, dest_len: c_uint) py.Error!void {
     const total = send_req_offset + uv.uv_req_size(.udp_send) + buf.len;
     const raw = alloc.alignedAlloc(u8, .@"16", total) catch return py.errNoMemory();
     const wr: *SendReq = @ptrCast(raw.ptr);
@@ -270,12 +270,13 @@ fn queueSend(self: *Datagram, buf: uv.Buf, dest: ?*const std.posix.sockaddr) py.
 
     const send_buf = uv.Buf{ .base = wr.payload(), .len = buf.len };
     py.incref(self);
-    const status = uv.uv_udp_send(
+    const status = uv.uv_udp_send_with_addrlen(
         wr.req(),
         self.udp(),
         @ptrCast(&send_buf),
         1,
         if (wr.has_dest) wr.dest.ptr() else null,
+        dest_len,
         onSent,
     );
     if (status < 0) {
@@ -378,8 +379,9 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
     const target = if (address) |a| (if (py.isNone(a)) null else address) else null;
     var dest: addr.Storage = .{};
     var dest_ptr: ?*const std.posix.sockaddr = null;
+    var dest_len: c_int = 0;
     if (target) |t| {
-        const dest_len = try addr.fromPython(self.family, t, &dest);
+        dest_len = try addr.fromPython(self.family, t, &dest);
         if (self.flags & CONNECTED != 0) {
             // Naming the peer is allowed, as it is for asyncio; naming anything
             // else is not.
@@ -409,7 +411,7 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
     const buf = uv.Buf{ .base = @ptrCast(view.buf), .len = @intCast(view.len) };
 
     if (self.write_buffer_size == 0) {
-        const sent = uv.uv_udp_try_send(self.udp(), @ptrCast(&buf), 1, dest_ptr);
+        const sent = uv.uv_udp_try_send_with_addrlen(self.udp(), @ptrCast(&buf), 1, dest_ptr, if (dest_ptr == null) 0 else @intCast(dest_len));
         if (sent >= 0) return py.noneRef();
         if (sent != uv.EAGAIN) {
             // asyncio reports a failed datagram to the protocol rather than
@@ -421,7 +423,7 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
             return py.noneRef();
         }
     }
-    try queueSend(self, buf, dest_ptr);
+    try queueSend(self, buf, dest_ptr, if (dest_ptr == null) 0 else @intCast(dest_len));
     return py.noneRef();
 }
 
