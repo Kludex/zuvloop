@@ -6,17 +6,36 @@ import errno
 import os
 import signal
 import socket
+import subprocess
 import sys
 from asyncio.subprocess import Process
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from conftest import running_loop
+from zuvloop._connect import ConnectionOperations
+from zuvloop._process import Popen, ProcessReaper
 
 pytestmark = pytest.mark.anyio
 
 PIPE = asyncio.subprocess.PIPE
+
+
+def test_process_reaper_does_not_discard_a_reused_pid() -> None:
+    reaper = ProcessReaper()
+    old_process = cast("subprocess.Popen[bytes]", object())
+    new_process = cast("subprocess.Popen[bytes]", object())
+    loop = cast("ConnectionOperations", object())
+    wrapper = cast("Popen", object())
+    replacement = (new_process, loop, wrapper)
+    reaper.processes[42] = replacement
+
+    assert reaper._discard_process(42, old_process) is False
+    assert reaper.processes[42] is replacement
+    assert reaper._discard_process(42, new_process) is True
+    assert reaper.processes == {}
 
 
 async def test_a_command_runs_and_reports_its_output() -> None:

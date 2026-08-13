@@ -181,6 +181,14 @@ class ProcessReaper:
                 self.started = True
             self.condition.notify()
 
+    def _discard_process(self, pid: int, process: subprocess.Popen[bytes]) -> bool:
+        with self.condition:
+            current = self.processes.get(pid)
+            if current is None or current[0] is not process:
+                return False
+            del self.processes[pid]
+            return True
+
     def run(self) -> None:
         while True:
             with self.condition:
@@ -194,8 +202,7 @@ class ProcessReaper:
                 if returncode is None:
                     continue
                 completed = True
-                with self.condition:
-                    self.processes.pop(pid, None)
+                self._discard_process(pid, process)
                 try:
                     loop.call_soon_threadsafe(wrapper.exited, returncode)
                 except RuntimeError:  # pragma: no cover - loop closed while child exited
