@@ -26,6 +26,7 @@ _SSLArg = ssl_module.SSLContext | bool | None
 
 class _BufferedStreamReader(Protocol):
     _buffer: bytearray
+    _paused: bool
 
 
 class _BufferedStreamProtocol(Protocol):
@@ -538,6 +539,7 @@ class ConnectionOperations(SendfileOperations):
             if stream_reader is not None and stream_reader._buffer:  # pragma: no branch - only data needs transfer
                 ssl_protocol._incoming.write(stream_reader._buffer)  # type: ignore[attr-defined]
                 stream_reader._buffer.clear()
+                stream_reader._paused = False
         stream.set_protocol(ssl_protocol)
         self.call_soon(ssl_protocol.connection_made, stream)
         self.call_soon(stream.resume_reading)

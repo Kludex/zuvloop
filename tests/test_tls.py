@@ -4,13 +4,18 @@ import asyncio
 import contextlib
 import socket
 import ssl
-from typing import cast
+from typing import Protocol, cast
 
 import pytest
 
 from conftest import collect_contexts, running_loop
 
 pytestmark = pytest.mark.anyio
+
+
+class BufferedStreamReader(Protocol):
+    _buffer: bytearray
+    _paused: bool
 
 
 async def echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -131,9 +136,12 @@ async def test_start_tls_consumes_a_buffered_client_hello(
     async def handle_target(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             assert await reader.readline() == proxy_line
-            buffered = len(cast("bytearray", getattr(reader, "_buffer")))
+            stream_reader = cast("BufferedStreamReader", reader)
+            buffered = len(stream_reader._buffer)
             assert buffered > 0
+            assert stream_reader._paused is True
             await writer.start_tls(server_context)
+            assert stream_reader._paused is False
             payload = await reader.readexactly(6)
             writer.write(payload)
             await writer.drain()
@@ -146,7 +154,7 @@ async def test_start_tls_consumes_a_buffered_client_hello(
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
 
-    target = await asyncio.start_server(handle_target, "127.0.0.1", 0)
+    target = await asyncio.start_server(handle_target, "127.0.0.1", 0, limit=64)
     target_address = target.sockets[0].getsockname()
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
