@@ -227,6 +227,8 @@ async def test_shutdown_does_not_resume_or_report_cancelled_sends(abort: bool) -
                 transport.close()
             receiver.close()
             await asyncio.wait_for(protocol.lost, 2)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
             assert events == ["made", "pause", "lost"]
         finally:
             receiver.close()
