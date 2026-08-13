@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import gc
 import os
 import socket
 import ssl
 import struct
 import tempfile
+from asyncio import constants
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import NoReturn, cast
 
 import pytest
 
@@ -75,6 +78,26 @@ class Collector(asyncio.Protocol):
     def connection_lost(self, exc: BaseException | None) -> None:
         assert self.done is not None
         self.done.set_result(bytes(self.received))
+
+
+class ExhaustedListener:
+    def __init__(self, sock: socket.socket, error: int) -> None:
+        self.sock = sock
+        self.error = error
+        self.accepts = 0
+
+    def listen(self, _backlog: int) -> None:
+        pass
+
+    def fileno(self) -> int:
+        return self.sock.fileno()
+
+    def accept(self) -> NoReturn:
+        self.accepts += 1
+        raise OSError(self.error, os.strerror(self.error))
+
+    def close(self) -> None:
+        self.sock.close()
 
 
 async def start_echo(backlog: int = 100) -> tuple[zuvloop.Server, int, list[Echo]]:
@@ -1245,6 +1268,40 @@ async def test_a_backlog_of_one_accepts_one_connection_per_wakeup() -> None:
         for writer in writers:
             writer.close()
             await writer.wait_closed()
+
+
+@pytest.mark.parametrize("error", [errno.EMFILE, errno.ENFILE, errno.ENOBUFS, errno.ENOMEM])
+async def test_accept_resource_exhaustion_backs_off(
+    error: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = running_loop()
+    listener_sock, notifier = socket.socketpair()
+    listener = ExhaustedListener(listener_sock, error)
+    server = Server(loop, [cast("socket.socket", listener)], Echo, None, 100, None, None)
+    reports: list[tuple[str | None, BaseException | None]] = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(
+        lambda _loop, context: reports.append((context.get("message"), context.get("exception")))
+    )
+    monkeypatch.setattr(constants, "ACCEPT_RETRY_DELAY", 0.02)
+
+    try:
+        await server.start_serving()
+        notifier.send(b"ready")
+        await asyncio.sleep(0.005)
+
+        assert listener.accepts == 1
+        assert reports == [("socket.accept() out of system resource", reports[0][1])]
+        assert isinstance(reports[0][1], OSError)
+        assert reports[0][1].errno == error
+
+        server.close()
+        await asyncio.sleep(0.03)
+        assert listener.accepts == 1
+    finally:
+        server.close()
+        notifier.close()
+        loop.set_exception_handler(previous_handler)
 
 
 async def test_wait_closed_tolerates_a_cancelled_waiter() -> None:
