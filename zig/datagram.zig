@@ -509,15 +509,28 @@ fn setWriteBufferLimits(
     const self = asDatagram(self_obj);
     var high_value: usize = default_high_water;
     if (high) |h| {
-        if (!py.isNone(h)) high_value = @intCast(try py.asIsize(h));
+        if (!py.isNone(h)) {
+            const parsed = try py.asIsize(h);
+            if (parsed < 0) return py.errValue("high water mark must be non-negative");
+            high_value = @intCast(parsed);
+        }
     }
     var low_value: usize = high_value / 4;
     if (low) |l| {
-        if (!py.isNone(l)) low_value = @intCast(try py.asIsize(l));
+        if (!py.isNone(l)) {
+            const parsed = try py.asIsize(l);
+            if (parsed < 0) return py.errValue("low water mark must be non-negative");
+            low_value = @intCast(parsed);
+        }
     }
     if (high == null or py.isNone(high.?)) {
         if (low) |l| {
-            if (!py.isNone(l)) high_value = low_value * 4;
+            if (!py.isNone(l)) {
+                if (low_value > std.math.maxInt(c.Py_ssize_t) / 4) {
+                    return py.errOverflow("high water mark is too large");
+                }
+                high_value = low_value * 4;
+            }
         }
     }
     if (low_value > high_value) return py.errValue("high water mark must be >= low water mark");
