@@ -30,7 +30,7 @@ class _BufferedStreamReader(Protocol):
 
 class _BufferedStreamProtocol(Protocol):
     @property
-    def _stream_reader(self) -> _BufferedStreamReader | None: ...
+    def _stream_reader(self) -> _BufferedStreamReader | None: ...  # pragma: no cover - typing-only protocol
 
 
 class ConnectionOperations(SendfileOperations):
@@ -535,7 +535,7 @@ class ConnectionOperations(SendfileOperations):
         stream.pause_reading()
         if server_side and isinstance(protocol, StreamReaderProtocol):
             stream_reader = cast("_BufferedStreamProtocol", protocol)._stream_reader
-            if stream_reader is not None and stream_reader._buffer:
+            if stream_reader is not None and stream_reader._buffer:  # pragma: no branch - only data needs transfer
                 ssl_protocol._incoming.write(stream_reader._buffer)  # type: ignore[attr-defined]
                 stream_reader._buffer.clear()
         stream.set_protocol(ssl_protocol)

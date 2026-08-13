@@ -138,7 +138,7 @@ async def test_start_tls_consumes_a_buffered_client_hello(
             writer.write(payload)
             await writer.drain()
             target_done.set_result(buffered)
-        except BaseException as exc:
+        except BaseException as exc:  # pragma: no cover - assertion diagnostic
             if not target_done.done():
                 target_done.set_exception(exc)
         finally:
@@ -166,7 +166,7 @@ async def test_start_tls_consumes_a_buffered_client_hello(
             await loop.sock_connect(remote, target_address)
             client_hello = bytearray()
             while len(client_hello) < 5:
-                client_hello += await loop.sock_recv(client, 65_536)
+                client_hello += await loop.sock_recv(client, 5 - len(client_hello))
             record_size = 5 + int.from_bytes(client_hello[3:5])
             while len(client_hello) < record_size:
                 client_hello += await loop.sock_recv(client, 65_536)
@@ -194,14 +194,14 @@ async def test_start_tls_consumes_a_buffered_client_hello(
         assert await asyncio.wait_for(reader.readexactly(6), 5) == b"secure"
         assert await asyncio.wait_for(target_done, 5) > 0
     finally:
-        if writer is not None:
+        if writer is not None:  # pragma: no branch - open failure is cleanup-only
             writer.close()
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
         listener.close()
         target.close()
         await target.wait_closed()
-        if not proxy_task.done():
+        if not proxy_task.done():  # pragma: no branch - completion timing is platform-dependent
             proxy_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await proxy_task
