@@ -36,7 +36,9 @@ const Request = struct {
     prev: ?*Request = null,
     next: ?*Request = null,
     hints: std.c.addrinfo = std.mem.zeroes(std.c.addrinfo),
+    // SAFETY: request construction fills this array before libuv receives it.
     host: [max_host]u8 = undefined,
+    // SAFETY: request construction fills this array before libuv receives it.
     service: [32]u8 = undefined,
 
     inline fn addrReq(self: *Request) *uv.GetAddrInfo {
@@ -117,6 +119,7 @@ pub fn traverse(st: *loopmod.State, visitproc: c.visitproc, arg: ?*anyopaque) c_
 fn copyZ(dst: []u8, value: *py.Object, what: [:0]const u8) py.Error!?[*:0]const u8 {
     if (py.isNone(value)) return null;
     var len: c.Py_ssize_t = 0;
+    // SAFETY: each accepted Python type assigns src, and every other type returns.
     var src: [*c]const u8 = undefined;
     if (c.PyUnicode_Check(value) != 0) {
         src = c.PyUnicode_AsUTF8AndSize(value, &len) orelse return py.Error.Python;
@@ -255,7 +258,7 @@ fn buildResults(res: ?*std.c.addrinfo) py.Error!*py.Object {
             cachedEnum(&kind_cache, socket_kind, ai.socktype),
             c.PyLong_FromLong(ai.protocol),
             if (ai.canonname) |cn| py.strZ(cn) else py.str(""),
-            addr.toPython(sa) catch null,
+            addr.toPython(sa, @intCast(ai.addrlen)) catch null,
         };
         for (fields, 0..) |field, i| {
             if (field == null) {
@@ -368,6 +371,8 @@ fn resolveLiteral(hints: *const std.c.addrinfo, host: ?[*:0]const u8, service: ?
         port = std.fmt.parseInt(u16, text, 10) catch return null;
     }
 
+    // SAFETY: inet_pton initializes the address and the successful branch fills
+    // the remaining sockaddr fields before storage is read.
     var storage: addr.Storage = undefined;
     const family = hints.family;
     if (family == std.c.AF.INET or family == std.c.AF.UNSPEC) {

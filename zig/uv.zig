@@ -289,8 +289,11 @@ pub extern fn uv_udp_bind(handle: *Udp, addr: *const std.posix.sockaddr, flags: 
 pub extern fn uv_udp_connect(handle: *Udp, addr: ?*const std.posix.sockaddr) c_int;
 pub extern fn uv_udp_getsockname(handle: *const Udp, name: *std.posix.sockaddr, namelen: *c_int) c_int;
 pub extern fn uv_udp_getpeername(handle: *const Udp, name: *std.posix.sockaddr, namelen: *c_int) c_int;
+pub extern fn uv_udp_get_recv_addrlen(handle: *const Udp) usize;
 pub extern fn uv_udp_send(req: *UdpSend, handle: *Udp, bufs: [*]const Buf, nbufs: c_uint, addr: ?*const std.posix.sockaddr, cb: UdpSendCb) c_int;
+pub extern fn uv_udp_send_with_addrlen(req: *UdpSend, handle: *Udp, bufs: [*]const Buf, nbufs: c_uint, addr: ?*const std.posix.sockaddr, addrlen: c_uint, cb: UdpSendCb) c_int;
 pub extern fn uv_udp_try_send(handle: *Udp, bufs: [*]const Buf, nbufs: c_uint, addr: ?*const std.posix.sockaddr) c_int;
+pub extern fn uv_udp_try_send_with_addrlen(handle: *Udp, bufs: [*]const Buf, nbufs: c_uint, addr: ?*const std.posix.sockaddr, addrlen: c_uint) c_int;
 pub extern fn uv_udp_recv_start(handle: *Udp, alloc_cb: AllocCb, recv_cb: UdpRecvCb) c_int;
 pub extern fn uv_udp_recv_stop(handle: *Udp) c_int;
 pub extern fn uv_udp_set_broadcast(handle: *Udp, on: c_int) c_int;

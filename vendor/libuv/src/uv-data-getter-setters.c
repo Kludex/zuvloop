@@ -86,6 +86,10 @@ size_t uv_udp_get_send_queue_count(const uv_udp_t* handle) {
   return handle->send_queue_count;
 }
 
+size_t uv_udp_get_recv_addrlen(const uv_udp_t* handle) {
+  return handle->recv_addrlen;
+}
+
 uv_pid_t uv_process_get_pid(const uv_process_t* proc) {
   return proc->pid;
 }

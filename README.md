@@ -98,9 +98,11 @@ That's it. That's the migration. 🎉
 ## Observability
 
 zuvloop emits plain OpenTelemetry. The only runtime dependency is `opentelemetry-api` — not the
-SDK, nothing vendor-specific. Configure providers before starting the loop; zuvloop checks for them
-at each `run_forever()` entry. Until then the instruments are no-ops and slow-callback timing stays
-off.
+SDK, nothing vendor-specific. Providers can be configured before the loop starts or from inside
+it — `logfire.configure()` in `main()` works: zuvloop checks at each `run_forever()` entry and
+re-checks on its sampling interval (`loop.metrics_interval`, 10 seconds by default) while the
+loop runs. Until a provider is installed the instruments are no-ops and slow-callback timing
+stays off.
 
 Anything that speaks OpenTelemetry can collect it. For example, with
 <a href="https://logfire.pydantic.dev" target="_blank">Logfire</a>:
@@ -120,8 +122,8 @@ zuvloop.run(main())
 
 That's all — there is no zuvloop-specific setup. Spans and counters are emitted
 as events happen, and the loop gauges are sampled automatically while the loop
-runs (only when a real provider is installed, so an uninstrumented program never
-pays for sampling).
+runs (published only once a real provider is installed; without one the
+snapshot is dropped).
 
 You get:
 
@@ -169,7 +171,7 @@ zuvloop keeps its timer heap in native code and reads the clock directly, so mon
 returns and nothing else. A loop that needs a controllable clock should schedule against one
 explicitly.
 
-Also not implemented: `sendfile()` and `sock_sendfile()` raise `NotImplementedError`. Handles
+One more deliberate divergence: handles
 returned by `call_soon` implement the `asyncio.Handle` interface but are not instances of it:
 the base class is 56 bytes of storage such a handle never writes, measured at 2% of `call_soon`,
 which is the object the loop allocates more often than any other. `call_later` and `call_at`
@@ -185,6 +187,8 @@ $ uv pip install -e . --group dev
 $ uv run pytest
 $ uv run mypy
 $ uv run ruff check
+$ uv run ruff format --check
+$ ./scripts/check-zig  # requires ZLint 0.9.1 on PATH
 $ uv run --group bench python benchmarks/run.py
 ```
 
@@ -195,7 +199,7 @@ $ python scripts/build.py
 ```
 
 `vendor/libuv` is an unmodified upstream release tarball; see `vendor/README.md`. Update it with
-`./vendor/update-libuv.sh <version>`.
+`./vendor/update-libuv.sh <version> <sha256>`.
 
 ## License
 

@@ -3,7 +3,7 @@ name: Publish
 on:
   push:
     branches: ["main"]
-    tags: ["*"]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions: {}
@@ -28,9 +28,13 @@ jobs:
           - os: macos-latest
             archs: "x86_64 arm64"
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # hatch-vcs reads the version off the tags, and the default shallow
+          # checkout fetches none of them: the build would stamp the fallback
+          # onto a wheel rather than fail, so this has to be the full history.
+          fetch-depth: 0
 
       # cibuildwheel's build[uv] frontend needs uv on PATH; the manylinux
       # containers ship it, the macOS runners do not.
@@ -46,7 +50,7 @@ jobs:
         env:
           CIBW_ARCHS: "${{ matrix.archs }}"
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: "wheels-${{ matrix.os }}"
           path: wheelhouse/*.whl
@@ -58,9 +62,13 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # hatch-vcs reads the version off the tags, and the default shallow
+          # checkout fetches none of them: the build would stamp the fallback
+          # onto a wheel rather than fail, so this has to be the full history.
+          fetch-depth: 0
 
       - uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867 # v7.1.6
         with:
@@ -81,7 +89,7 @@ jobs:
           # From outside the repo, so the source tree cannot shadow the install.
           cd /tmp && /tmp/check/bin/python -c "import zuvloop; print(zuvloop.libuv_version())"
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sdist
           path: dist/*.tar.gz
@@ -101,7 +109,7 @@ jobs:
 
     steps:
       - name: Download all distributions
-        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
           pattern: "{wheels-*,sdist}"

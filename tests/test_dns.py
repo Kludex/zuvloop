@@ -175,6 +175,8 @@ async def test_getnameinfo_rejects_a_malformed_address() -> None:
         await loop.getnameinfo(("127.0.0.1",))
     with pytest.raises(socket.gaierror):
         await loop.getnameinfo(("not an address", 80))
+    with pytest.raises(ValueError, match="embedded null character"):
+        await loop.getnameinfo(("127.0.0.1\0hidden", 80))
 
 
 @pytest.mark.parametrize("host", ["localhost", "example.com", "not a host"])

@@ -214,7 +214,7 @@ fn onRecv(
         return;
     };
     defer py.decref(data);
-    const sender = addr.toPython(from.?) catch {
+    const sender = addr.toPython(from.?, @intCast(uv.uv_udp_get_recv_addrlen(handle.?))) catch {
         // The datagram cannot be delivered without naming its sender, and a
         // receive failure is what `error_received` exists to report.
         const exc = c.PyErr_GetRaisedException() orelse return;
@@ -249,7 +249,7 @@ fn onSent(req: ?*uv.UdpSend, status: c_int) callconv(.c) void {
 
     // A failed datagram is reported to the protocol, never raised: asyncio
     // treats the endpoint as still usable.
-    if (status < 0 and self.flags & CONN_LOST == 0) {
+    if (status < 0 and self.flags & (CLOSING | CONN_LOST) == 0) {
         if (takeUvError(status)) |exc| {
             defer py.decref(exc);
             callProtocol(self, self.cb_error_received, exc);
@@ -259,7 +259,7 @@ fn onSent(req: ?*uv.UdpSend, status: c_int) callconv(.c) void {
     if (self.write_buffer_size == 0 and self.flags & CLOSING != 0) shutdownAndClose(self);
 }
 
-fn queueSend(self: *Datagram, buf: uv.Buf, dest: ?*const std.posix.sockaddr) py.Error!void {
+fn queueSend(self: *Datagram, buf: uv.Buf, dest: ?*const std.posix.sockaddr, dest_len: c_uint) py.Error!void {
     const total = send_req_offset + uv.uv_req_size(.udp_send) + buf.len;
     const raw = alloc.alignedAlloc(u8, .@"16", total) catch return py.errNoMemory();
     const wr: *SendReq = @ptrCast(raw.ptr);
@@ -270,12 +270,13 @@ fn queueSend(self: *Datagram, buf: uv.Buf, dest: ?*const std.posix.sockaddr) py.
 
     const send_buf = uv.Buf{ .base = wr.payload(), .len = buf.len };
     py.incref(self);
-    const status = uv.uv_udp_send(
+    const status = uv.uv_udp_send_with_addrlen(
         wr.req(),
         self.udp(),
         @ptrCast(&send_buf),
         1,
         if (wr.has_dest) wr.dest.ptr() else null,
+        dest_len,
         onSent,
     );
     if (status < 0) {
@@ -295,6 +296,7 @@ fn maybePauseProtocol(self: *Datagram) void {
 }
 
 fn maybeResumeProtocol(self: *Datagram) void {
+    if (self.flags & (CLOSING | CONN_LOST) != 0) return;
     if (self.flags & PROTOCOL_PAUSED == 0) return;
     if (self.write_buffer_size > self.low_water) return;
     self.flags &= ~PROTOCOL_PAUSED;
@@ -318,7 +320,6 @@ fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     st.gilEnter();
     defer st.gilExit();
 
-    releaseSocketView(self);
     self.flags |= CONN_LOST;
     scheduleCall(self, self.cb_connection_lost, self.conn_lost_exc orelse py.none());
     py.decref(self);
@@ -331,7 +332,11 @@ fn shutdownAndClose(self: *Datagram) void {
         _ = uv.uv_udp_recv_stop(self.udp());
         self.flags &= ~READING;
     }
-    uv.uv_close(uv.asHandle(self.udp()), onClosed);
+    // As with streams, uv_close closes the descriptor before its callback.
+    // Detach the Python socket while the number still names our endpoint.
+    releaseSocketView(self);
+    const handle = uv.asHandle(self.udp());
+    if (uv.uv_is_closing(handle) == 0) uv.uv_close(handle, onClosed);
 }
 
 /// Closes a datagram endpoint discovered while the owning loop shuts down.
@@ -343,7 +348,8 @@ pub fn closeFromLoop(handle: *uv.Handle) void {
         _ = uv.uv_udp_recv_stop(self.udp());
         self.flags &= ~READING;
     }
-    uv.uv_close(handle, onClosed);
+    releaseSocketView(self);
+    if (uv.uv_is_closing(handle) == 0) uv.uv_close(handle, onClosed);
 }
 
 // ---------------------------------------------------------------------------
@@ -373,8 +379,9 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
     const target = if (address) |a| (if (py.isNone(a)) null else address) else null;
     var dest: addr.Storage = .{};
     var dest_ptr: ?*const std.posix.sockaddr = null;
+    var dest_len: c_int = 0;
     if (target) |t| {
-        const dest_len = try addr.fromPython(self.family, t, &dest);
+        dest_len = try addr.fromPython(self.family, t, &dest);
         if (self.flags & CONNECTED != 0) {
             // Naming the peer is allowed, as it is for asyncio; naming anything
             // else is not.
@@ -392,6 +399,7 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
         return py.errValue("sendto() requires an address on an unconnected transport");
     }
 
+    // SAFETY: PyObject_GetBuffer initializes view or returns an error.
     var view: c.Py_buffer = undefined;
     if (c.PyObject_GetBuffer(args[0].?, &view, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
     defer c.PyBuffer_Release(&view);
@@ -403,7 +411,7 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
     const buf = uv.Buf{ .base = @ptrCast(view.buf), .len = @intCast(view.len) };
 
     if (self.write_buffer_size == 0) {
-        const sent = uv.uv_udp_try_send(self.udp(), @ptrCast(&buf), 1, dest_ptr);
+        const sent = uv.uv_udp_try_send_with_addrlen(self.udp(), @ptrCast(&buf), 1, dest_ptr, if (dest_ptr == null) 0 else @intCast(dest_len));
         if (sent >= 0) return py.noneRef();
         if (sent != uv.EAGAIN) {
             // asyncio reports a failed datagram to the protocol rather than
@@ -415,7 +423,7 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
             return py.noneRef();
         }
     }
-    try queueSend(self, buf, dest_ptr);
+    try queueSend(self, buf, dest_ptr, if (dest_ptr == null) 0 else @intCast(dest_len));
     return py.noneRef();
 }
 
@@ -501,15 +509,28 @@ fn setWriteBufferLimits(
     const self = asDatagram(self_obj);
     var high_value: usize = default_high_water;
     if (high) |h| {
-        if (!py.isNone(h)) high_value = @intCast(try py.asIsize(h));
+        if (!py.isNone(h)) {
+            const parsed = try py.asIsize(h);
+            if (parsed < 0) return py.errValue("high water mark must be non-negative");
+            high_value = @intCast(parsed);
+        }
     }
     var low_value: usize = high_value / 4;
     if (low) |l| {
-        if (!py.isNone(l)) low_value = @intCast(try py.asIsize(l));
+        if (!py.isNone(l)) {
+            const parsed = try py.asIsize(l);
+            if (parsed < 0) return py.errValue("low water mark must be non-negative");
+            low_value = @intCast(parsed);
+        }
     }
     if (high == null or py.isNone(high.?)) {
         if (low) |l| {
-            if (!py.isNone(l)) high_value = low_value * 4;
+            if (!py.isNone(l)) {
+                if (low_value > std.math.maxInt(c.Py_ssize_t) / 4) {
+                    return py.errOverflow("high water mark is too large");
+                }
+                high_value = low_value * 4;
+            }
         }
     }
     if (low_value > high_value) return py.errValue("high water mark must be >= low water mark");
@@ -596,12 +617,13 @@ pub fn makeDatagram(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*p
     self.flags |= OPEN;
     uv.setData(self.udp(), self);
 
-    if (uv.uv_udp_open(self.udp(), fd) < 0) {
+    const status = uv.uv_udp_open(self.udp(), fd);
+    if (status < 0) {
         // libuv never took the descriptor, so the caller still owns it.
         self.flags &= ~OPEN;
         py.incref(obj);
         uv.uv_close(uv.asHandle(self.udp()), onOpenFailed);
-        return py.errUv(uv.uv_udp_open(self.udp(), fd));
+        return py.errUv(status);
     }
 
     py.incref(obj);
@@ -704,11 +726,11 @@ var methods = [_]c.PyMethodDef{
 };
 
 var slots = [_]c.PyType_Slot{
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @constCast(@ptrCast(&dealloc)) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @constCast(@ptrCast(&traverse)) },
-    .{ .slot = c.Py_tp_clear, .pfunc = @constCast(@ptrCast(&clear_)) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
+    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&clear_)) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
-    .{ .slot = c.Py_tp_doc, .pfunc = @constCast(@ptrCast("A libuv-backed datagram transport.")) },
+    .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("A libuv-backed datagram transport.")) },
     .{ .slot = 0, .pfunc = null },
 };
 

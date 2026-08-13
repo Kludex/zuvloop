@@ -17,6 +17,7 @@ const inline_args = 3;
 const arg_alloc = std.heap.c_allocator;
 
 pub const CANCELLED: u32 = 1 << 0;
+const RUNNING: u32 = 1 << 1;
 
 pub const Handle = extern struct {
     ob_base: c.PyObject,
@@ -86,6 +87,14 @@ pub fn create(
 pub fn run(self: *Handle) void {
     if (self.isCancelled()) return;
     const callback = self.callback orelse return;
+    self.flags |= RUNNING;
+    defer {
+        self.flags &= ~RUNNING;
+        if (self.isCancelled()) {
+            clearArgs(self);
+            py.clear(&self.callback);
+        }
+    }
     invoke(@ptrCast(self), self.loop, callback, self.argv(), self.nargs, self.context.?);
 }
 
@@ -168,8 +177,12 @@ fn cancel(self_obj: *py.Object) py.Error!*py.Object {
     const self: *Handle = @ptrCast(@alignCast(self_obj));
     if (!self.isCancelled()) {
         self.flags |= CANCELLED;
-        clearArgs(self);
-        py.clear(&self.callback);
+        // Vectorcall borrows these references. A callback may cancel its own
+        // handle, so release them when run() regains control instead.
+        if (self.flags & RUNNING == 0) {
+            clearArgs(self);
+            py.clear(&self.callback);
+        }
     }
     return py.noneRef();
 }
@@ -178,7 +191,6 @@ fn cancelled(self_obj: *py.Object) py.Error!*py.Object {
     const self: *Handle = @ptrCast(@alignCast(self_obj));
     return py.boolRef(self.isCancelled());
 }
-
 
 fn getCallback(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
     const self: *Handle = @ptrCast(@alignCast(self_obj.?));
@@ -242,7 +254,6 @@ var handle_spec = c.PyType_Spec{
     .flags = flags,
     .slots = &handle_slots,
 };
-
 
 pub fn register(module: *py.Object) py.Error!void {
     handle_type = @ptrCast(c.PyType_FromModuleAndSpec(module, &handle_spec, null) orelse return py.Error.Python);
