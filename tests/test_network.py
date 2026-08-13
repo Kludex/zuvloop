@@ -9,7 +9,7 @@ import ssl
 import struct
 import tempfile
 from asyncio import constants
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import NoReturn, cast
 
@@ -1289,13 +1289,92 @@ async def test_accept_resource_exhaustion_backs_off(error: int, monkeypatch: pyt
         await asyncio.sleep(0.005)
 
         assert listener.accepts == 1
-        assert reports == [("socket.accept() out of system resource", reports[0][1])]
-        assert isinstance(reports[0][1], OSError)
-        assert reports[0][1].errno == error
+        assert len(reports) == 1
+        message, reported_error = reports[0]
+        assert message == "socket.accept() out of system resource"
+        assert isinstance(reported_error, OSError)
+        assert reported_error.errno == error
+
+        await asyncio.sleep(0.03)
+        assert listener.accepts >= 2
 
         server.close()
+        accepts_after_close = listener.accepts
         await asyncio.sleep(0.03)
+        assert listener.accepts == accepts_after_close
+    finally:
+        server.close()
+        notifier.close()
+        loop.set_exception_handler(previous_handler)
+
+
+async def test_accept_other_oserror_is_reported() -> None:
+    loop = running_loop()
+    listener_sock, notifier = socket.socketpair()
+    listener = ExhaustedListener(listener_sock, errno.EINVAL)
+    server = Server(loop, [cast("socket.socket", listener)], Echo, None, 100, None, None)
+    reports: list[tuple[str | None, BaseException | None]] = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(
+        lambda _loop, context: reports.append((context.get("message"), context.get("exception")))
+    )
+
+    try:
+        loop.call_soon(server._accept, cast("socket.socket", listener))
+        await asyncio.sleep(0)
+
         assert listener.accepts == 1
+        assert len(reports) == 1
+        message, reported_error = reports[0]
+        assert message == "Error accepting a connection"
+        assert isinstance(reported_error, OSError)
+        assert reported_error.errno == errno.EINVAL
+    finally:
+        server.close()
+        notifier.close()
+        loop.set_exception_handler(previous_handler)
+
+
+async def test_retry_accept_ignores_a_closed_listener() -> None:
+    loop = running_loop()
+    listener_sock, notifier = socket.socketpair()
+    listener = ExhaustedListener(listener_sock, errno.EMFILE)
+    server = Server(loop, [cast("socket.socket", listener)], Echo, None, 100, None, None)
+
+    try:
+        server._start_serving()
+        loop.remove_reader(listener.fileno())
+        listener.close()
+        server._retry_accept(cast("socket.socket", listener))
+        await asyncio.sleep(0)
+    finally:
+        server.close()
+        notifier.close()
+
+
+async def test_accept_resource_handler_can_close_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    loop = running_loop()
+    listener_sock, notifier = socket.socketpair()
+    listener = ExhaustedListener(listener_sock, errno.EMFILE)
+    server = Server(loop, [cast("socket.socket", listener)], Echo, None, 100, None, None)
+    reports: list[str | None] = []
+    previous_handler = loop.get_exception_handler()
+
+    def close_server(_loop: asyncio.AbstractEventLoop, context: Mapping[str, object]) -> None:
+        message = context.get("message")
+        reports.append(message if isinstance(message, str) else None)
+        server.close()
+
+    loop.set_exception_handler(close_server)
+    monkeypatch.setattr(constants, "ACCEPT_RETRY_DELAY", 0.01)
+
+    try:
+        await server.start_serving()
+        notifier.send(b"ready")
+        await asyncio.sleep(0.02)
+
+        assert reports == ["socket.accept() out of system resource"]
+        assert not server.is_serving()
     finally:
         server.close()
         notifier.close()
