@@ -1410,7 +1410,7 @@ async def test_an_ssl_handshake_timeout_without_ssl_is_rejected() -> None:
             await loop.connect_accepted_socket(Echo, left, ssl_handshake_timeout=5.0)
     finally:
         left.close()
-    right.close()
+        right.close()
 
 
 async def test_a_failed_protocol_factory_closes_an_accepted_socket() -> None:

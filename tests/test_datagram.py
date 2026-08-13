@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import shutil
 import socket
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import NoReturn, cast
 
@@ -419,6 +420,56 @@ async def test_a_transport_that_fails_to_adopt_releases_the_socket(monkeypatch: 
     monkeypatch.setattr(type(running_loop()), "_make_datagram_transport", refuse)
     with pytest.raises(RuntimeError, match="refused"):
         await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
+
+
+async def test_a_transport_that_fails_to_adopt_its_socket_view_is_aborted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_socket = socket.socket
+    created: list[socket.socket] = []
+
+    class RefusingTransport:
+        def __init__(self, fd: int) -> None:
+            self.fd = fd
+            self.aborted = False
+
+        def _adopt_socket_view(self, _sock: socket.socket) -> NoReturn:
+            raise RuntimeError("adoption failed")
+
+        def abort(self) -> None:
+            os.close(self.fd)
+            self.aborted = True
+
+    refusing: RefusingTransport | None = None
+
+    def track(family: int = -1, type: int = -1, proto: int = -1, fileno: int | None = None) -> socket.socket:
+        sock = real_socket(family, type, proto) if fileno is None else real_socket(family, type, proto, fileno)
+        created.append(sock)
+        return sock
+
+    def make_refusing_transport(
+        _loop: asyncio.AbstractEventLoop,
+        fd: int,
+        _family: int,
+        _connected: bool,
+        _protocol: asyncio.BaseProtocol,
+        _extra: Mapping[str, object],
+    ) -> _zuvloop.DatagramTransport:
+        nonlocal refusing
+        refusing = RefusingTransport(fd)
+        return cast("_zuvloop.DatagramTransport", refusing)
+
+    monkeypatch.setattr(socket, "socket", track)
+    monkeypatch.setattr(type(running_loop()), "_make_datagram_transport", make_refusing_transport)
+    with pytest.raises(RuntimeError, match="adoption failed"):
+        await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
+
+    assert len(created) == 1
+    assert created[0].fileno() == -1
+    assert refusing is not None
+    assert refusing.aborted
+    with pytest.raises(OSError, match="Bad file descriptor"):
+        os.fstat(refusing.fd)
 
 
 async def test_an_empty_resolution_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
