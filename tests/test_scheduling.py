@@ -262,6 +262,48 @@ async def test_call_soon_threadsafe_returns_the_stdlib_threadsafe_handle() -> No
     handle.cancel()
 
 
+def test_threadsafe_flood_yields_to_a_due_timer() -> None:
+    loop = zuvloop.new_event_loop()
+    queued = threading.Event()
+    stop_producer = threading.Event()
+    producer_started: list[bool] = []
+    callbacks_run = 0
+    total = 10_000
+
+    def callback() -> None:
+        nonlocal callbacks_run
+        callbacks_run += 1
+
+    def produce() -> None:
+        for index in range(total):
+            if stop_producer.is_set():
+                break
+            loop.call_soon_threadsafe(callback)
+            if index == 2_047:
+                queued.set()
+
+    thread = threading.Thread(target=produce)
+
+    def prime() -> None:
+        try:
+            thread.start()
+            producer_started.append(queued.wait(5))
+        finally:
+            loop.call_later(0, stop_producer.set)
+            loop.call_later(0, loop.stop)
+
+    try:
+        loop.call_soon(prime)
+        loop.run_forever()
+        thread.join()
+    finally:
+        stop_producer.set()
+        loop.close()
+
+    assert producer_started == [True]
+    assert callbacks_run < 2_048
+
+
 def test_threadsafe_cancel_from_another_thread_waits_for_the_running_callback() -> None:
     loop = zuvloop.new_event_loop()
     started = threading.Event()

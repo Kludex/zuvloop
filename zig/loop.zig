@@ -24,6 +24,12 @@ const alloc = std.heap.c_allocator;
 
 /// Timers below this many cancelled entries are never compacted.
 const min_cancelled_timers = 100;
+/// Foreign producers can fill the inbound queue freely, but only this many
+/// callbacks join the runnable queue per libuv turn so timers and I/O get a turn.
+const max_incoming_batch = 1024;
+/// Beyond this, foreign schedulers yield instead of growing memory without
+/// bound. Four batches leave room for bursts without delaying the common path.
+const max_incoming_backlog = 4 * max_incoming_batch;
 
 pub const State = struct {
     uvloop: *uv.Loop,
@@ -35,6 +41,7 @@ pub const State = struct {
     block: []u8,
 
     ready: collections.Ready = .empty,
+    incoming: collections.Ready = .empty,
     timers: collections.Timers = .empty,
     pollers: pollermod.Map = .empty,
     scratch: ?[*]u8 = null,
@@ -158,6 +165,15 @@ fn onWake(waker: ?*uv.Async) callconv(.c) void {
     const st = self.state();
     st.gilEnter();
     defer st.gilExit();
+    const count = @min(st.incoming.len, max_incoming_batch);
+    st.ready.ensureUnusedCapacity(count) catch {
+        _ = c.PyErr_NoMemory();
+        py.writeUnraisable(@ptrCast(self));
+        _ = uv.uv_async_send(st.waker);
+        return;
+    };
+    for (0..count) |_| st.ready.pushAssumeCapacity(st.incoming.pop().?);
+    if (st.incoming.len != 0) _ = uv.uv_async_send(st.waker);
     startIdle(st);
 }
 
@@ -449,12 +465,17 @@ fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py
     try checkClosed(st);
     const h = try handlemod.create(handlemod.handle_type.?, @ptrCast(self), callback, p.positional, p.context);
     py.incref(h);
-    st.ready.push(@as(*py.Object, @ptrCast(h))) catch {
+    const queue = if (st.incoming.len == 0) &st.ready else &st.incoming;
+    queue.push(@as(*py.Object, @ptrCast(h))) catch {
         py.decref(h);
         py.decref(h);
         return py.errNoMemory();
     };
-    startIdle(st);
+    if (queue == &st.ready) {
+        startIdle(st);
+    } else {
+        _ = uv.uv_async_send(st.waker);
+    }
     return @ptrCast(h);
 }
 
@@ -473,12 +494,19 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
     const st = self.state();
     try checkClosed(st);
     const p = try parseCall(args, nargs, kwnames, 1);
+    while (st.running and st.thread_id != c.PyThread_get_thread_ident() and st.incoming.len >= max_incoming_backlog) {
+        const tstate = c.PyEval_SaveThread();
+        std.Thread.yield() catch {};
+        c.PyEval_RestoreThread(tstate);
+        try checkClosed(st);
+    }
     const h = try tshandle.create(self_obj, args[0].?, p.positional, p.context);
     py.incref(h);
-    // One FIFO for both schedulers, so a `call_soon` issued after a
-    // `call_soon_threadsafe` still runs after it. The caller holds the GIL and the
-    // loop touches `ready` only while holding it, so the push is atomic against it.
-    st.ready.push(h) catch {
+    // While running, foreign producers land in a separate FIFO. A local
+    // scheduler that arrives behind that backlog joins its tail, preserving
+    // ordering without handing the complete flood to one ready-queue turn.
+    const queue = if (st.running or st.incoming.len != 0) &st.incoming else &st.ready;
+    queue.push(h) catch {
         py.decref(h);
         py.decref(h);
         return py.errNoMemory();
@@ -619,7 +647,7 @@ fn buildMetrics(st: *State) ?*py.Object {
         "callbacks_run",
         st.callbacks_run,
         "ready",
-        @as(c.Py_ssize_t, @intCast(st.ready.len)),
+        @as(c.Py_ssize_t, @intCast(st.ready.len + st.incoming.len)),
         "timers",
         @as(c.Py_ssize_t, @intCast(st.timers.len)),
         "watchers",
@@ -693,6 +721,7 @@ fn closeLoop(self_obj: *py.Object) py.Error!*py.Object {
     st.closed = true;
 
     st.ready.deinit();
+    st.incoming.deinit();
     st.timers.deinit();
     dropFlushList(st);
     py.clear(&st.fatal);
@@ -903,6 +932,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
         st.closed = true;
         if (needs_close) {
             st.ready.deinit();
+            st.incoming.deinit();
             st.timers.deinit();
         }
         // The flush list owns one Python reference per transport regardless of
@@ -932,6 +962,11 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
         var i: usize = 0;
         while (i < st.ready.len) : (i += 1) {
             r = py.visit(st.ready.items[(st.ready.head + i) & (st.ready.items.len - 1)], visitproc, arg);
+            if (r != 0) return r;
+        }
+        i = 0;
+        while (i < st.incoming.len) : (i += 1) {
+            r = py.visit(st.incoming.items[(st.incoming.head + i) & (st.incoming.items.len - 1)], visitproc, arg);
             if (r != 0) return r;
         }
         i = 0;
@@ -967,6 +1002,7 @@ fn clear_(obj: ?*py.Object) callconv(.c) c_int {
     const self = asLoop(obj.?);
     if (self.st) |st| {
         st.ready.deinit();
+        st.incoming.deinit();
         st.timers.deinit();
         py.clear(&st.fatal);
         py.clear(&st.metrics_cb);
