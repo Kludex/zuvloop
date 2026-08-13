@@ -119,6 +119,16 @@ pub inline fn now() f64 {
     return @as(f64, @floatFromInt(ns)) / 1e9;
 }
 
+/// Converts a positive duration to libuv's millisecond clock without letting
+/// an infinite or oversized Python float reach a trapping float-to-int cast.
+fn timerMilliseconds(seconds: f64, guard_ms: f64) u64 {
+    if (!(seconds > 0)) return 0;
+    const rounded = @ceil(seconds * 1000.0) + guard_ms;
+    const limit: f64 = @floatFromInt(std.math.maxInt(u64));
+    if (!std.math.isFinite(rounded) or rounded >= limit) return std.math.maxInt(u64);
+    return @intFromFloat(rounded);
+}
+
 /// Cancelled means dropped, and being dropped from the heap is what ends being
 /// scheduled - so the flag is cleared on the way out, as it is everywhere else
 /// a timer leaves.
@@ -343,7 +353,7 @@ fn armTimer(self: *LoopObject) void {
     const delta = entry.when - now();
     // libuv's millisecond clock can fire up to 1ms early; +1 keeps callbacks
     // from running before their deadline, which asyncio callers rely on.
-    const ms: u64 = if (delta <= 0) 0 else @intFromFloat(@ceil(delta * 1000.0) + 1);
+    const ms = timerMilliseconds(delta, 1);
     _ = uv.uv_timer_start(st.timer, onTimer, ms, 0);
     st.timer_active = true;
 }
@@ -662,7 +672,7 @@ fn startMetrics(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py.Ob
     py.incref(args[1].?);
     st.metrics_cb = args[1];
 
-    const ms: u64 = @intFromFloat(@ceil(interval * 1000.0));
+    const ms = timerMilliseconds(interval, 0);
     try py.errUvIfNeg(uv.uv_timer_start(st.sampler, onSampler, ms, ms));
     // The sampler must not be what keeps the loop alive.
     uv.uv_unref(uv.asHandle(st.sampler));
