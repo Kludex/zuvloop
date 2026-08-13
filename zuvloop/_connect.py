@@ -482,24 +482,33 @@ class ConnectionOperations(SendfileOperations):
         ssl_shutdown_timeout: float | None,
         server: Server | None,
     ) -> tuple[asyncio.Transport, Any]:
-        protocol = protocol_factory()
-        waiter = self.create_future()
-        if ssl:
-            context = _resolve_context(ssl, server_side)
-            driver: asyncio.BaseProtocol = sslproto.SSLProtocol(
-                self,
-                protocol,
-                context,
-                waiter,
-                server_side,
-                server_hostname,
-                ssl_handshake_timeout=ssl_handshake_timeout,  # type: ignore[arg-type]  # typeshed says int
-                ssl_shutdown_timeout=ssl_shutdown_timeout,
-            )
-            transport = self._attach_transport(sock, driver, None, server)
-        else:
-            driver = protocol
-            transport = self._attach_transport(sock, driver, waiter, server)
+        try:
+            protocol = protocol_factory()
+            waiter = self.create_future()
+            if ssl:
+                context = _resolve_context(ssl, server_side)
+                driver: asyncio.BaseProtocol = sslproto.SSLProtocol(
+                    self,
+                    protocol,
+                    context,
+                    waiter,
+                    server_side,
+                    server_hostname,
+                    ssl_handshake_timeout=ssl_handshake_timeout,  # type: ignore[arg-type]  # typeshed says int
+                    ssl_shutdown_timeout=ssl_shutdown_timeout,
+                )
+                transport = self._attach_transport(sock, driver, None, server)
+            else:
+                driver = protocol
+                transport = self._attach_transport(sock, driver, waiter, server)
+        except BaseException:
+            # Before native adoption, accepting the socket makes every setup
+            # failure ours to close. After adoption the socket view is detached.
+            # TLS server accepts have an outer owner that must also detach the
+            # server count; leaving its live descriptor intact tells it to do both.
+            if server is None and sock.fileno() != -1:
+                sock.close()
+            raise
         try:
             await waiter
         except BaseException:
@@ -576,9 +585,9 @@ class ConnectionOperations(SendfileOperations):
                 local_addr, remote_addr, family, proto, flags, reuse_port, allow_broadcast
             )
 
-        protocol = protocol_factory()
-        waiter = self.create_future()
         try:
+            protocol = protocol_factory()
+            waiter = self.create_future()
             transport = self._attach_datagram(sock, protocol, connected)
         except BaseException:
             # Until libuv adopts the descriptor, the socket is still ours.
@@ -664,7 +673,12 @@ class ConnectionOperations(SendfileOperations):
         # and `create_datagram_endpoint(sock=...)` callers go on using it.
         extra["socket"] = trsock.TransportSocket(sock)
         transport = self._make_datagram_transport(fd, sock.family, connected, protocol, extra)
-        transport._adopt_socket_view(sock)
+        try:
+            transport._adopt_socket_view(sock)
+        except BaseException:
+            sock.detach()
+            transport.abort()
+            raise
         return transport
 
     async def subprocess_shell(

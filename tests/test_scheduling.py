@@ -123,6 +123,20 @@ async def test_call_later_ordering() -> None:
     assert seen == ["first", "second", "third"]
 
 
+@pytest.mark.parametrize("delay", [float("inf"), 1e300])
+async def test_oversized_timer_delays_are_effectively_infinite(delay: float) -> None:
+    loop = running_loop()
+    seen: list[str] = []
+    later = loop.call_later(delay, seen.append, "later")
+    absolute = loop.call_at(delay, seen.append, "absolute")
+    try:
+        await asyncio.wait_for(asyncio.sleep(0.01), timeout=float("inf"))
+        assert seen == []
+    finally:
+        later.cancel()
+        absolute.cancel()
+
+
 async def test_loop_time_is_time_monotonic() -> None:
     # Not merely monotonic: callers mix the two clocks, so they have to be one.
     loop = running_loop()

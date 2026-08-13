@@ -411,6 +411,17 @@ async def test_the_sampling_interval_must_be_positive() -> None:
         loop._start_metrics(0, print)
 
 
+async def test_an_infinite_sampling_interval_does_not_overflow() -> None:
+    loop = running_loop()
+    snapshots: list[dict[str, int]] = []
+    loop._start_metrics(float("inf"), snapshots.append)
+    try:
+        await asyncio.sleep(0.01)
+    finally:
+        loop._stop_metrics()
+    assert snapshots == []
+
+
 def test_a_failed_metrics_start_restores_running_loop_state() -> None:
     loop = zuvloop.new_event_loop()
     old_hooks = sys.get_asyncgen_hooks()

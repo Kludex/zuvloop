@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import shutil
 import socket
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
-from typing import cast
+from typing import NoReturn, cast
 
 import pytest
 
@@ -173,6 +174,68 @@ async def test_abort_closes_immediately() -> None:
     await asyncio.wait_for(protocol.lost, 2)
 
 
+@pytest.mark.parametrize("abort", [False, True])
+async def test_shutdown_does_not_resume_or_report_cancelled_sends(abort: bool) -> None:
+    loop = running_loop()
+    with unix_socket_dir() as directory:
+        receiver_path = str(directory / "receiver")
+        sender_path = str(directory / "sender")
+        receiver = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        receiver.bind(receiver_path)
+        receiver.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2048)
+
+        sender = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        sender.bind(sender_path)
+        sender.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2048)
+        sender.setblocking(False)
+
+        events: list[str] = []
+
+        class FlowControl(asyncio.DatagramProtocol):
+            def __init__(self) -> None:
+                self.lost: asyncio.Future[None] = loop.create_future()
+
+            def connection_made(self, transport: asyncio.BaseTransport) -> None:
+                events.append("made")
+
+            def pause_writing(self) -> None:
+                events.append("pause")
+
+            def resume_writing(self) -> None:
+                events.append("resume")  # pragma: no cover - the assertion is that this never runs
+
+            def error_received(self, exc: BaseException) -> None:
+                events.append(type(exc).__name__)  # pragma: no cover - the assertion is that this never runs
+
+            def connection_lost(self, exc: BaseException | None) -> None:
+                events.append("lost")
+                self.lost.set_result(None)
+
+        raw, protocol = await loop.create_datagram_endpoint(FlowControl, sock=sender)
+        transport = cast("_zuvloop.DatagramTransport", raw)
+        transport.set_write_buffer_limits(high=1, low=0)
+        try:
+            for _ in range(100):  # pragma: no branch - exhaustion fails via the assertion below
+                transport.sendto(b"x" * 1024, receiver_path)
+                if transport.get_write_buffer_size() != 0:
+                    break
+            assert transport.get_write_buffer_size() != 0
+            assert events == ["made", "pause"]
+
+            if abort:
+                transport.abort()
+            else:
+                transport.close()
+            receiver.close()
+            await asyncio.wait_for(protocol.lost, 2)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert events == ["made", "pause", "lost"]
+        finally:
+            receiver.close()
+            transport.abort()
+
+
 async def test_sending_after_close_is_dropped() -> None:
     """asyncio drops it; a shutdown race should not raise out of user code."""
     loop = running_loop()
@@ -250,6 +313,8 @@ async def test_an_existing_socket_can_be_adopted() -> None:
         client.sendto(b"adopted", address)
         assert protocol.done is not None
         assert await asyncio.wait_for(protocol.done, 2) == b"re:adopted"
+        client.close()
+        assert sock.fileno() == -1
     finally:
         client.close()
         server.close()
@@ -362,6 +427,30 @@ async def test_a_connected_v6_endpoint_tells_the_scope_apart() -> None:
         server.close()
 
 
+@pytest.mark.parametrize(
+    "address",
+    [
+        ("::1", 9, -1, 0),
+        ("::1", 9, 1_048_576, 0),
+        ("::1", 9, 0, -1),
+        ("::1", 9, 0, 1 << 32),
+    ],
+)
+async def test_ipv6_send_rejects_out_of_range_ancillary_fields(
+    address: tuple[str, int, int, int],
+) -> None:
+    loop = running_loop()
+    try:
+        transport, _protocol = await loop.create_datagram_endpoint(Collector, local_addr=("::1", 0))
+    except OSError:  # pragma: no cover - host without IPv6 loopback
+        pytest.skip("no IPv6 loopback")
+    try:
+        with pytest.raises(OverflowError):
+            transport.sendto(b"x", address)
+    finally:
+        transport.close()
+
+
 async def test_a_cancelled_setup_closes_the_socket(monkeypatch: pytest.MonkeyPatch) -> None:
     # With the waiter never resolved, the setup stays parked exactly where a
     # cancellation has to unwind it.
@@ -390,6 +479,28 @@ async def test_a_socket_that_cannot_be_bound_is_closed() -> None:
         await running_loop().create_datagram_endpoint(Collector, local_addr=("192.0.2.1", 0))
 
 
+async def test_a_failed_protocol_factory_closes_its_internal_datagram_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_socket = socket.socket
+    created: list[socket.socket] = []
+
+    def track(family: int = -1, type: int = -1, proto: int = -1, fileno: int | None = None) -> socket.socket:
+        sock = real_socket(family, type, proto) if fileno is None else real_socket(family, type, proto, fileno)
+        created.append(sock)
+        return sock
+
+    def fail() -> NoReturn:
+        raise RuntimeError("factory failed")
+
+    monkeypatch.setattr(socket, "socket", track)
+    with pytest.raises(RuntimeError, match="factory failed"):
+        await running_loop().create_datagram_endpoint(fail, local_addr=("127.0.0.1", 0))
+
+    assert len(created) == 1
+    assert created[0].fileno() == -1
+
+
 async def test_a_transport_that_fails_to_adopt_releases_the_socket(monkeypatch: pytest.MonkeyPatch) -> None:
     def refuse(*args: object, **kwargs: object) -> _zuvloop.DatagramTransport:
         raise RuntimeError("refused")
@@ -397,6 +508,56 @@ async def test_a_transport_that_fails_to_adopt_releases_the_socket(monkeypatch: 
     monkeypatch.setattr(type(running_loop()), "_make_datagram_transport", refuse)
     with pytest.raises(RuntimeError, match="refused"):
         await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
+
+
+async def test_a_transport_that_fails_to_adopt_its_socket_view_is_aborted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_socket = socket.socket
+    created: list[socket.socket] = []
+
+    class RefusingTransport:
+        def __init__(self, fd: int) -> None:
+            self.fd = fd
+            self.aborted = False
+
+        def _adopt_socket_view(self, _sock: socket.socket) -> NoReturn:
+            raise RuntimeError("adoption failed")
+
+        def abort(self) -> None:
+            os.close(self.fd)
+            self.aborted = True
+
+    refusing: RefusingTransport | None = None
+
+    def track(family: int = -1, type: int = -1, proto: int = -1, fileno: int | None = None) -> socket.socket:
+        sock = real_socket(family, type, proto) if fileno is None else real_socket(family, type, proto, fileno)
+        created.append(sock)
+        return sock
+
+    def make_refusing_transport(
+        _loop: asyncio.AbstractEventLoop,
+        fd: int,
+        _family: int,
+        _connected: bool,
+        _protocol: asyncio.BaseProtocol,
+        _extra: Mapping[str, object],
+    ) -> _zuvloop.DatagramTransport:
+        nonlocal refusing
+        refusing = RefusingTransport(fd)
+        return cast("_zuvloop.DatagramTransport", refusing)
+
+    monkeypatch.setattr(socket, "socket", track)
+    monkeypatch.setattr(type(running_loop()), "_make_datagram_transport", make_refusing_transport)
+    with pytest.raises(RuntimeError, match="adoption failed"):
+        await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
+
+    assert len(created) == 1
+    assert created[0].fileno() == -1
+    assert refusing is not None
+    assert refusing.aborted
+    with pytest.raises(OSError, match="Bad file descriptor"):
+        os.fstat(refusing.fd)
 
 
 async def test_an_empty_resolution_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:

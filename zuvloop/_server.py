@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import socket
 from asyncio import trsock
@@ -10,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ._connect import ConnectionOperations
+
+logger = logging.getLogger(__name__)
 
 
 class Server(asyncio.AbstractServer):
@@ -123,15 +126,18 @@ class Server(asyncio.AbstractServer):
         cleanup_identity = self._cleanup_identity
         self._cleanup_path = None
         self._cleanup_identity = None
-        if cleanup_path is not None and cleanup_identity is not None:
-            try:
+        try:
+            if cleanup_path is not None and cleanup_identity is not None:
                 current = os.stat(cleanup_path)
                 if (current.st_dev, current.st_ino) == cleanup_identity:
                     os.unlink(cleanup_path)
-            except FileNotFoundError:
-                pass
-        if self._active == 0:
-            self._wakeup()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.error("Unable to clean up listening UNIX socket %r: %r", cleanup_path, exc)
+        finally:
+            if self._active == 0:
+                self._wakeup()
 
     def close_clients(self) -> None:
         for transport in tuple(self._transports):
@@ -174,11 +180,9 @@ class Server(asyncio.AbstractServer):
         try:
             await self._serving_forever
         except asyncio.CancelledError:
-            # Whether the cancellation came from `close()` or from the caller,
-            # the connections still up are the server's to see out before it can
-            # honestly say it has stopped.
             try:
                 self.close()
+                self.close_clients()
                 await self.wait_closed()
             finally:
                 raise
