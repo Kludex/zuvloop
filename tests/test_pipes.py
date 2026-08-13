@@ -82,11 +82,9 @@ async def test_closing_a_transport_closes_its_pipe() -> None:
     read_transport.close()
     write_transport.close()
 
-    async def until_both_close() -> None:
-        while not (reader_file.closed and writer_file.closed):
+    async with asyncio.timeout(2):
+        while not (reader_file.closed and writer_file.closed):  # pragma: no cover - close may be synchronous
             await asyncio.sleep(0.01)
-
-    await asyncio.wait_for(until_both_close(), 2)
 
 
 async def test_a_regular_file_is_rejected() -> None:

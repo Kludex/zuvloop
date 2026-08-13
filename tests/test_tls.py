@@ -69,7 +69,7 @@ async def test_cancelling_a_server_handshake_disarms_the_accepted_socket_before_
     class CloseTrackingSocket(socket.socket):
         close_calls = 0
 
-        def close(self) -> None:
+        def close(self) -> None:  # pragma: no cover - the assertion is that this never runs
             self.close_calls += 1
             super().close()
 
