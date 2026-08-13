@@ -95,7 +95,7 @@ jobs:
       # The workspace is mounted into a container that then runs package code
       # from the index, and a persisted token would be sitting in `.git/config`
       # where that code could read it. Nothing here pushes.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
