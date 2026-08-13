@@ -1014,6 +1014,16 @@ fn setWriteBufferLimits(
             low_water = @intCast(parsed);
         }
     }
+    if (high == null or py.isNone(high.?)) {
+        if (low) |value| {
+            if (!py.isNone(value)) {
+                if (low_water > std.math.maxInt(c.Py_ssize_t) / 4) {
+                    return py.errOverflow("high water mark is too large");
+                }
+                high_water = low_water * 4;
+            }
+        }
+    }
     if (low_water > high_water) return py.errValue("high water mark must be >= low water mark");
     self.high_water = high_water;
     self.low_water = low_water;

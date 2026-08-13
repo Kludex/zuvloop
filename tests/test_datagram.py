@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import shutil
 import socket
+import sys
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -233,6 +234,12 @@ async def test_write_buffer_limits_are_reported() -> None:
         assert transport.get_write_buffer_limits() == (256, 1024)
         with pytest.raises(ValueError, match="high water mark"):
             transport.set_write_buffer_limits(high=1, low=2)
+        with pytest.raises(ValueError, match="high water mark must be non-negative"):
+            transport.set_write_buffer_limits(high=-1)
+        with pytest.raises(ValueError, match="low water mark must be non-negative"):
+            transport.set_write_buffer_limits(low=-1)
+        with pytest.raises(OverflowError, match="high water mark is too large"):
+            transport.set_write_buffer_limits(low=sys.maxsize)
         with pytest.raises(TypeError, match="unexpected keyword"):
             transport.set_write_buffer_limits(bogus=1)  # type: ignore[call-arg]
         with pytest.raises(TypeError, match="at most 2"):
