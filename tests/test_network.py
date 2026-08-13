@@ -1374,6 +1374,7 @@ async def test_retry_accept_ignores_a_closed_listener() -> None:
         listener.close()
         server._retry_accept(cast("socket.socket", listener))
         await asyncio.sleep(0)
+        assert listener.accepts == 0
     finally:
         server.close()
         notifier.close()
