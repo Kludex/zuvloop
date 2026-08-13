@@ -436,7 +436,7 @@ async def test_unix_datagram_endpoints_round_trip() -> None:
 async def test_abstract_unix_datagram_sender_address_is_preserved() -> None:  # pragma: no cover - Linux CI
     loop = running_loop()
     suffix = f"{os.getpid()}-{os.urandom(6).hex()}".encode()
-    receiver_name = b"\0zuvloop-receiver-" + suffix
+    receiver_name = b"\0zuvloop-receiver-" + suffix + b"\0"
     sender_name = b"\0zuvloop-sender-" + suffix + b"\0"
     receiver, protocol = await loop.create_datagram_endpoint(Collector, local_addr=receiver_name, family=socket.AF_UNIX)
     sender, _sender_protocol = await loop.create_datagram_endpoint(

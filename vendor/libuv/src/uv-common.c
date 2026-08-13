@@ -484,6 +484,27 @@ int uv__udp_check_before_send(uv_udp_t* handle, const struct sockaddr* addr) {
 }
 
 
+static int uv__udp_check_explicit_addrlen(uv_udp_t* handle,
+                                          const struct sockaddr* addr,
+                                          unsigned int addrlen) {
+  int max_addrlen;
+
+  max_addrlen = uv__udp_check_before_send(handle, addr);
+  if (max_addrlen < 0)
+    return max_addrlen;
+  if (addr == NULL)
+    return addrlen == 0 ? 0 : UV_EINVAL;
+#if defined(AF_UNIX) && !defined(_WIN32)
+  if (addr->sa_family == AF_UNIX)
+    return addrlen >= offsetof(struct sockaddr_un, sun_path) &&
+                   addrlen <= (unsigned int) max_addrlen
+        ? (int) addrlen
+        : UV_EINVAL;
+#endif
+  return addrlen == (unsigned int) max_addrlen ? (int) addrlen : UV_EINVAL;
+}
+
+
 int uv_udp_send(uv_udp_send_t* req,
                 uv_udp_t* handle,
                 const uv_buf_t bufs[],
@@ -500,6 +521,29 @@ int uv_udp_send(uv_udp_send_t* req,
 }
 
 
+int uv_udp_send_with_addrlen(uv_udp_send_t* req,
+                             uv_udp_t* handle,
+                             const uv_buf_t bufs[],
+                             unsigned int nbufs,
+                             const struct sockaddr* addr,
+                             unsigned int addrlen,
+                             uv_udp_send_cb send_cb) {
+  int checked_addrlen;
+
+  checked_addrlen = uv__udp_check_explicit_addrlen(handle, addr, addrlen);
+  if (checked_addrlen < 0)
+    return checked_addrlen;
+
+  return uv__udp_send(req,
+                      handle,
+                      bufs,
+                      nbufs,
+                      addr,
+                      checked_addrlen,
+                      send_cb);
+}
+
+
 int uv_udp_try_send(uv_udp_t* handle,
                     const uv_buf_t bufs[],
                     unsigned int nbufs,
@@ -511,6 +555,21 @@ int uv_udp_try_send(uv_udp_t* handle,
     return addrlen;
 
   return uv__udp_try_send(handle, bufs, nbufs, addr, addrlen);
+}
+
+
+int uv_udp_try_send_with_addrlen(uv_udp_t* handle,
+                                 const uv_buf_t bufs[],
+                                 unsigned int nbufs,
+                                 const struct sockaddr* addr,
+                                 unsigned int addrlen) {
+  int checked_addrlen;
+
+  checked_addrlen = uv__udp_check_explicit_addrlen(handle, addr, addrlen);
+  if (checked_addrlen < 0)
+    return checked_addrlen;
+
+  return uv__udp_try_send(handle, bufs, nbufs, addr, checked_addrlen);
 }
 
 

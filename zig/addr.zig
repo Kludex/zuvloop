@@ -99,8 +99,8 @@ pub fn toPython(sa: *const posix.sockaddr, sa_len: c_int) py.Error!*py.Object {
         if (un.path[0] == 0) {
             return py.bytes(unixName(sa, sa_len)) orelse py.Error.Python;
         }
-        const len = std.mem.indexOfScalar(u8, &un.path, 0) orelse un.path.len;
-        return c.PyUnicode_DecodeFSDefaultAndSize(@ptrCast(&un.path), @intCast(len)) orelse py.Error.Python;
+        const path = unixName(sa, sa_len);
+        return c.PyUnicode_DecodeFSDefaultAndSize(@ptrCast(path.ptr), @intCast(path.len)) orelse py.Error.Python;
     }
     if (family != AF_INET and family != AF_INET6) return py.noneRef();
 

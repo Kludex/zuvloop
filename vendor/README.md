@@ -10,10 +10,10 @@ The tree under `libuv/` is the upstream release with the patches under `patches/
 **Never edit it directly.** Update the corresponding patch instead. `build.zig` compiles the vendored
 sources with the same defines and file lists as upstream's `CMakeLists.txt`.
 
-`0001-expose-udp-recv-address-length.patch` preserves the kernel-reported `sockaddr` length through
-libuv's UDP receive callback. Linux needs that length to distinguish abstract UNIX names whose bytes
-differ only by trailing NULs. The updater applies the patch before replacing the existing tree and
-fails if a future libuv release no longer accepts it cleanly.
+`0001-expose-udp-recv-address-length.patch` preserves both the kernel-reported source length and the
+caller-supplied destination length through libuv's UDP paths. Linux needs those lengths to distinguish
+abstract UNIX names whose bytes differ only by trailing NULs. The updater applies the patch before
+replacing the existing tree and fails if a future libuv release no longer accepts it cleanly.
 
 A weekly workflow checks for a new signed release, verifies its signer against
 `libuv-maintainer-keys.txt`, tests every supported target, and opens an update pull request. For a
