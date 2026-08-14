@@ -14,7 +14,7 @@ does not install an OpenTelemetry SDK or anything vendor-specific — see
 | | |
 | --- | --- |
 | Python | GIL-enabled CPython 3.14 or newer |
-| Platform | Linux, macOS, Windows AMD64/ARM64 |
+| Platform | Linux, macOS, Windows |
 
 Windows uses libuv's native Windows backend. Unix-domain sockets and
 `SO_REUSEPORT` are unavailable there; the portable TCP, UDP, DNS, TLS,

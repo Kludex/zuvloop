@@ -82,7 +82,7 @@ build fails at compile time with a direct explanation instead of producing a
 wheel that fails later with an unresolved CPython symbol.
 
 Linux glibc, Linux musl and macOS execute the full in-repository suite. Windows
-AMD64 and ARM64 build and run the portable suite natively; tests that require
+builds run the portable suite natively; tests that require
 Unix-domain sockets, POSIX signal semantics, POSIX pipe descriptors or POSIX
 subprocess expectations are explicitly skipped.
 Windows does not provide Unix-domain socket methods or `SO_REUSEPORT` through
