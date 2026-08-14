@@ -162,7 +162,10 @@ jobs:
       - name: Install the pinned upstream suite and zuvloop
         working-directory: upstream
         run: |
-          uv sync --locked --python 3.14 --only-group dev
+          # The upstream project computes exclude-newer from the current date.
+          # --frozen installs its immutable lock without re-resolving that
+          # moving policy, which would reject the unchanged pinned lock later.
+          uv sync --frozen --python 3.14 --only-group dev
           # Do not apply uvicorn's `exclude-newer` policy to zuvloop's newer,
           # separately pinned build backend.
           uv --no-config pip install --python .venv/bin/python ..
