@@ -105,11 +105,6 @@ jobs:
 
       - name: Install the pinned upstream suite and zuvloop
         run: |
-          uv pip compile .github/aiohttp-compatibility-requirements.in \
-            --python 3.14 --python-platform x86_64-unknown-linux-gnu \
-            --generate-hashes --no-header --output-file /tmp/aiohttp-compatibility-requirements.txt
-          tail -n +3 .github/aiohttp-compatibility-requirements.txt | \
-            diff -u - /tmp/aiohttp-compatibility-requirements.txt
           uv venv --python 3.14 .upstream-venv
           uv pip install --python .upstream-venv/bin/python --require-hashes \
             -r .github/aiohttp-compatibility-requirements.txt
