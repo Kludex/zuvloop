@@ -212,6 +212,11 @@ jobs:
           uv pip install --python .upstream-venv/bin/python \
             --group upstream/pyproject.toml:test --editable 'upstream[trio]'
           uv pip install --python .upstream-venv/bin/python .
+          # Blockbuster allows stdlib subprocess.Popen only when AnyIO reaches
+          # it directly. A third-party loop adds one stack frame and turns the
+          # same stdlib os.read into a false positive; the process-pool tests
+          # themselves remain in the run.
+          uv pip uninstall --python .upstream-venv/bin/python blockbuster
 
       - name: Run AnyIO on zuvloop
         env:
