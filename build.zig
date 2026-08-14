@@ -97,11 +97,12 @@ pub fn build(b: *std.Build) void {
     // the artifact target explicitly; every other build keeps its native OS
     // with a baseline CPU for portable wheels.
     const target_name = b.graph.environ_map.get("HATCH_ZIG_TARGET") orelse "";
-    const default_target: std.Target.Query = if (target_name.len > 0)
-        std.Target.Query.parse(.{ .arch_os_abi = target_name }) catch
-            @panic("invalid HATCH_ZIG_TARGET")
-    else
-        .{ .cpu_model = .baseline };
+    const default_target: std.Target.Query = if (target_name.len > 0) target: {
+        var query = std.Target.Query.parse(.{ .arch_os_abi = target_name }) catch
+            @panic("invalid HATCH_ZIG_TARGET");
+        query.cpu_model = .baseline;
+        break :target query;
+    } else .{ .cpu_model = .baseline };
     const target = b.standardTargetOptions(.{ .default_target = default_target });
     const optimize = b.standardOptimizeOption(.{});
     const sanitize_c = b.option(std.zig.SanitizeC, "sanitize-c", "C undefined-behavior sanitizer mode");

@@ -13,4 +13,9 @@ if ($actualSha256 -ne $expectedSha256) {
 
 Expand-Archive -LiteralPath $archive -DestinationPath $destination -Force
 $zigDirectory = Join-Path $destination "zig-x86_64-windows-$version"
+$zigExecutable = Join-Path $zigDirectory "zig.exe"
+if (-not (Test-Path -LiteralPath $zigExecutable -PathType Leaf)) {
+    throw "Zig archive did not contain the expected executable: $zigExecutable"
+}
+
 $zigDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
