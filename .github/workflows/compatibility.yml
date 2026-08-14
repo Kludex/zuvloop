@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# Advance this cutoff whenever a pinned upstream commit moves. It is mapped to
+# UV_EXCLUDE_NEWER only by editable-install steps; setting uv's variable for the
+# entire workflow would force locked jobs to re-resolve and reject their locks.
+env:
+  EDITABLE_UPSTREAM_EXCLUDE_NEWER: "2026-08-15T00:00:00Z"
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -208,7 +214,7 @@ jobs:
 
       - name: Install the pinned upstream suite and zuvloop
         env:
-          UV_EXCLUDE_NEWER: "2026-08-15T00:00:00Z"
+          UV_EXCLUDE_NEWER: ${{ env.EDITABLE_UPSTREAM_EXCLUDE_NEWER }}
         run: |
           uv venv --python 3.14 .upstream-venv
           uv pip install --python .upstream-venv/bin/python \
@@ -261,7 +267,7 @@ jobs:
 
       - name: Install the pinned upstream package and zuvloop
         env:
-          UV_EXCLUDE_NEWER: "2026-08-15T00:00:00Z"
+          UV_EXCLUDE_NEWER: ${{ env.EDITABLE_UPSTREAM_EXCLUDE_NEWER }}
         run: |
           uv venv --python 3.14 .upstream-venv
           uv pip install --python .upstream-venv/bin/python --editable upstream
@@ -304,7 +310,7 @@ jobs:
 
       - name: Install the pinned upstream package and zuvloop
         env:
-          UV_EXCLUDE_NEWER: "2026-08-15T00:00:00Z"
+          UV_EXCLUDE_NEWER: ${{ env.EDITABLE_UPSTREAM_EXCLUDE_NEWER }}
         run: |
           uv venv --python 3.14 .upstream-venv
           uv pip install --python .upstream-venv/bin/python --editable upstream
@@ -345,7 +351,7 @@ jobs:
 
       - name: Install the pinned upstream package and zuvloop
         env:
-          UV_EXCLUDE_NEWER: "2026-08-15T00:00:00Z"
+          UV_EXCLUDE_NEWER: ${{ env.EDITABLE_UPSTREAM_EXCLUDE_NEWER }}
         run: |
           uv venv --python 3.14 .upstream-venv
           uv pip install --python .upstream-venv/bin/python --editable upstream
