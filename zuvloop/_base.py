@@ -21,6 +21,7 @@ from typing import Any, Protocol
 from . import _zuvloop
 from ._instrumentation import (
     Instrumentation,
+    _safe_repr,
     instrumentation_provider_installed,
     metrics_provider_installed,
     publish_metrics,
@@ -292,7 +293,7 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
             elif key == "handle_traceback":
                 value = "Handle created at (most recent call last):\n" + "".join(traceback.format_list(value)).rstrip()
             else:
-                value = repr(value)
+                value = _safe_repr(value)
             log_lines.append(f"{key}: {value}")
 
         # Keep asyncio's built-in stderr/logging behaviour. Telemetry is an

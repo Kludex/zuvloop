@@ -168,8 +168,9 @@ class SendfileOperations(SocketOperations):
                     blocksize = min(count - total_sent, _SOCKET_CHUNK)
             return total_sent
         finally:
-            if total_sent > 0 and hasattr(file, "seek"):
-                file.seek(offset + total_sent)
+            seek = getattr(file, "seek", None)
+            if total_sent > 0 and callable(seek):
+                seek(offset + total_sent)
 
     async def _sendfile_fallback(
         self, transport: _SendfileTransport, file: _SendfileSource, offset: int, count: int | None
@@ -194,8 +195,9 @@ class SendfileOperations(SocketOperations):
                     blocksize = min(count - total_sent, _TRANSPORT_CHUNK)
             return total_sent
         finally:
-            if total_sent > 0 and hasattr(file, "seek"):
-                file.seek(offset + total_sent)
+            seek = getattr(file, "seek", None)
+            if total_sent > 0 and callable(seek):
+                seek(offset + total_sent)
             waiter.restore()
 
 

@@ -8,6 +8,7 @@ import time
 import traceback
 from collections.abc import Mapping
 from types import MethodType
+from typing import Literal, Never
 
 import pytest
 from opentelemetry.trace import StatusCode
@@ -15,6 +16,7 @@ from opentelemetry.trace import StatusCode
 import zuvloop
 from tests.conftest import Telemetry, attribute, collect_contexts, numeric_attribute, running_loop
 from zuvloop._instrumentation import (
+    _safe_repr,
     capture_call_graph,
     instrumentation_provider_installed,
     metrics_provider_installed,
@@ -173,11 +175,66 @@ def test_exception_telemetry_bounds_attributes_and_survives_a_broken_repr(teleme
         def __repr__(self) -> str:
             raise RuntimeError("repr failed")
 
-    zuvloop.Instrumentation().report_exception({"message": "bounded", "large": "x" * 10_000, "broken": BrokenRepr()})
+    class LongNamedBrokenRepr:
+        def __repr__(self) -> str:
+            raise RuntimeError("repr failed")
+
+    LongNamedBrokenRepr.__name__ = "X" * 10_000
+
+    zuvloop.Instrumentation().report_exception(
+        {
+            "message": "bounded",
+            "large": "x" * 10_000,
+            "broken": BrokenRepr(),
+            "long_broken": LongNamedBrokenRepr(),
+        }
+    )
 
     span = telemetry.spans("zuvloop.unhandled_exception")[0]
     assert len(str(attribute(span, "large"))) == 4096
     assert attribute(span, "broken") == "<BrokenRepr repr failed>"
+    assert len(str(attribute(span, "long_broken"))) == 4096
+
+
+def test_exception_telemetry_bounds_the_recorded_exception(telemetry: Telemetry) -> None:
+    exception = RuntimeError("x" * 10_000)
+    exception.add_note("y" * 10_000)
+    zuvloop.Instrumentation().report_exception({"message": "bounded", "exception": exception})
+
+    event = telemetry.spans("zuvloop.unhandled_exception")[0].events[0]
+    assert event.attributes is not None
+    assert event.attributes["exception.type"] == "RuntimeError"
+    assert len(str(event.attributes["exception.message"])) == 4096
+    assert len(str(event.attributes["exception.stacktrace"])) == 4096
+
+
+@pytest.mark.parametrize("failure", [SystemExit(7), KeyboardInterrupt()])
+@pytest.mark.parametrize("method", ["report_slow_callback", "report_exception"])
+def test_instrumentation_does_not_swallow_process_control_exceptions(
+    failure: BaseException,
+    method: Literal["report_slow_callback", "report_exception"],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def stop(_name: str, _description: str) -> Never:
+        raise failure
+
+    monkeypatch.setattr("zuvloop._instrumentation._counter", stop)
+    instrumentation = zuvloop.Instrumentation()
+    with pytest.raises(type(failure)):
+        if method == "report_slow_callback":
+            instrumentation.report_slow_callback(object(), 1.0)
+        else:
+            instrumentation.report_exception({"message": "failure"})
+
+
+@pytest.mark.parametrize("failure", [SystemExit(7), KeyboardInterrupt()])
+def test_safe_repr_does_not_swallow_process_control_exceptions(failure: BaseException) -> None:
+    class StopsDuringRepr:
+        def __repr__(self) -> str:
+            raise failure
+
+    with pytest.raises(type(failure)):
+        _safe_repr(StopsDuringRepr())
 
 
 def test_exception_logging_formats_creation_tracebacks(caplog: pytest.LogCaptureFixture) -> None:
@@ -228,6 +285,37 @@ def test_an_owned_exception_handler_runs_in_the_owner_context(owner_key: str) ->
     finally:
         loop.close()
     assert seen == ["owner"]
+
+
+def test_a_native_handle_exposes_its_exception_handler_context() -> None:
+    marker = contextvars.ContextVar("native-handle-marker", default="outside")
+    owner_context = contextvars.copy_context()
+    owner_context.run(marker.set, "owner")
+    loop = zuvloop.new_event_loop()
+    handle = owner_context.run(loop.call_soon, lambda: None)
+    seen: list[str] = []
+    loop.set_exception_handler(lambda _loop, _context: seen.append(marker.get()))
+    try:
+        loop.call_exception_handler({"message": "owned", "handle": handle})
+    finally:
+        handle.cancel()
+        loop.close()
+    assert seen == ["owner"]
+
+
+def test_default_exception_handler_survives_a_broken_context_repr(caplog: pytest.LogCaptureFixture) -> None:
+    class BrokenRepr:
+        def __repr__(self) -> str:
+            raise RuntimeError("repr failed")
+
+    loop = zuvloop.new_event_loop()
+    try:
+        with caplog.at_level(logging.ERROR, logger="asyncio"):
+            loop.default_exception_handler({"message": "original diagnostic", "detail": BrokenRepr()})
+    finally:
+        loop.close()
+    assert "original diagnostic" in caplog.text
+    assert "detail: <BrokenRepr repr failed>" in caplog.text
 
 
 @pytest.mark.parametrize("default_failure", [SystemExit(8), RuntimeError("default failed")])

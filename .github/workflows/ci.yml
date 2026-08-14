@@ -42,6 +42,15 @@ jobs:
           PYTHON_VERSION: ${{ matrix.python-version }}
         run: uv sync --locked --python "$PYTHON_VERSION" --group dev --group bench
 
+      - name: Verify the hashed build constraints
+        if: runner.os == 'Linux'
+        run: |
+          uv pip compile .github/build-requirements.in --universal --generate-hashes \
+            --no-header --output-file /tmp/build-constraints.txt
+          tail -n +3 .github/build-constraints.txt | diff -u - /tmp/build-constraints.txt
+          uv build --sdist --build-constraints .github/build-constraints.txt \
+            --require-hashes --out-dir /tmp/zuv-sdist
+
       # A wheel is compiled on whichever machine the job landed on, so a build
       # that defaults to that machine's CPU bakes its instruction set into a
       # published artifact - which then raises SIGILL on an older one. Asserted

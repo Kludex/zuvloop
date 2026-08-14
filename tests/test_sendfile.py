@@ -231,6 +231,12 @@ class SeeklessFile:
         return self._buffer.read(size)
 
 
+class NonCallableSeekFile(SeeklessFile):
+    """Readable source whose optional seek attribute cannot be called."""
+
+    seek = None
+
+
 class InvalidDescriptorFile(SeeklessFile):
     def fileno(self) -> str:
         return "not-a-descriptor"
@@ -242,6 +248,17 @@ async def test_sock_sendfile_treats_a_missing_descriptor_as_no_file(
     left, _right = stream_pair
     loop = running_loop()
     assert await loop.sock_sendfile(left, SeeklessFile(b"")) == 0
+
+
+async def test_sock_sendfile_ignores_a_non_callable_seek_after_transfer(
+    stream_pair: tuple[socket.socket, socket.socket],
+) -> None:
+    left, right = stream_pair
+    loop = running_loop()
+    source = NonCallableSeekFile(b"data")
+    reader = loop.create_task(read_exactly(right, 2))
+    assert await loop.sock_sendfile(left, source, count=2) == 2
+    assert await reader == b"da"
 
 
 async def test_sock_sendfile_rejects_offset_on_a_seekless_source(
@@ -691,6 +708,12 @@ async def test_sendfile_leaves_a_still_paused_protocol_paused() -> None:
 async def test_transport_sendfile_rejects_offset_on_a_seekless_source() -> None:
     with pytest.raises(AttributeError, match="does not support seek"):
         await running_loop().sendfile(FallbackFakeTransport(), SeeklessFile(b"data"), offset=1)
+
+
+async def test_transport_sendfile_ignores_a_non_callable_seek_after_transfer() -> None:
+    transport = FallbackFakeTransport()
+    assert await running_loop().sendfile(transport, NonCallableSeekFile(b"data"), count=2) == 2
+    assert b"".join(transport.written) == b"da"
 
 
 async def test_sendfile_stops_when_the_transport_closes_mid_transfer() -> None:

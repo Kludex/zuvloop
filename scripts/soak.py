@@ -86,6 +86,8 @@ def main() -> int:
     parser.add_argument("--max-rss-growth", type=int, default=32 * 1024 * 1024)
     parser.add_argument("--max-python-growth", type=int, default=4 * 1024 * 1024)
     options = parser.parse_args()
+    if options.warmup < 1:
+        parser.error("warmup must be at least one")
     if options.cycles <= options.warmup:
         parser.error("cycles must be greater than warmup")
 

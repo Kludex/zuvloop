@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import time
+import traceback
 from collections.abc import Mapping
 
 from opentelemetry import metrics, trace
@@ -73,6 +74,8 @@ class Instrumentation:
                 attributes=attributes,
             )
             span.end(end_time=ended)
+        except SystemExit, KeyboardInterrupt:
+            raise
         except BaseException:
             # Instrumentation runs on exception and slow-callback paths. An
             # exporter, provider, user __repr__, or call-graph failure must not
@@ -90,9 +93,19 @@ class Instrumentation:
 
             span = _tracer().start_span(f"{_NAMESPACE}.unhandled_exception", attributes=attributes)
             if isinstance(exception, BaseException):
-                span.record_exception(exception)
+                span.add_event(
+                    "exception",
+                    attributes={
+                        "exception.type": _bounded(type(exception).__name__),
+                        "exception.message": _bounded(str(exception)),
+                        "exception.stacktrace": _bounded("".join(traceback.format_exception(exception))),
+                        "exception.escaped": False,
+                    },
+                )
             span.set_status(Status(StatusCode.ERROR, _bounded(str(message))))
             span.end()
+        except SystemExit, KeyboardInterrupt:
+            raise
         except BaseException:
             return
 
@@ -106,8 +119,10 @@ def _bounded(value: str) -> str:
 def _safe_repr(value: object) -> str:
     try:
         return _bounded(repr(value))
+    except SystemExit, KeyboardInterrupt:
+        raise
     except BaseException:
-        return f"<{type(value).__name__} repr failed>"
+        return _bounded(f"<{type(value).__name__} repr failed>")
 
 
 def capture_call_graph(handle: object = None) -> str | None:
