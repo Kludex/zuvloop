@@ -88,8 +88,8 @@ jobs:
           # onto a wheel rather than fail, so this has to be the full history.
           fetch-depth: 0
 
-      # cibuildwheel's build[uv] frontend needs uv on PATH; the manylinux
-      # containers ship it, the macOS runners do not.
+      # cibuildwheel's uv frontend needs uv on PATH; the manylinux containers
+      # ship it, the macOS runners do not.
       - uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867 # v7.1.6
         with:
           enable-cache: false

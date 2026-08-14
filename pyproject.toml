@@ -106,8 +106,11 @@ filterwarnings = ["error"]
 # a GIL to save.
 build = "cp314-*"
 skip = "*-musllinux_i686 *t-*"
-build-frontend = "build[uv]"
-environment = { UV_BUILD_CONSTRAINT = "$(pwd)/.github/build-constraints.txt", UV_REQUIRE_HASHES = "1" }
+# Let uv own the project build so hash checking applies only to the pinned build
+# requirements. Setting UV_REQUIRE_HASHES globally also affects cibuildwheel's
+# own bootstrap tools (for example, delocate) before the project build starts.
+build-frontend = { name = "uv", args = ["--require-hashes"] }
+environment = { UV_BUILD_CONSTRAINT = "$(pwd)/.github/build-constraints.txt" }
 test-requires = ["aiohttp", "anyio", "httptools", "hypothesis", "opentelemetry-sdk", "pytest", "uvicorn"]
 test-command = "pytest {project}/tests -q --import-mode=importlib"
 
