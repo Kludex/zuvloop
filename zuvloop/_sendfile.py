@@ -120,10 +120,10 @@ class SendfileOperations(SocketOperations):
     async def _sendfile_to_fd(
         self, fd: int, file: _SendfileSource, offset: int, count: int | None, fileno: int | None = None
     ) -> int:
-        if sys.platform == "win32":
-            raise asyncio.SendfileNotAvailableError("os.sendfile is not available on Windows")
         if fileno is None:
             fileno = _regular_fileno(file)
+        if sys.platform == "win32":
+            raise asyncio.SendfileNotAvailableError("os.sendfile is not available on Windows")
         blocksize = count if count is not None else os.fstat(fileno).st_size
         total_sent = 0
         try:

@@ -184,6 +184,7 @@ async def test_abort_closes_immediately() -> None:
 
 
 @pytest.mark.parametrize("abort", [False, True])
+@requires_unix_sockets
 async def test_shutdown_does_not_resume_or_report_cancelled_sends(abort: bool) -> None:
     loop = running_loop()
     with unix_socket_dir() as directory:
@@ -553,7 +554,7 @@ async def test_a_transport_that_fails_to_adopt_its_socket_view_is_aborted(
             raise RuntimeError("adoption failed")
 
         def abort(self) -> None:
-            os.close(self.fd)
+            socket.close(self.fd)
             self.aborted = True
 
     refusing: RefusingTransport | None = None
@@ -584,8 +585,8 @@ async def test_a_transport_that_fails_to_adopt_its_socket_view_is_aborted(
     assert created[0].fileno() == -1
     assert refusing is not None
     assert refusing.aborted
-    with pytest.raises(OSError, match="Bad file descriptor"):
-        os.fstat(refusing.fd)
+    with pytest.raises(OSError):
+        real_socket(fileno=refusing.fd)
 
 
 async def test_an_empty_resolution_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -656,6 +657,7 @@ async def test_unnamed_unix_datagram_sender_has_no_address() -> None:  # pragma:
         receiver.close()
 
 
+@requires_unix_sockets
 async def test_a_connected_unix_endpoint_accepts_the_path_it_is_connected_to() -> None:
     """For AF_UNIX the path is what identifies the peer."""
     loop = running_loop()
@@ -675,6 +677,7 @@ async def test_a_connected_unix_endpoint_accepts_the_path_it_is_connected_to() -
             server.close()
 
 
+@requires_unix_sockets
 async def test_a_connected_unix_endpoint_rejects_a_different_path() -> None:
     loop = running_loop()
     with unix_socket_dir() as directory:

@@ -369,6 +369,9 @@ fn resolveLiteral(hints: *const netdb.addrinfo, host: ?[*:0]const u8, service: ?
         else => return null,
     };
     if (hints.protocol != 0 and hints.protocol != protocol) return null;
+    // Winsock preserves an unspecified protocol as zero in the result, unlike
+    // the POSIX resolvers, which fill the protocol implied by the socket type.
+    const result_protocol = if (uv.is_windows) hints.protocol else protocol;
 
     const name = std.mem.sliceTo(host orelse return null, 0);
     if (name.len == 0) return null;
@@ -390,7 +393,7 @@ fn resolveLiteral(hints: *const netdb.addrinfo, host: ?[*:0]const u8, service: ?
         const sin: *posix.sockaddr.in = @ptrCast(@alignCast(&storage));
         if (inet_pton(std.c.AF.INET, name.ptr, &sin.addr) == 1) {
             sin.* = .{ .port = std.mem.nativeToBig(u16, port), .addr = sin.addr };
-            return finishLiteral(std.c.AF.INET, hints.socktype, protocol, @ptrCast(sin));
+            return finishLiteral(std.c.AF.INET, hints.socktype, result_protocol, @ptrCast(sin));
         }
     }
     if (family == std.c.AF.INET6 or family == std.c.AF.UNSPEC) {
@@ -404,7 +407,7 @@ fn resolveLiteral(hints: *const netdb.addrinfo, host: ?[*:0]const u8, service: ?
                 sin6.addr[0] == 0xfe and (sin6.addr[1] & 0xc0) == 0x80 and
                 (sin6.addr[2] != 0 or sin6.addr[3] != 0)) return null;
             sin6.* = .{ .port = std.mem.nativeToBig(u16, port), .flowinfo = 0, .addr = sin6.addr, .scope_id = 0 };
-            return finishLiteral(std.c.AF.INET6, hints.socktype, protocol, @ptrCast(sin6));
+            return finishLiteral(std.c.AF.INET6, hints.socktype, result_protocol, @ptrCast(sin6));
         }
     }
     return null;
