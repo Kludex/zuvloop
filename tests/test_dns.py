@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from conftest import running_loop
+from tests.conftest import running_loop
 
 pytestmark = pytest.mark.anyio
 
@@ -26,7 +26,10 @@ async def test_getaddrinfo_resolves_localhost() -> None:
         assert family in (socket.AF_INET, socket.AF_INET6)
         assert kind is socket.SOCK_STREAM
         assert isinstance(proto, int)
-        assert canonname == ""
+        # Whether libc fills the canonical name in without `AI_CANONNAME` is its
+        # own business: musl answers `localhost` here where glibc and BSD leave
+        # it empty. Agreeing with the standard library is asserted below.
+        assert isinstance(canonname, str)
         assert sockaddr[1] == 80
 
 
@@ -81,11 +84,15 @@ async def test_getaddrinfo_reports_failures() -> None:
         # What `""` means is the platform's business, and the platforms disagree:
         # BSD reads it as the null host and resolves the wildcard address, glibc
         # calls it a name it cannot find. libuv reaches neither, because it runs
-        # every hostname through IDNA first and that rejects an empty one.
+        # every hostname through IDNA first and that rejects an empty one. Each
+        # service form reaches libc differently, and the null one is what CPython
+        # carries a macOS workaround for.
         ("", "http"),
+        ("", "80"),
+        ("", None),
     ],
 )
-async def test_getaddrinfo_answers_as_the_stdlib_does(host: str, port: str) -> None:
+async def test_getaddrinfo_answers_as_the_stdlib_does(host: str, port: str | None) -> None:
     loop = running_loop()
     kwargs = {"family": socket.AF_INET, "type": socket.SOCK_STREAM}
     try:
@@ -171,6 +178,8 @@ async def test_getnameinfo_rejects_a_malformed_address() -> None:
         await loop.getnameinfo(("127.0.0.1",))
     with pytest.raises(socket.gaierror):
         await loop.getnameinfo(("not an address", 80))
+    with pytest.raises(ValueError, match="embedded null character"):
+        await loop.getnameinfo(("127.0.0.1\0hidden", 80))
 
 
 @pytest.mark.parametrize("host", ["localhost", "example.com", "not a host"])

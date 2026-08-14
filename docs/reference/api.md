@@ -28,9 +28,10 @@ Creates a loop. This is the callable to hand to `asyncio.run()`,
 
 ### `zuvloop.EventLoop`
 
-An `asyncio.AbstractEventLoop`. Every method asyncio declares is implemented;
-`sock_sendfile` and `sendfile` raise `NotImplementedError`, which asyncio treats
-as a signal to fall back.
+An `asyncio.AbstractEventLoop`. Every method asyncio declares is implemented,
+including `sock_sendfile` and `sendfile`, which use the native `sendfile` system
+call where available and fall back to a read-and-write loop where it cannot serve —
+see [Sending files](../usage/networking.md#sending-files).
 
 Beyond asyncio's surface it carries the usual knobs — `set_debug`,
 `slow_callback_duration`, `set_exception_handler`, `set_default_executor`.
@@ -44,9 +45,10 @@ async context manager.
 
 ### `zuvloop.Transport`
 
-The native stream transport, an `asyncio.Transport` subclass. Used for TCP, Unix
-sockets and pipes. You get one from `create_connection`, a server's
-`connection_made`, or `connect_read_pipe` / `connect_write_pipe`.
+The native stream transport, an `asyncio.Transport` subclass. Used for TCP and,
+on supported POSIX platforms, Unix sockets and pipes. You get one from
+`create_connection`, a server's `connection_made`, or `connect_read_pipe` /
+`connect_write_pipe`.
 
 ### `zuvloop.DatagramTransport`
 
@@ -60,9 +62,13 @@ Returned by `call_soon`, `call_later` and `call_at`. They carry `cancel()`,
 
 /// warning
 
-These are not `asyncio.Handle` subclasses. Code that checks
-`isinstance(handle, asyncio.Handle)` will not recognise them. uvloop's handles
-have the same property.
+The lean handle returned by `call_soon` is not an `asyncio.Handle` subclass. Code
+that checks `isinstance(handle, asyncio.Handle)` will not recognise it. It still
+implements `cancel()` and `cancelled()`.
+
+`TimerHandle` is a real `asyncio.TimerHandle`, so timer handles order and compare
+by deadline. `call_soon_threadsafe` returns an `asyncio.Handle` subclass with the
+cross-thread cancellation synchronization Python 3.14 requires.
 ///
 
 ## Instrumentation

@@ -15,7 +15,8 @@ descriptor from there and owns every read and write. That split is deliberate: a
 connection is established once, and the readable implementation is worth more
 there than the last microsecond.
 
-`create_unix_connection` works the same way over `AF_UNIX`.
+`create_unix_connection` works the same way over `AF_UNIX` on Linux and macOS.
+Unix-domain sockets are not available through zuvloop on Windows.
 
 ## Servers
 
@@ -30,7 +31,7 @@ async with server:
 
 `create_unix_server` accepts `cleanup_socket`, and honours it the way asyncio
 does: the socket file is unlinked at close only if it is still the same file that
-was bound, compared by device and inode.
+was bound, compared by device and inode. It is not available on Windows.
 
 ## Reading
 
@@ -63,9 +64,9 @@ transport.write(headers)  # both go out
 transport.write(body)     # in one writev
 ```
 
-Nothing is copied. A write the socket accepts outright never allocates; when it
-cannot take everything, the queued request holds a buffer view of your memory
-rather than a copy of it.
+Exact `bytes` objects are held directly without a copy. Other buffer exporters
+are snapshotted when `write()` is called, so later mutation cannot change bytes
+that the transport has already accepted.
 
 /// note | What `get_write_buffer_size()` reports
 
@@ -91,5 +92,14 @@ works too, including the case where it swaps a plain protocol for a
 one `uv_poll_t` per descriptor, and the `sock_*` family
 (`sock_recv`, `sock_sendall`, `sock_connect`, `sock_accept`, …) is built on them.
 
-`sock_sendfile` and `sendfile` raise `NotImplementedError`. asyncio falls back to
-a read-and-write loop when a loop declines them, so file responses still work.
+## Sending files
+
+`sock_sendfile` and `sendfile` transfer file contents with the `sendfile(2)`
+system call — the kernel moves the bytes, nothing is copied through Python. For
+`sendfile(transport, ...)` the loop first lets the transport's buffered writes
+drain and pauses reading, so the file cannot reorder around data written before
+it. Targets the syscall cannot serve — a `BytesIO`, a TLS transport, a pipe —
+fall back to a read-and-write loop. With `fallback=False` they raise instead:
+`RuntimeError` where the transport itself rules the syscall out, as a TLS
+transport does, and `SendfileNotAvailableError` everywhere else. Windows has no
+`os.sendfile`, so it always takes the fallback path unless `fallback=False`.

@@ -6,6 +6,17 @@ const loop = @import("loop.zig");
 const datagram = @import("datagram.zig");
 const process = @import("process.zig");
 const handle = @import("handle.zig");
+const tshandle = @import("tshandle.zig");
+const timer = @import("timer.zig");
+
+comptime {
+    if (@hasDecl(c, "Py_GIL_DISABLED")) {
+        @compileError(
+            "zuvloop does not yet support free-threaded CPython builds; " ++
+                "use a standard GIL-enabled CPython interpreter",
+        );
+    }
+}
 
 fn libuvVersion(_: ?*py.Object, _: ?*py.Object) callconv(.c) ?*py.Object {
     return py.strZ(uv.uv_version_string());
@@ -20,6 +31,8 @@ fn exec(module: ?*py.Object) callconv(.c) c_int {
     const m = module orelse return -1;
     py.initConstants() catch return -1;
     handle.register(m) catch return -1;
+    tshandle.register(m) catch return -1;
+    timer.register(m) catch return -1;
     loop.register(m) catch return -1;
     datagram.register(m) catch return -1;
     process.register(m) catch return -1;

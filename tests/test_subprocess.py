@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import errno
 import os
 import signal
+import socket
 import sys
 from asyncio.subprocess import Process
+from collections.abc import Callable
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
-from conftest import running_loop
+from tests.conftest import running_loop
+from zuvloop._process import ProcessReaper
 
 pytestmark = [
     pytest.mark.anyio,
@@ -17,6 +23,55 @@ pytestmark = [
 ]
 
 PIPE = asyncio.subprocess.PIPE
+
+
+def test_process_reaper_does_not_discard_a_reused_pid() -> None:
+    class StopReaper(Exception):
+        pass
+
+    class ReplacementProcess:
+        def poll(self) -> NoReturn:
+            raise StopReaper
+
+    class RecordingLoop:
+        def call_soon_threadsafe(self, callback: Callable[[int], object], returncode: int) -> None:
+            callback(returncode)
+
+    class RecordingWrapper:
+        def __init__(self) -> None:
+            self.returncodes: list[int] = []
+
+        def exited(self, returncode: int) -> None:
+            self.returncodes.append(returncode)
+
+    class ReplacedProcess:
+        def __init__(
+            self,
+            reaper: ProcessReaper,
+            replacement: tuple[ReplacementProcess, RecordingLoop, RecordingWrapper],
+        ) -> None:
+            self.reaper = reaper
+            self.replacement = replacement
+
+        def poll(self) -> int:
+            with self.reaper.condition:
+                self.reaper.processes[42] = self.replacement
+            return 0
+
+    reaper = ProcessReaper()
+    new_process = ReplacementProcess()
+    loop = RecordingLoop()
+    recording_wrapper = RecordingWrapper()
+    wrapper = recording_wrapper
+    replacement = (new_process, loop, wrapper)
+    old_process = ReplacedProcess(reaper, replacement)
+    reaper.processes[42] = (old_process, loop, wrapper)
+
+    with pytest.raises(StopReaper):
+        reaper.run()
+
+    assert reaper.processes[42] is replacement
+    assert recording_wrapper.returncodes == [0]
 
 
 async def test_a_command_runs_and_reports_its_output() -> None:
@@ -27,11 +82,29 @@ async def test_a_command_runs_and_reports_its_output() -> None:
     assert process.returncode == 0
 
 
+async def test_subprocess_setup_rejects_a_non_subprocess_protocol() -> None:
+    with pytest.raises(TypeError, match="subprocess protocol"):
+        await running_loop()._make_subprocess_transport(asyncio.Protocol(), ["/bin/true"], False, None, None, None, 0)
+
+
 async def test_a_shell_command_reports_its_exit_status() -> None:
     process = await asyncio.create_subprocess_shell("echo shell && exit 3", stdout=PIPE)
     stdout, _stderr = await process.communicate()
     assert stdout == b"shell\n"
     assert process.returncode == 3
+
+
+async def test_subprocess_strings_reject_embedded_nuls() -> None:
+    calls = (
+        asyncio.create_subprocess_exec("/bin/echo", "before\0after"),
+        asyncio.create_subprocess_exec("/bin/echo", executable="/bin/echo\0other"),
+        asyncio.create_subprocess_exec("/bin/echo", cwd="/tmp\0other"),
+        asyncio.create_subprocess_exec("/bin/echo", env={"VALUE": "before\0after"}),
+        asyncio.create_subprocess_exec("/bin/echo", env={"BEFORE\0AFTER": "value"}),
+    )
+    for call in calls:
+        with pytest.raises(ValueError, match="embedded null byte"):
+            await call
 
 
 async def test_stdin_reaches_the_child() -> None:
@@ -262,8 +335,132 @@ async def test_non_default_popen_arguments_are_rejected() -> None:
         await asyncio.create_subprocess_exec("/bin/echo", stdout=PIPE, startupinfo=object())
     with pytest.raises(ValueError, match="creationflags is not supported"):
         await asyncio.create_subprocess_exec("/bin/echo", stdout=PIPE, creationflags=1)
-    with pytest.raises(ValueError, match="pass_fds is not supported"):
-        await asyncio.create_subprocess_exec("/bin/echo", stdout=PIPE, pass_fds=(2,))
+
+
+WRITE_TO_FD = "import os, sys; os.write(int(sys.argv[1]), b'through-the-pipe')"
+
+
+async def test_pass_fds_reaches_the_child_at_the_same_number() -> None:
+    """A descriptor keeps its number in the child, which is what makes it usable:
+    the number is what the parent told the child to write to."""
+    read_fd, write_fd = os.pipe()
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", WRITE_TO_FD, str(write_fd), pass_fds=(write_fd,)
+        )
+        assert await process.wait() == 0
+        # Our end, so the read below sees EOF rather than blocking.
+        os.close(write_fd)
+        assert os.read(read_fd, 64) == b"through-the-pipe"
+    finally:
+        os.close(read_fd)
+        with contextlib.suppress(OSError):
+            os.close(write_fd)
+
+
+async def test_pass_fds_naming_a_standard_stream_is_what_it_already_is() -> None:
+    """0, 1 and 2 are claimed by stdin, stdout and stderr, so naming one asks for
+    nothing more - and must not displace the stream that holds it."""
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import sys; sys.stderr.write('still stderr')", stderr=PIPE, pass_fds=(2,)
+    )
+    _stdout, stderr = await process.communicate()
+    assert stderr == b"still stderr"
+    assert process.returncode == 0
+
+
+async def test_a_descriptor_not_passed_does_not_reach_the_child() -> None:
+    """The other half: without `pass_fds` it is closed, so the write fails."""
+    read_fd, write_fd = os.pipe()
+    try:
+        process = await asyncio.create_subprocess_exec(sys.executable, "-c", WRITE_TO_FD, str(write_fd), stderr=PIPE)
+        _stdout, stderr = await process.communicate()
+        assert process.returncode == 1
+        # The number rather than the phrase, which libc translates per locale.
+        assert f"[Errno {errno.EBADF}]".encode() in stderr
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+async def test_pass_fds_leaves_the_gap_before_it_closed() -> None:
+    """The descriptors between stderr and a high `pass_fds` are not the child's.
+
+    The spare is opened first so it takes the lower number, which is what puts it
+    in the gap rather than past the end - asserted, since the whole test rests on it.
+    """
+    spare_read, spare_write = os.pipe()
+    read_fd, write_fd = os.pipe()
+    assert 3 <= spare_write < write_fd
+    os.set_inheritable(spare_write, True)
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import os, sys; os.close(int(sys.argv[1]))",
+            str(spare_write),
+            stderr=PIPE,
+            pass_fds=(write_fd,),
+        )
+        _stdout, stderr = await process.communicate()
+        assert process.returncode == 1
+        assert f"[Errno {errno.EBADF}]".encode() in stderr
+    finally:
+        for fd in (read_fd, write_fd, spare_read, spare_write):
+            os.close(fd)
+
+
+async def test_pass_fds_leaves_the_blocking_state_alone() -> None:
+    """A passed asyncio socket flipped to blocking would hang its own loop."""
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    try:
+        process = await asyncio.create_subprocess_exec("/bin/echo", pass_fds=(left.fileno(),))
+        assert await process.wait() == 0
+        assert os.get_blocking(left.fileno()) is False
+    finally:
+        left.close()
+        right.close()
+
+
+async def test_a_stdlib_fallback_child_can_be_signalled() -> None:
+    read_fd, write_fd = os.pipe()
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            "import time; time.sleep(30)",
+            pass_fds=(write_fd,),
+        )
+        process.terminate()
+        assert await asyncio.wait_for(process.wait(), 10) == -signal.SIGTERM
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+async def test_pass_fds_rejects_a_negative_descriptor() -> None:
+    with pytest.raises(ValueError, match="pass_fds"):
+        await asyncio.create_subprocess_exec("/bin/echo", pass_fds=(-1,))
+
+
+async def test_pass_fds_rejects_a_descriptor_that_is_not_open() -> None:
+    """In the parent, where the error can name the descriptor."""
+    with pytest.raises(OSError) as caught:
+        await asyncio.create_subprocess_exec("/bin/echo", pass_fds=(4096,))
+    assert caught.value.errno == errno.EBADF
+
+
+async def test_pass_fds_rejects_a_freshly_closed_descriptor() -> None:
+    """Checked before the spawn's own pipes can reuse the number."""
+    read_fd, write_fd = os.pipe()
+    os.close(write_fd)
+    try:
+        with pytest.raises(OSError) as caught:
+            await asyncio.create_subprocess_exec("/bin/echo", stderr=PIPE, pass_fds=(write_fd,))
+        assert caught.value.errno == errno.EBADF
+    finally:
+        os.close(read_fd)
 
 
 async def test_signalling_an_exited_child_is_a_no_op() -> None:

@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from conftest import running_loop
+from tests.conftest import running_loop
 
 pytestmark = pytest.mark.anyio
 requires_unix_sockets = pytest.mark.skipif(sys.platform == "win32", reason="Windows has no Unix sockets")
@@ -103,6 +103,7 @@ async def test_sock_accept_and_connect() -> None:
         connecting = loop.create_task(loop.sock_connect(client, ("127.0.0.1", port)))
         conn, address = await loop.sock_accept(listener)
         await connecting
+        assert isinstance(address, tuple)
         assert address[0] == "127.0.0.1"
         await loop.sock_sendall(client, b"handshake")
         assert await loop.sock_recv(conn, 9) == b"handshake"
@@ -119,6 +120,17 @@ async def test_sock_connect_reports_refusal(closed_port: int) -> None:
     try:
         with pytest.raises(OSError):
             await loop.sock_connect(sock, ("127.0.0.1", closed_port))
+    finally:
+        sock.close()
+
+
+@pytest.mark.parametrize("address", ["not-a-tuple", (123, 80)])
+async def test_internet_socket_addresses_are_validated(address: str | tuple[int, int]) -> None:
+    sock = socket.socket()
+    sock.setblocking(False)
+    try:
+        with pytest.raises(TypeError, match="internet socket address"):
+            await running_loop().sock_connect(sock, address)
     finally:
         sock.close()
 
@@ -256,15 +268,6 @@ async def test_remove_reader_for_an_unwatched_descriptor() -> None:
     loop = running_loop()
     assert loop.remove_reader(0) is False
     assert loop.remove_writer(0) is False
-
-
-async def test_sendfile_is_not_implemented() -> None:
-    loop = running_loop()
-    with socket.socket() as sock:
-        with pytest.raises(NotImplementedError):
-            await loop.sock_sendfile(sock, None)
-    with pytest.raises(NotImplementedError):
-        await loop.sendfile(None, None)
 
 
 async def test_a_partially_drained_descriptor_reports_ready_again() -> None:

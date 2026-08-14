@@ -41,7 +41,9 @@ const Request = struct {
     prev: ?*Request = null,
     next: ?*Request = null,
     hints: netdb.addrinfo = std.mem.zeroes(netdb.addrinfo),
+    // SAFETY: request construction fills this array before libuv receives it.
     host: [max_host]u8 = undefined,
+    // SAFETY: request construction fills this array before libuv receives it.
     service: [32]u8 = undefined,
 
     inline fn addrReq(self: *Request) *uv.GetAddrInfo {
@@ -122,6 +124,7 @@ pub fn traverse(st: *loopmod.State, visitproc: c.visitproc, arg: ?*anyopaque) c_
 fn copyZ(dst: []u8, value: *py.Object, what: [:0]const u8) py.Error!?[*:0]const u8 {
     if (py.isNone(value)) return null;
     var len: c.Py_ssize_t = 0;
+    // SAFETY: each accepted Python type assigns src, and every other type returns.
     var src: [*c]const u8 = undefined;
     if (c.PyUnicode_Check(value) != 0) {
         src = c.PyUnicode_AsUTF8AndSize(value, &len) orelse return py.Error.Python;
@@ -260,7 +263,7 @@ fn buildResults(res: ?*netdb.addrinfo) py.Error!*py.Object {
             cachedEnum(&kind_cache, socket_kind, ai.socktype),
             c.PyLong_FromLong(ai.protocol),
             if (ai.canonname) |cn| py.strZ(cn) else py.str(""),
-            addr.toPython(sa) catch null,
+            addr.toPython(sa, @intCast(ai.addrlen)) catch null,
         };
         for (fields, 0..) |field, i| {
             if (field == null) {
@@ -350,6 +353,12 @@ fn onNameInfo(req: ?*uv.GetNameInfo, status: c_int, hostname: ?[*:0]const u8, se
 /// is built through `buildResults`, so it is rendered by the same code as the
 /// libc path rather than by a second implementation of the same formatting.
 fn resolveLiteral(hints: *const netdb.addrinfo, host: ?[*:0]const u8, service: ?[*:0]const u8) ?*py.Object {
+    // musl populates `ai_canonname` for numeric addresses even when callers do
+    // not request `AI_CANONNAME`. Synthesizing the result here would lose that
+    // platform-visible field and disagree with `socket.getaddrinfo`, so let the
+    // numeric libc path below answer instead.
+    if (builtin.abi.isMusl()) return null;
+
     const flags: u32 = @bitCast(hints.flags);
     const ignorable: u32 = @bitCast(netdb.AI{ .NUMERICHOST = true, .NUMERICSERV = true, .PASSIVE = true });
     if (flags & ~ignorable != 0) return null;
@@ -373,6 +382,8 @@ fn resolveLiteral(hints: *const netdb.addrinfo, host: ?[*:0]const u8, service: ?
         port = std.fmt.parseInt(u16, text, 10) catch return null;
     }
 
+    // SAFETY: inet_pton initializes the address and the successful branch fills
+    // the remaining sockaddr fields before storage is read.
     var storage: addr.Storage = undefined;
     const family = hints.family;
     if (family == std.c.AF.INET or family == std.c.AF.UNSPEC) {
@@ -385,6 +396,13 @@ fn resolveLiteral(hints: *const netdb.addrinfo, host: ?[*:0]const u8, service: ?
     if (family == std.c.AF.INET6 or family == std.c.AF.UNSPEC) {
         const sin6: *posix.sockaddr.in6 = @ptrCast(@alignCast(&storage));
         if (inet_pton(std.c.AF.INET6, name.ptr, &sin6.addr) == 1) {
+            // Darwin carries a KAME-style scope id in bytes 2-3 of a link-local
+            // literal: libc turns `fe80:1::` into `("fe80::", ..., scope=1)`.
+            // Bypassing libc would expose a different address and scope. Plain
+            // link-local literals have zero there and remain safe to answer.
+            if (builtin.os.tag.isDarwin() and
+                sin6.addr[0] == 0xfe and (sin6.addr[1] & 0xc0) == 0x80 and
+                (sin6.addr[2] != 0 or sin6.addr[3] != 0)) return null;
             sin6.* = .{ .port = std.mem.nativeToBig(u16, port), .flowinfo = 0, .addr = sin6.addr, .scope_id = 0 };
             return finishLiteral(std.c.AF.INET6, hints.socktype, protocol, @ptrCast(sin6));
         }
@@ -446,7 +464,14 @@ pub fn getaddrinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
     // can never reach a resolver that way. The platforms disagree about what it
     // means - BSD reads it as the null host, glibc as a name it cannot find - and
     // matching `socket.getaddrinfo` means letting the platform answer rather than
-    // picking one. Neither looks anything up, so this cannot block the loop.
+    // picking one.
+    //
+    // Nothing is resolved here, but this does enter libc on the loop thread, and
+    // the first call in a process pays for the resolver's own initialization:
+    // measured on macOS at 1.5ms for a numeric service and 2.3ms for a name,
+    // then under a microsecond for every call after it. `resolveNumeric` pays the
+    // same initialization on the main path, so moving this one to a threadpool
+    // would not buy a loop that never waits for the resolver to wake up.
     if (host) |name| if (name[0] == 0) {
         var res: ?*netdb.addrinfo = null;
         const rc = netdb.getaddrinfo(name, service, &hints, &res);
@@ -486,7 +511,7 @@ pub fn getnameinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
     try loopmod.checkClosed(loop.state());
 
     var storage: addr.Storage = .{};
-    addr.fromPython(0, args[0].?, &storage) catch |e| {
+    _ = addr.fromPython(0, args[0].?, &storage) catch |e| {
         // Only the host is the resolver's to report; a bad tuple or port keeps
         // its own exception, and those are not `OSError`.
         if (c.PyErr_ExceptionMatches(py.exc_os_error) == 0) return e;

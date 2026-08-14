@@ -12,7 +12,7 @@ packet, Python if it runs per connection or per loop.**
 | Datagram sends and receives | `zig/datagram.zig` | Once per datagram |
 | Descriptor watchers | `zig/poller.zig` | One `uv_poll_t` per descriptor |
 | Name resolution | `zig/dns.zig` | On libuv's threadpool, not the executor |
-| Process spawning | `zig/process.zig` | libuv reaps the child, so no watcher is needed |
+| Process spawning | `zig/process.zig`, `zuvloop/_process.py` | libuv on macOS/Windows; stdlib plus one shared reaper on Linux |
 | Connection and server setup | `zuvloop/_connect.py` | Once per connection |
 | Lifecycle, executors, error reporting | `zuvloop/_base.py` | Once per loop |
 | OpenTelemetry emission | `zuvloop/_instrumentation.py` | The only file that imports OTel |
@@ -51,8 +51,9 @@ The flush runs from a **prepare handle**, which libuv runs before it computes th
 poll timeout — from a check handle, a loop with nothing else to do would block
 for I/O while still holding data the peer was waiting for.
 
-Nothing is copied: when the socket cannot take it all, the queued request holds a
-buffer view of the caller's memory.
+Exact `bytes` are held directly. Mutable and other buffer exporters are copied
+into an immutable snapshot at `write()` time, preserving asyncio's guarantee
+that later caller mutation cannot alter an accepted write.
 
 ## Name resolution
 
@@ -64,7 +65,9 @@ and has to be freed.
 Everything the shortcut cannot answer identically falls back to libc: a scoped
 address, whose zone only libc can resolve; a legacy form like `127.1` that
 `inet_pton` rejects and `getaddrinfo` accepts; an unspecified socket type, which
-libc answers with one entry per type. Real hostnames resolve on libuv's
+libc answers with one entry per type. On Darwin this also includes link-local
+IPv6 literals whose embedded KAME scope bytes libc normalizes into `sin6_scope_id`.
+Real hostnames resolve on libuv's
 threadpool, not the executor.
 
 ## Sockets

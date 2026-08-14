@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextvars
 import threading
 import time
@@ -9,7 +10,7 @@ from collections.abc import Coroutine
 import pytest
 
 import zuvloop
-from conftest import running_loop
+from tests.conftest import running_loop
 
 pytestmark = pytest.mark.anyio
 
@@ -80,6 +81,23 @@ async def test_cancelled_callback_does_not_run() -> None:
     assert seen == []
 
 
+@pytest.mark.parametrize("args", [(1, 2, 3), (1, 2, 3, 4, 5, 6)])
+async def test_callback_can_cancel_its_own_handle_during_vectorcall(args: tuple[int, ...]) -> None:
+    loop = running_loop()
+    handles: list[zuvloop.Handle] = []
+    seen: list[tuple[int, ...]] = []
+
+    def callback(*received: int) -> None:
+        handles[0].cancel()
+        seen.append(received)
+
+    handles.append(loop.call_soon(callback, *args))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert seen == [args]
+    assert handles[0].cancelled()
+
+
 async def test_handle_repr_names_the_callback() -> None:
     loop = running_loop()
     handle = loop.call_soon(print)
@@ -105,6 +123,20 @@ async def test_call_later_ordering() -> None:
     assert seen == ["first", "second", "third"]
 
 
+@pytest.mark.parametrize("delay", [float("inf"), 1e300])
+async def test_oversized_timer_delays_are_effectively_infinite(delay: float) -> None:
+    loop = running_loop()
+    seen: list[str] = []
+    later = loop.call_later(delay, seen.append, "later")
+    absolute = loop.call_at(delay, seen.append, "absolute")
+    try:
+        await asyncio.wait_for(asyncio.sleep(0.01), timeout=float("inf"))
+        assert seen == []
+    finally:
+        later.cancel()
+        absolute.cancel()
+
+
 async def test_loop_time_is_time_monotonic() -> None:
     # Not merely monotonic: callers mix the two clocks, so they have to be one.
     loop = running_loop()
@@ -118,12 +150,93 @@ async def test_call_at_accepts_a_time_monotonic_deadline() -> None:
     await asyncio.wait_for(done, 1)
 
 
+async def test_call_at_preserves_the_deadline_number_type() -> None:
+    loop = running_loop()
+    integer = loop.call_at(2**31, print)
+    floating = loop.call_at(float(2**31), print)
+    try:
+        assert type(integer.when()) is int
+        assert type(integer._when) is int
+        assert type(floating.when()) is float
+        assert type(floating._when) is float
+    finally:
+        integer.cancel()
+        floating.cancel()
+
+
 async def test_call_at_uses_the_loop_clock() -> None:
     loop = running_loop()
     done = loop.create_future()
     handle = loop.call_at(loop.time() + 0.01, done.set_result, None)
     assert handle.when() > loop.time()
     await done
+
+
+async def test_call_later_returns_a_real_timer_handle() -> None:
+    """`call_soon` trades this for a leaner handle; a timer can afford the base."""
+    loop = running_loop()
+    handle = loop.call_later(30, print)
+    assert isinstance(handle, asyncio.TimerHandle)
+    assert isinstance(handle, asyncio.Handle)
+    handle.cancel()
+
+
+async def test_timer_handles_order_by_their_deadline() -> None:
+    """The ordering comes from the base class, which reads `_when`."""
+    loop = running_loop()
+    later = loop.call_later(60, print)
+    sooner = loop.call_later(30, print)
+
+    assert sooner < later
+    assert later > sooner
+    assert sorted([later, sooner]) == [sooner, later]
+    assert sooner == sooner
+    assert sooner != later
+    assert isinstance(hash(sooner), int)
+    assert sooner._when < later._when
+    assert sooner._cancelled is False
+    assert sooner._scheduled is True
+    assert sooner._callback is print
+    assert sooner._args == ()
+
+    sooner.cancel()
+    later.cancel()
+    assert sooner.cancelled() and later.cancelled()
+    # Cancelling drops the arguments rather than emptying them, and leaves the
+    # handle in the heap until something compacts it - both as asyncio reports.
+    assert sooner._callback is None
+    assert sooner._args is None
+    assert sooner._scheduled is True
+
+
+async def test_a_fired_timer_is_no_longer_scheduled() -> None:
+    """`BaseEventLoop` clears the flag when the handle leaves its heap for the
+    ready queue, and so does the native one."""
+    loop = running_loop()
+    done = loop.create_future()
+    handle = loop.call_later(0.01, done.set_result, None)
+    assert handle._scheduled is True
+    await done
+    await asyncio.sleep(0)
+    assert handle._scheduled is False
+
+
+async def test_a_cancelled_timer_stops_being_scheduled_when_it_leaves_the_heap() -> None:
+    """Cancelling alone leaves it in the heap, as it does in asyncio. Reaching the
+    deadline retires it, and so does the compaction a run of cancellations sets off."""
+    loop = running_loop()
+    due = loop.call_later(0.01, print)
+    due.cancel()
+    assert due._scheduled is True
+
+    pending = loop.call_later(30, print)
+    pending.cancel()
+    for _ in range(400):
+        loop.call_later(30, print).cancel()
+
+    await asyncio.sleep(0.05)
+    assert due._scheduled is False
+    assert pending._scheduled is False
 
 
 async def test_call_later_requires_a_delay_and_a_callback() -> None:
@@ -165,8 +278,173 @@ async def test_call_soon_threadsafe_from_another_thread() -> None:
 
 async def test_call_soon_threadsafe_validates_its_arguments() -> None:
     loop = running_loop()
-    with pytest.raises(TypeError, match="missing 1 required positional argument"):
+    with pytest.raises(TypeError, match="requires a callback"):
         loop.call_soon_threadsafe()  # type: ignore[call-arg]
+
+
+async def test_call_soon_threadsafe_returns_the_stdlib_threadsafe_handle() -> None:
+    loop = running_loop()
+    handle = loop.call_soon_threadsafe(lambda: None)
+    assert isinstance(handle, asyncio.events._ThreadSafeHandle)  # type: ignore[attr-defined]
+    assert isinstance(handle, asyncio.Handle)
+    handle.cancel()
+
+
+def test_threadsafe_cancel_from_another_thread_waits_for_the_running_callback() -> None:
+    loop = zuvloop.new_event_loop()
+    started = threading.Event()
+    finished = threading.Event()
+    results: list[str] = []
+    observed: list[bool] = []
+
+    def callback(arg: str) -> None:
+        started.set()
+        results.append(arg)
+        time.sleep(0.2)
+        finished.set()
+
+    def canceller() -> None:
+        try:
+            handle = loop.call_soon_threadsafe(callback, "ran")
+            started.wait(5)
+            handle.cancel()
+            observed.append(finished.is_set())
+            observed.append(handle.cancelled())
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+
+    thread = threading.Thread(target=canceller)
+    loop.call_soon(thread.start)
+    loop.run_forever()
+    thread.join()
+    loop.close()
+    assert results == ["ran"]
+    assert observed == [True, True]
+
+
+def test_threadsafe_cancelled_from_another_thread_waits_for_the_running_callback() -> None:
+    loop = zuvloop.new_event_loop()
+    started = threading.Event()
+    finished = threading.Event()
+    observed: list[bool] = []
+
+    def callback() -> None:
+        started.set()
+        time.sleep(0.2)
+        finished.set()
+
+    def checker() -> None:
+        try:
+            handle = loop.call_soon_threadsafe(callback)
+            started.wait(5)
+            observed.append(handle.cancelled())
+            observed.append(finished.is_set())
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+
+    thread = threading.Thread(target=checker)
+    loop.call_soon(thread.start)
+    loop.run_forever()
+    thread.join()
+    loop.close()
+    assert observed == [False, True]
+
+
+def test_threadsafe_cancel_inside_its_own_callback_completes_the_run() -> None:
+    loop = zuvloop.new_event_loop()
+    handle_ready: concurrent.futures.Future[asyncio.Handle] = concurrent.futures.Future()
+    results: list[str] = []
+    observed: list[bool] = []
+
+    def callback(arg: str) -> None:
+        try:
+            handle = handle_ready.result(5)
+            handle.cancel()
+            observed.append(handle.cancelled())
+            results.append(arg)
+        finally:
+            loop.stop()
+
+    def scheduler() -> None:
+        handle_ready.set_result(loop.call_soon_threadsafe(callback, "ran"))
+
+    thread = threading.Thread(target=scheduler)
+    loop.call_soon(thread.start)
+    loop.run_forever()
+    thread.join()
+    loop.close()
+    assert results == ["ran"]
+    assert observed == [True]
+
+
+def test_threadsafe_cancel_before_the_loop_runs_it() -> None:
+    loop = zuvloop.new_event_loop()
+    gate = threading.Event()
+    results: list[str] = []
+    observed: list[bool] = []
+
+    def scheduler() -> None:
+        try:
+            handle = loop.call_soon_threadsafe(results.append, "never")
+            handle.cancel()
+            handle.cancel()
+            observed.append(handle.cancelled())
+        finally:
+            gate.set()
+            loop.call_soon_threadsafe(loop.stop)
+
+    # The gate holds the loop thread until the cancellation is done, so the
+    # callback cannot win the race and run before `cancel` reaches it.
+    loop.call_soon(gate.wait, 5)
+    thread = threading.Thread(target=scheduler)
+    thread.start()
+    loop.run_forever()
+    thread.join()
+    loop.close()
+    assert results == []
+    assert observed == [True]
+
+
+def test_threadsafe_cancel_releases_every_waiting_thread() -> None:
+    loop = zuvloop.new_event_loop()
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    handle_ready: concurrent.futures.Future[asyncio.Handle] = concurrent.futures.Future()
+    observed: list[bool] = []
+
+    def callback() -> None:
+        started.set()
+        release.wait(5)
+        finished.set()
+
+    def waiter() -> None:
+        handle = handle_ready.result(5)
+        started.wait(5)
+        handle.cancel()
+        observed.append(finished.is_set())
+
+    def driver() -> None:
+        try:
+            handle_ready.set_result(loop.call_soon_threadsafe(callback))
+            waiters = [threading.Thread(target=waiter) for _ in range(2)]
+            for waiting in waiters:
+                waiting.start()
+            started.wait(5)
+            time.sleep(0.1)
+            release.set()
+            for waiting in waiters:
+                waiting.join()
+        finally:
+            release.set()
+            loop.call_soon_threadsafe(loop.stop)
+
+    thread = threading.Thread(target=driver)
+    loop.call_soon(thread.start)
+    loop.run_forever()
+    thread.join()
+    loop.close()
+    assert observed == [True, True]
 
 
 async def test_run_in_executor_uses_a_thread() -> None:

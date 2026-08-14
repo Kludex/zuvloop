@@ -438,6 +438,7 @@ void uv__process_udp_recv_req(uv_loop_t* loop, uv_udp_t* handle,
   if (!(handle->flags & UV_HANDLE_ZERO_READ)) {
     /* Successful read */
     partial = !REQ_SUCCESS(req);
+    handle->recv_addrlen = handle->recv_from_len;
     handle->recv_cb(handle,
                     req->u.io.overlapped.InternalHigh,
                     &handle->recv_buffer,
@@ -479,11 +480,13 @@ void uv__process_udp_recv_req(uv_loop_t* loop, uv_udp_t* handle,
 
         /* Message received */
         err = ERROR_SUCCESS;
+        handle->recv_addrlen = from_len;
         handle->recv_cb(handle, bytes, &buf, (const struct sockaddr*) &from, 0);
       } else {
         err = WSAGetLastError();
         if (err == WSAEMSGSIZE) {
           /* Message truncated */
+          handle->recv_addrlen = from_len;
           handle->recv_cb(handle,
                           bytes,
                           &buf,

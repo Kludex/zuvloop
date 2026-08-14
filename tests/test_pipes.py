@@ -4,12 +4,13 @@ import asyncio
 import os
 import socket
 import sys
+from pathlib import Path
 from typing import IO
 
 import pytest
 
 import zuvloop
-from conftest import running_loop
+from tests.conftest import running_loop
 
 pytestmark = [
     pytest.mark.anyio,
@@ -86,11 +87,9 @@ async def test_closing_a_transport_closes_its_pipe() -> None:
     read_transport.close()
     write_transport.close()
 
-    async def until_both_close() -> None:
-        while not (reader_file.closed and writer_file.closed):
+    async with asyncio.timeout(2):
+        while not (reader_file.closed and writer_file.closed):  # pragma: no cover - close may be synchronous
             await asyncio.sleep(0.01)
-
-    await asyncio.wait_for(until_both_close(), 2)
 
 
 async def test_a_regular_file_is_rejected() -> None:
@@ -229,6 +228,26 @@ async def test_a_write_pipe_notices_the_reader_going_away() -> None:
         assert await asyncio.wait_for(lost, 2) is None
     finally:
         transport.close()
+
+
+async def test_unread_data_does_not_close_a_named_fifo(tmp_path: Path) -> None:
+    loop = running_loop()
+    path = tmp_path / "named-fifo"
+    os.mkfifo(path)
+    read_fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        with open(path, "wb", buffering=0) as writer_file:
+            transport, _writer = await loop.connect_write_pipe(asyncio.BaseProtocol, writer_file)
+            try:
+                transport.write(b"unread")
+                for _ in range(10):
+                    await asyncio.sleep(0)
+                assert not transport.is_closing()
+                assert os.read(read_fd, 64) == b"unread"
+            finally:
+                transport.close()
+    finally:
+        os.close(read_fd)
 
 
 async def test_an_undelivered_write_ends_the_write_pipe_with_a_broken_pipe() -> None:

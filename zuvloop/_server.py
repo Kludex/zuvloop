@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import errno
+import logging
 import os
 import socket
-from asyncio import trsock
+from asyncio import constants, trsock
 from collections.abc import Callable, Sequence
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ._connect import ConnectionOperations
+
+logger = logging.getLogger(__name__)
 
 
 class Server(asyncio.AbstractServer):
@@ -55,15 +59,19 @@ class Server(asyncio.AbstractServer):
         return self._serving
 
     def _start_serving(self) -> None:
-        if self._serving or self._sockets is None:
+        sockets = self._sockets
+        if sockets is None:
             return
-        self._serving = True
-        for sock in self._sockets:
-            sock.listen(self._backlog)
+        if not self._serving:
+            self._serving = True
+            for sock in sockets:
+                sock.listen(self._backlog)
+        for sock in sockets:
             self._loop.add_reader(sock.fileno(), self._accept, sock)
 
     async def start_serving(self) -> None:
-        self._start_serving()
+        if not self._serving:
+            self._start_serving()
         # Let the accept callbacks register before returning, matching asyncio.
         await asyncio.sleep(0)
 
@@ -73,9 +81,24 @@ class Server(asyncio.AbstractServer):
                 conn, _addr = sock.accept()
             except BlockingIOError, InterruptedError:
                 return
-            except OSError as exc:  # pragma: no cover - needs descriptor exhaustion
+            except OSError as exc:
+                if exc.errno in (errno.EMFILE, errno.ENFILE, errno.ENOBUFS, errno.ENOMEM):
+                    self._loop.remove_reader(sock.fileno())
+                    self._loop.call_exception_handler(
+                        {
+                            "message": "socket.accept() out of system resource",
+                            "exception": exc,
+                            "socket": trsock.TransportSocket(sock),
+                        }
+                    )
+                    self._loop.call_later(constants.ACCEPT_RETRY_DELAY, self._start_serving)
+                    return
                 self._loop.call_exception_handler(
-                    {"message": "Error accepting a connection", "exception": exc, "socket": sock}
+                    {
+                        "message": "Error accepting a connection",
+                        "exception": exc,
+                        "socket": trsock.TransportSocket(sock),
+                    }
                 )
                 return
             conn.setblocking(False)
@@ -123,15 +146,18 @@ class Server(asyncio.AbstractServer):
         cleanup_identity = self._cleanup_identity
         self._cleanup_path = None
         self._cleanup_identity = None
-        if cleanup_path is not None and cleanup_identity is not None:
-            try:
+        try:
+            if cleanup_path is not None and cleanup_identity is not None:
                 current = os.stat(cleanup_path)
                 if (current.st_dev, current.st_ino) == cleanup_identity:
                     os.unlink(cleanup_path)
-            except FileNotFoundError:
-                pass
-        if self._active == 0:
-            self._wakeup()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.error("Unable to clean up listening UNIX socket %r: %r", cleanup_path, exc)
+        finally:
+            if self._active == 0:
+                self._wakeup()
 
     def close_clients(self) -> None:
         for transport in tuple(self._transports):
@@ -169,16 +195,15 @@ class Server(asyncio.AbstractServer):
         if self._sockets is None:
             raise RuntimeError(f"server {self!r} is closed")
 
-        self._start_serving()
+        if not self._serving:
+            self._start_serving()
         self._serving_forever = self._loop.create_future()
         try:
             await self._serving_forever
         except asyncio.CancelledError:
-            # Whether the cancellation came from `close()` or from the caller,
-            # the connections still up are the server's to see out before it can
-            # honestly say it has stopped.
             try:
                 self.close()
+                self.close_clients()
                 await self.wait_closed()
             finally:
                 raise

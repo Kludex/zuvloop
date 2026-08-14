@@ -7,6 +7,9 @@ on:
   # Lets CodSpeed trigger a backtest to seed its baseline.
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -23,18 +26,32 @@ jobs:
         python-version: ["3.14"]
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: mlugg/setup-zig@v2
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
+          version: 0.12.3
 
       - name: Install
-        run: uv sync --python ${{ matrix.python-version }} --group dev --group bench
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
+        run: uv sync --locked --python "$PYTHON_VERSION" --group dev --group bench
+
+      - name: Verify the hashed build constraints
+        if: runner.os == 'Linux'
+        run: |
+          uv pip compile .github/build-requirements.in --universal --generate-hashes \
+            --no-header --output-file /tmp/build-constraints.txt
+          tail -n +3 .github/build-constraints.txt | diff -u - /tmp/build-constraints.txt
+          uv build --sdist --wheel --build-constraints .github/build-constraints.txt \
+            --require-hashes --out-dir /tmp/zuv-sdist
 
       # A wheel is compiled on whichever machine the job landed on, so a build
       # that defaults to that machine's CPU bakes its instruction set into a
@@ -54,14 +71,32 @@ jobs:
           fi
           rm -f zuvloop/_zuvloop.cpucheck-*.so
 
-      - name: Lint
+      - name: Lint and format Python
         run: |
           uv run ruff check
           uv run ruff format --check
 
+      - name: Install ZLint
+        if: runner.os == 'Linux'
+        run: |
+          curl -fsSL \
+            https://github.com/DonIsaac/zlint/releases/download/v0.9.1/zlint-linux-x86_64 \
+            -o /tmp/zlint
+          printf '%s  %s\n' \
+            3290bd511d37e4f6ccca3621b9894cd6c378195cdaac27520d0bd894058b2b9b \
+            /tmp/zlint | sha256sum -c -
+          chmod +x /tmp/zlint
+          echo /tmp >> "$GITHUB_PATH"
+
+      - name: Lint and format Zig
+        if: runner.os == 'Linux'
+        run: ./scripts/check-zig
+
       - name: Type check
         if: runner.os != 'Windows'
-        run: uv run mypy
+        run: |
+          uv run mypy
+          uv run python -m mypy.stubtest zuvloop --allowlist stubtest_allowlist.txt
 
       # The POSIX-only test modules reach for signals and socket families
       # typeshed rightly refuses on Windows; the library itself has to hold.
@@ -91,6 +126,51 @@ jobs:
           exit $rc
 
 
+  # musl has only ever been compiled for, never run. It is a different libc under
+  # the same Zig `std.c` shapes - a third of the published wheels - and the class
+  # of defect that keeps reaching users is exactly the one a host cannot see.
+  #
+  # Alpine runs in a plain container rather than as a job `container:`, because
+  # the Actions runner needs a glibc Node to start one and Alpine has none. Zig
+  # is fetched as its own static tarball for the same reason.
+  musl:
+    runs-on: ubuntu-latest
+
+    steps:
+      # The workspace is mounted into a container that then runs package code
+      # from the index, and a persisted token would be sitting in `.git/config`
+      # where that code could read it. Nothing here pushes.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test under musl
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src python:3.14-alpine sh -euc '
+            apk add --no-cache curl xz build-base openssl
+
+            # Checked against the digest ziglang.org publishes for this exact
+            # tarball, because nothing else here verifies what the pipe carries -
+            # `setup-zig` does its own checking and cannot run in this container.
+            curl -fsSLO https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
+            echo "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  zig-x86_64-linux-0.16.0.tar.xz" \
+              | sha256sum -c -
+            tar -xJf zig-x86_64-linux-0.16.0.tar.xz -C /opt
+            rm zig-x86_64-linux-0.16.0.tar.xz
+            export PATH="/opt/zig-x86_64-linux-0.16.0:$PATH"
+            zig version
+
+            pip install --no-cache-dir --quiet uv==0.12.3
+            # The interpreter in the image is the one to test against; uv would
+            # otherwise fetch a managed build, and those are linked against glibc.
+            export UV_PYTHON_PREFERENCE=only-system
+            uv sync --locked --python "$(command -v python3)" --group dev --group bench
+
+            uv run python -c "import zuvloop; print(zuvloop.libuv_version())"
+            uv run pytest -q
+          '
+
+
   # The Zig layer reaches libc through `std.c`, whose shape differs per target,
   # and the tests only ever run on the host. Two bugs have shipped that a
   # compile for the other target would have caught on the way in.
@@ -109,25 +189,30 @@ jobs:
           - aarch64-macos
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: mlugg/setup-zig@v2
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
+          version: 0.12.3
 
       - name: Install
-        run: uv sync --python 3.14 --group dev
+        run: uv sync --locked --python 3.14 --group dev
 
       # The headers are the host's, which is enough: this compiles the Zig, and
       # what differs between targets is `std.c`, not `Python.h`.
       - name: Compile for ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
           HATCH_ZIG_PYTHON_INCLUDE="$(uv run python -c 'import sysconfig; print(sysconfig.get_path("include"))')" \
-            zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseFast
+            zig build -Dtarget="$TARGET" -Doptimize=ReleaseFast
 
 
   # The wheels are built `ReleaseFast`, which disables every bounds and overflow
@@ -142,18 +227,23 @@ jobs:
         os: [ubuntu-latest, macos-latest]
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: mlugg/setup-zig@v2
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
+          version: 0.12.3
 
       - name: Install
-        run: uv sync --python 3.14 --group dev
+        # `bench` carries aiohttp and uvicorn: the framework tests are worth
+        # more here than anywhere, with the bounds checks left on.
+        run: uv sync --locked --python 3.14 --group dev --group bench
 
       # Built straight with zig rather than through the wheel hook, which pins
       # `ReleaseFast`. The install step puts it where the package expects.
@@ -193,6 +283,9 @@ jobs:
 
 
   benchmarks:
+    # Pull-request code must never execute in a job that can mint an OIDC token.
+    # Pushes record the trusted benchmark after a change lands.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     # Normally ~3 minutes; the CodSpeed harness has been seen sitting for over
     # half an hour, and without a bound that holds the whole run hostage.
@@ -204,22 +297,25 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: mlugg/setup-zig@v2
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
+          version: 0.12.3
 
       - name: Install
-        run: uv sync --python 3.14 --group dev --group bench
+        run: uv sync --locked --python 3.14 --group dev --group bench
 
       # Walltime, not simulation: an event loop spends its time in syscalls and
       # polling, which instruction counting does not model.
-      - uses: CodSpeedHQ/action@v5
+      - uses: CodSpeedHQ/action@4296e51e7041e24dadb86d1d6e8b9320d223dbe8 # v5.0.3
         with:
           mode: walltime
           run: uv run --no-sync pytest benchmarks/ --codspeed
@@ -228,11 +324,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
+          version: 0.12.3
 
       # No Zig, and no project install: the site never imports zuvloop, so a broken
       # link fails here rather than on the deploy that Cloudflare runs.

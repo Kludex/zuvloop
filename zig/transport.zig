@@ -136,12 +136,12 @@ pub const Transport = extern struct {
 
 var handle_offset: usize = 0;
 
-/// A queued write: the libuv request, the buffer views keeping the caller's
-/// memory alive, and the vector libuv reads from - all in one allocation.
+/// A queued write: the libuv request, immutable buffer views, and the vector
+/// libuv reads from - all in one allocation.
 ///
-/// Retaining views rather than copying is what makes a large `write()` free:
-/// the exporter stays alive (and, for a bytearray, locked against resizing)
-/// until libuv reports the write complete.
+/// An exact `bytes` object is retained without copying. Every other exporter is
+/// snapshotted first, so its view owns immutable bytes rather than caller memory;
+/// either way the backing object stays alive until libuv reports completion.
 ///
 /// The request does not take another Python reference to `transport`. The
 /// loop-owned handle reference remains alive until `onClosed`, and libuv runs
@@ -176,6 +176,23 @@ var write_req_offset: usize = 0;
 
 fn releaseViews(views: []c.Py_buffer) void {
     for (views) |*view| c.PyBuffer_Release(view);
+}
+
+/// Hold immutable bytes directly; snapshot every other exporter before write()
+/// returns so queued I/O cannot observe later mutations by the caller.
+fn acquireWriteView(data: *py.Object, view: *c.Py_buffer) py.Error!void {
+    if (c.PyBytes_CheckExact(data) != 0) {
+        if (c.PyObject_GetBuffer(data, view, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
+        return;
+    }
+
+    // SAFETY: PyObject_GetBuffer initializes source or returns an error.
+    var source: c.Py_buffer = undefined;
+    if (c.PyObject_GetBuffer(data, &source, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
+    defer c.PyBuffer_Release(&source);
+    const snapshot = c.PyBytes_FromStringAndSize(@ptrCast(source.buf), source.len) orelse return py.Error.Python;
+    defer py.decref(snapshot);
+    if (c.PyObject_GetBuffer(snapshot, view, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
 }
 
 // ---------------------------------------------------------------------------
@@ -556,17 +573,27 @@ fn queueWrite(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) py.E
     maybePauseProtocol(self);
 }
 
+/// Whether a write may proceed, releasing `views` if it may not.
+///
+/// A close only drops the data; raising would turn an ordinary shutdown race
+/// into an exception. `write_eof()` is the caller's mistake, and must be checked
+/// here too because acquiring an iterable or buffer can reenter the transport.
+fn acceptsWrite(self: *Transport, views: []c.Py_buffer) py.Error!bool {
+    if (self.flags & EOF_WRITTEN != 0) {
+        releaseViews(views);
+        return py.errRuntime("Cannot write after write_eof()");
+    }
+    if (self.flags & (CONN_LOST | CLOSING) != 0) {
+        releaseViews(views);
+        return false;
+    }
+    return true;
+}
+
 /// Writes what the socket accepts immediately and queues the rest.
 /// Takes ownership of `views` on every path.
 fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!void {
-    if (self.flags & CONN_LOST != 0) {
-        releaseViews(views);
-        return;
-    }
-    if (self.flags & (CLOSING | EOF_WRITTEN) != 0) {
-        releaseViews(views);
-        return py.errRuntime("Cannot call write() after write_eof() or close()");
-    }
+    if (!try acceptsWrite(self, views)) return;
 
     var pending = bufs;
     if (self.write_buffer_size == 0) {
@@ -645,14 +672,7 @@ fn appendPending(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) v
 /// Accepts a write, deferring the syscall to the end of the iteration.
 /// Takes ownership of `views` on every path.
 fn submitWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!void {
-    if (self.flags & CONN_LOST != 0) {
-        releaseViews(views);
-        return;
-    }
-    if (self.flags & (CLOSING | EOF_WRITTEN) != 0) {
-        releaseViews(views);
-        return py.errRuntime("Cannot call write() after write_eof() or close()");
-    }
+    if (!try acceptsWrite(self, views)) return;
     appendPending(self, bufs, views);
     // Batching pays off only for consecutive writes from one callback, and a
     // caller outside the loop may block reading the peer before the flush could
@@ -707,8 +727,9 @@ fn shutdownWrite(self: *Transport) void {
 // teardown
 
 /// libuv owns the descriptor, so the socket object handed out through
-/// `get_extra_info("socket")` must be detached rather than closed - otherwise
-/// Python would close a descriptor libuv has already closed and reused.
+/// `get_extra_info("socket")` must be detached rather than closed. The object
+/// is disarmed before libuv closes the number, preventing a second close after
+/// another thread reuses it.
 fn releaseSocketView(self: *Transport) void {
     const view = self.socket_view orelse return;
     self.socket_view = null;
@@ -724,7 +745,6 @@ fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     st.gilEnter();
     defer st.gilExit();
 
-    releaseSocketView(self);
     self.flags |= CONN_LOST;
     scheduleCall(self, self.cb_connection_lost, self.conn_lost_exc orelse py.none());
     if (self.server) |server| {
@@ -760,7 +780,12 @@ fn shutdownAndClose(self: *Transport) void {
         _ = uv.uv_read_stop(self.stream());
         self.flags &= ~READING;
     }
-    uv.uv_close(uv.asHandle(self.stream()), onClosed);
+    // uv_close closes a stream descriptor synchronously. Disarm the Python
+    // object first, or code that still holds the accepted socket can close the
+    // same number after another thread has already reused it.
+    releaseSocketView(self);
+    const handle = uv.asHandle(self.stream());
+    if (uv.uv_is_closing(handle) == 0) uv.uv_close(handle, onClosed);
 }
 
 /// Closes a transport discovered while the owning loop is shutting down.
@@ -774,7 +799,8 @@ pub fn closeFromLoop(handle: *uv.Handle) void {
         _ = uv.uv_read_stop(self.stream());
         self.flags &= ~READING;
     }
-    uv.uv_close(handle, onClosed);
+    releaseSocketView(self);
+    if (uv.uv_is_closing(handle) == 0) uv.uv_close(handle, onClosed);
 }
 
 fn closeTransport(self: *Transport) void {
@@ -897,11 +923,16 @@ pub fn startReadingMethod(self_obj: *py.Object) py.Error!*py.Object {
 
 fn write(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
     const self = asTransport(self_obj);
+    // SAFETY: acquireWriteView initializes the only element or returns an error.
     var views = [_]c.Py_buffer{undefined};
-    if (c.PyObject_GetBuffer(data, &views[0], c.PyBUF_SIMPLE) < 0) return py.Error.Python;
+    try acquireWriteView(data, &views[0]);
     if (@as(usize, @intCast(views[0].len)) > uv.Buf.max_len) {
         c.PyBuffer_Release(&views[0]);
         return py.errOverflow("a single buffer above 4 GiB cannot be written on Windows");
+    }
+    if (self.flags & EOF_WRITTEN != 0) {
+        c.PyBuffer_Release(&views[0]);
+        return py.errRuntime("Cannot call write() after write_eof()");
     }
     if (views[0].len == 0) {
         c.PyBuffer_Release(&views[0]);
@@ -914,6 +945,7 @@ fn write(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
 
 fn writelines(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
     const self = asTransport(self_obj);
+    if (self.flags & EOF_WRITTEN != 0) return py.errRuntime("Cannot call writelines() after write_eof()");
     const seq = c.PySequence_Fast(data, "writelines() requires an iterable of buffers") orelse return py.Error.Python;
     defer py.decref(seq);
     const n: usize = @intCast(c.PySequence_Size(seq));
@@ -933,12 +965,12 @@ fn writelines(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
             return py.Error.Python;
         };
         // The buffer view keeps the exporter alive, so the item reference can go.
-        const acquired = c.PyObject_GetBuffer(item, &views[filled], c.PyBUF_SIMPLE);
-        py.decref(item);
-        if (acquired < 0) {
+        acquireWriteView(item, &views[filled]) catch {
+            py.decref(item);
             releaseViews(views[0..filled]);
             return py.Error.Python;
-        }
+        };
+        py.decref(item);
         if (@as(usize, @intCast(views[filled].len)) > uv.Buf.max_len) {
             releaseViews(views[0 .. filled + 1]);
             return py.errOverflow("a single buffer above 4 GiB cannot be written on Windows");
@@ -1017,6 +1049,16 @@ fn setWriteBufferLimits(
             low_water = @intCast(parsed);
         }
     }
+    if (high == null or py.isNone(high.?)) {
+        if (low) |value| {
+            if (!py.isNone(value)) {
+                if (low_water > std.math.maxInt(c.Py_ssize_t) / 4) {
+                    return py.errOverflow("high water mark is too large");
+                }
+                high_water = low_water * 4;
+            }
+        }
+    }
     if (low_water > high_water) return py.errValue("high water mark must be >= low water mark");
     self.high_water = high_water;
     self.low_water = low_water;
@@ -1028,6 +1070,10 @@ fn forceCloseMethod(self_obj: *py.Object, exc: *py.Object) py.Error!*py.Object {
     const self = asTransport(self_obj);
     forceClose(self, if (py.isNone(exc)) null else py.newref(exc));
     return py.noneRef();
+}
+
+fn getProtocolPaused(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
+    return py.boolRef(asTransport(self_obj.?).flags & PROTOCOL_PAUSED != 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1250,12 +1296,19 @@ var methods = [_]c.PyMethodDef{
     py.sentinel,
 };
 
+// asyncio's name for this state; its sendfile machinery reads it off transports.
+var getsets = [_]c.PyGetSetDef{
+    .{ .name = "_protocol_paused", .get = getProtocolPaused, .set = null, .doc = "Whether flow control has paused the protocol.", .closure = null },
+    .{ .name = null, .get = null, .set = null, .doc = null, .closure = null },
+};
+
 var slots = [_]c.PyType_Slot{
     .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
     .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
     .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&clear_)) },
     .{ .slot = c.Py_tp_repr, .pfunc = @ptrCast(@constCast(&repr)) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
+    .{ .slot = c.Py_tp_getset, .pfunc = @ptrCast(&getsets) },
     .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("A libuv-backed stream transport.")) },
     .{ .slot = 0, .pfunc = null },
 };

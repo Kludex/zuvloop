@@ -1,0 +1,53 @@
+name: Native hardening
+
+on:
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-hardening
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          version: 0.12.3
+
+      - name: Install
+        run: uv sync --locked --python 3.14 --group dev --group bench
+
+      - name: Build with native safety checks
+        run: |
+          HATCH_ZIG_PYTHON_INCLUDE="$(uv run python -c 'import sysconfig; print(sysconfig.get_path("include"))')" \
+          HATCH_ZIG_EXT_SUFFIX="$(uv run python -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')" \
+            zig build -Doptimize=ReleaseSafe -Dsanitize-c=full
+
+      - name: Test with native safety checks
+        env:
+          PYTHONDEVMODE: "1"
+          PYTHONMALLOC: debug
+        run: uv run --no-sync pytest -q
+
+      - name: Soak loop lifecycle and resource ownership
+        env:
+          PYTHONDEVMODE: "1"
+          PYTHONMALLOC: debug
+        run: uv run --no-sync python scripts/soak.py --cycles 500

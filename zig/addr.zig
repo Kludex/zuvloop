@@ -23,14 +23,19 @@ pub const AF_INET: c_int = posix.AF.INET;
 pub const AF_INET6: c_int = posix.AF.INET6;
 pub const AF_UNIX: c_int = posix.AF.UNIX;
 
+const UN_BASE = @offsetOf(posix.sockaddr.un, "path");
+
 fn tupleItem(t: *py.Object, i: c.Py_ssize_t) py.Error!*py.Object {
     return c.PyTuple_GetItem(t, i) orelse py.Error.Python;
 }
 
-/// Fills `out` from `(host, port[, flowinfo, scopeid])` or a filesystem path.
-pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!void {
+/// Fills `out` from `(host, port[, flowinfo, scopeid])` or a filesystem path,
+/// returning its length - the only thing that tells an abstract `AF_UNIX` name
+/// from a shorter one padded with zeros.
+pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!c_int {
     out.* = .{};
     if (family == AF_UNIX) {
+        // SAFETY: each accepted address type assigns path, and every other type returns.
         var path: [*c]const u8 = undefined;
         var len: c.Py_ssize_t = 0;
         if (c.PyUnicode_Check(address) != 0) {
@@ -45,7 +50,7 @@ pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!vo
         if (len >= un.path.len) return py.errValue("AF_UNIX path too long");
         un.family = @intCast(AF_UNIX);
         @memcpy(un.path[0..@intCast(len)], path[0..@intCast(len)]);
-        return;
+        return @intCast(UN_BASE + @as(usize, @intCast(len)));
     }
 
     if (c.PyTuple_Check(address) == 0) return py.errType("address must be a tuple");
@@ -68,7 +73,11 @@ pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!vo
         var len: c.Py_ssize_t = 0;
         const s = c.PyUnicode_AsUTF8AndSize(host_obj, &len) orelse return py.Error.Python;
         if (len >= host_buf.len) return py.errValue("host name too long");
-        @memcpy(host_buf[0..@intCast(len)], s[0..@intCast(len)]);
+        const host_len: usize = @intCast(len);
+        if (std.mem.indexOfScalar(u8, s[0..host_len], 0) != null) {
+            return py.errValue("embedded null character");
+        }
+        @memcpy(host_buf[0..host_len], s[0..host_len]);
         host_buf[@intCast(len)] = 0;
         break :blk @ptrCast(&host_buf);
     };
@@ -76,21 +85,36 @@ pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!vo
     if (family == AF_INET6 or (family == 0 and std.mem.indexOfScalar(u8, std.mem.span(host), ':') != null)) {
         const sin6: *posix.sockaddr.in6 = @ptrCast(out);
         try py.errUvIfNeg(uv.uv_ip6_addr(host, port, sin6));
-        if (size >= 3) sin6.flowinfo = @intCast(try py.asCInt(try tupleItem(address, 2)));
-        if (size >= 4) sin6.scope_id = @intCast(try py.asCInt(try tupleItem(address, 3)));
-        return;
+        if (size >= 3) {
+            const flowinfo = try py.asIsizeClamped(try tupleItem(address, 2));
+            if (flowinfo < 0 or flowinfo > 0xfffff) return py.errOverflow("flowinfo must be 0-1048575");
+            sin6.flowinfo = @intCast(flowinfo);
+        }
+        if (size >= 4) {
+            const scope_id = try py.asIsizeClamped(try tupleItem(address, 3));
+            if (scope_id < 0 or scope_id > std.math.maxInt(u32)) {
+                return py.errOverflow("scope_id must be 0-4294967295");
+            }
+            sin6.scope_id = @intCast(scope_id);
+        }
+        return @sizeOf(posix.sockaddr.in6);
     }
     const sin: *posix.sockaddr.in = @ptrCast(out);
     try py.errUvIfNeg(uv.uv_ip4_addr(host, port, sin));
+    return @sizeOf(posix.sockaddr.in);
 }
 
-/// Builds the tuple `socket.getsockname()` would return for `sa`.
-pub fn toPython(sa: *const posix.sockaddr) py.Error!*py.Object {
+/// Builds the Python address that corresponds to `sa` and its kernel-reported length.
+pub fn toPython(sa: *const posix.sockaddr, sa_len: c_int) py.Error!*py.Object {
     const family: c_int = sa.family;
     if (family == AF_UNIX) {
+        if (sa_len <= UN_BASE) return py.noneRef();
         const un: *const posix.sockaddr.un = @ptrCast(@alignCast(sa));
-        const len = std.mem.indexOfScalar(u8, &un.path, 0) orelse un.path.len;
-        return py.str(un.path[0..len]) orelse py.Error.Python;
+        if (un.path[0] == 0) {
+            return py.bytes(unixName(sa, sa_len)) orelse py.Error.Python;
+        }
+        const path = unixName(sa, sa_len);
+        return c.PyUnicode_DecodeFSDefaultAndSize(@ptrCast(path.ptr), @intCast(path.len)) orelse py.Error.Python;
     }
     if (family != AF_INET and family != AF_INET6) return py.noneRef();
 
@@ -111,4 +135,39 @@ pub fn toPython(sa: *const posix.sockaddr) py.Error!*py.Object {
         @as(c_uint, sin6.flowinfo),
         @as(c_uint, sin6.scope_id),
     ) orelse py.Error.Python;
+}
+
+/// Whether two addresses name the same endpoint.
+///
+/// Only the fields that identify the peer are read: a byte comparison would trip
+/// over padding, and over the `sin_len` the BSDs carry.
+/// The bytes that name an `AF_UNIX` socket, as the kernel distinguishes them: an
+/// abstract name is as long as the reported length says, so `\0foo` and `\0foo\0`
+/// differ, while a pathname ends at its terminator - which the two sides need not
+/// agree on counting.
+fn unixName(sa: *const posix.sockaddr, len: c_int) []const u8 {
+    const un: *const posix.sockaddr.un = @ptrCast(@alignCast(sa));
+    if (len <= UN_BASE) return un.path[0..0];
+    const n = @min(@as(usize, @intCast(len)) - UN_BASE, un.path.len);
+    if (un.path[0] == 0) return un.path[0..n];
+    return un.path[0 .. std.mem.indexOfScalar(u8, un.path[0..n], 0) orelse n];
+}
+
+pub fn same(a: *const posix.sockaddr, a_len: c_int, b: *const posix.sockaddr, b_len: c_int) bool {
+    if (a.family != b.family) return false;
+    if (a.family == AF_UNIX) return std.mem.eql(u8, unixName(a, a_len), unixName(b, b_len));
+    if (a.family == AF_INET) {
+        const x: *const posix.sockaddr.in = @ptrCast(@alignCast(a));
+        const y: *const posix.sockaddr.in = @ptrCast(@alignCast(b));
+        return x.port == y.port and x.addr == y.addr;
+    }
+    if (a.family == AF_INET6) {
+        const x: *const posix.sockaddr.in6 = @ptrCast(@alignCast(a));
+        const y: *const posix.sockaddr.in6 = @ptrCast(@alignCast(b));
+        if (x.port != y.port or !std.mem.eql(u8, &x.addr, &y.addr)) return false;
+        // asyncio compares the complete tuples, so both ancillary fields must
+        // be stated exactly rather than treating zero as a wildcard.
+        return x.flowinfo == y.flowinfo and x.scope_id == y.scope_id;
+    }
+    return false;
 }

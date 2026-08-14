@@ -4,11 +4,20 @@ zuvloop emits plain [OpenTelemetry](https://opentelemetry.io). Its only runtime
 dependency is `opentelemetry-api` — not the SDK, and nothing vendor-specific.
 
 Until an application installs a provider, OpenTelemetry hands back proxy
-instruments whose methods do nothing and slow-callback timing stays off. Install
-providers before starting the loop; zuvloop checks for them at each
-`run_forever()` entry.
+instruments whose methods do nothing and slow-callback timing stays off.
+Providers can be installed before the loop starts or from inside it —
+`logfire.configure()` in `main()` works: zuvloop checks at each `run_forever()`
+entry and re-checks every `metrics_interval` seconds (10 by default) while the
+loop runs, so a provider configured after start arms slow-callback timing
+within one interval.
 
 **The measurement happens in Zig. Python only records it.**
+
+Unhandled exceptions are also reported through the standard `asyncio` logger,
+whether or not an OpenTelemetry provider exists. Telemetry is an additional
+signal, never the only error path. A broken exporter or provider is contained:
+its exception is not allowed to escape the loop's exception handler or suppress
+the normal log record.
 
 ## Signals
 
@@ -39,9 +48,10 @@ zuvloop.run(main())
 ```
 
 Spans and counters are emitted as the events happen. The gauges are sampled
-automatically while the loop runs, but only when a real meter provider is
-installed - without one there would be nowhere for the numbers to go, so the
-sampler never starts. The default interval is 10 seconds; set
+automatically while the loop runs and published when a real meter provider is
+installed - without one the snapshot is dropped, since there is nowhere for
+the numbers to go. The same timer is what notices a provider configured after
+the loop started. The default interval is 10 seconds; set
 `loop.metrics_interval` before running the loop to change it:
 
 ```python
@@ -55,14 +65,27 @@ Slow-callback spans carry the awaiting call graph, captured with
 `asyncio.format_call_graph()`, so you see *why* the callback was running rather
 than just its repr.
 
+Callback reprs, call graphs and exception messages can contain application data.
+Each string attribute is truncated to 4 KiB before it is handed to a provider,
+and repr failures are replaced with a safe type description. zuvloop does not
+attach callback arguments, network payloads or environment variables. Treat the
+remaining diagnostic strings according to the data policy of your telemetry
+backend.
+
 The span's duration is reconstructed backwards from the loop's own monotonic
 measurement, so it covers the callback itself rather than the moment it was
 reported.
 
-Slow callbacks are monitored when the loop run begins with an OpenTelemetry
-tracing or metrics provider installed; asyncio debug mode does not need to be
-enabled. Metrics-only configurations skip span and call-graph construction. Set
-the threshold as you would on any loop:
+Slow callbacks are monitored whenever an OpenTelemetry tracing or metrics
+provider is installed - whether it was there when the loop started or appeared
+up to `metrics_interval` seconds ago; asyncio debug mode does not need to be
+enabled. Metrics-only configurations skip span and call-graph construction.
+
+A slow callback is reported as a warning, not an error: the span's status is
+left unset - OpenTelemetry has no warning status - and the severity travels as
+a `logfire.level_num` attribute, which backends that do not know it ignore.
+
+Set the threshold as you would on any loop:
 
 ```python
 loop.slow_callback_duration = 0.05

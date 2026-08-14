@@ -1,0 +1,144 @@
+name: Update libuv
+
+on:
+  schedule:
+    # Monday morning UTC, away from the usual top-of-hour scheduler rush.
+    - cron: "17 8 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: update-libuv
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.update.outputs.changed }}
+      version: ${{ steps.update.outputs.version }}
+      signer: ${{ steps.update.outputs.signer }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+
+      - id: update
+        name: Download and verify the latest release
+        run: ./scripts/update-libuv
+
+      - if: steps.update.outputs.changed == 'true'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+
+      - if: steps.update.outputs.changed == 'true'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          version: 0.12.3
+
+      - if: steps.update.outputs.changed == 'true'
+        name: Install
+        run: uv sync --locked --python 3.14 --group dev
+
+      - if: steps.update.outputs.changed == 'true'
+        name: Test the updated native extension
+        run: |
+          uv run coverage run -m pytest
+          uv run coverage report
+
+      - if: steps.update.outputs.changed == 'true'
+        name: Cross-compile every supported target
+        run: |
+          include="$(uv run python -c 'import sysconfig; print(sysconfig.get_path("include"))')"
+          for target in \
+            x86_64-linux-gnu aarch64-linux-gnu \
+            x86_64-linux-musl aarch64-linux-musl \
+            x86_64-macos aarch64-macos
+          do
+            HATCH_ZIG_PYTHON_INCLUDE="$include" \
+              zig build -Dtarget="$target" -Doptimize=ReleaseFast
+          done
+
+      - if: steps.update.outputs.changed == 'true'
+        name: Package the reviewed update
+        env:
+          VERSION: ${{ steps.update.outputs.version }}
+          SIGNER: ${{ steps.update.outputs.signer }}
+        run: |
+          git add -A -f vendor
+          # The upstream tree is preserved verbatim, including its whitespace.
+          git diff --cached --check -- vendor/README.md
+          git diff --cached --binary -- vendor > libuv.patch
+          test -s libuv.patch
+          printf 'version=%s\nsigner=%s\n' "$VERSION" "$SIGNER" > libuv-update.env
+
+      - if: steps.update.outputs.changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: libuv-update
+          path: |
+            libuv.patch
+            libuv-update.env
+          retention-days: 1
+
+  create-pull-request:
+    if: needs.update.outputs.changed == 'true'
+    needs: update
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # push the verified vendor update branch
+      pull-requests: write # open the update pull request
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: main
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: libuv-update
+          path: /tmp/libuv-update
+
+      - name: Push the update and open its pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh auth setup-git
+          source /tmp/libuv-update/libuv-update.env
+          git apply --binary /tmp/libuv-update/libuv.patch
+          git switch -C automation/update-libuv
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A -f vendor
+          git commit -m "Update libuv to ${version}"
+          git push --force origin HEAD
+
+          body="$(mktemp)"
+          cat > "$body" <<EOF
+          Update the vendored libuv release to **${version}**.
+
+          The weekly updater verified the release tarball's detached signature against
+          trusted libuv maintainer fingerprint \`${signer}\`, ran the complete test
+          suite, and cross-compiled every supported target before opening this PR.
+          EOF
+
+          number="$(gh pr list --state open --head automation/update-libuv --json number --jq '.[0].number // empty')"
+          if [[ -n "$number" ]]; then
+            gh pr edit "$number" --title "Update libuv to ${version}" --body-file "$body"
+          else
+            gh pr create \
+              --base main \
+              --head automation/update-libuv \
+              --title "Update libuv to ${version}" \
+              --body-file "$body"
+          fi

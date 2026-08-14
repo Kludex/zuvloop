@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import socket
 import ssl
 
 import pytest
 
-from conftest import collect_contexts, running_loop
+from tests.conftest import collect_contexts, running_loop
+from zuvloop._server import Server
 
 pytestmark = pytest.mark.anyio
 
@@ -57,6 +60,39 @@ async def test_tls_rejects_an_untrusted_certificate(server_context: ssl.SSLConte
     finally:
         server.close()
         loop.set_exception_handler(None)
+
+
+async def test_cancelling_a_server_handshake_disarms_the_accepted_socket_before_close(
+    server_context: ssl.SSLContext,
+) -> None:
+    loop = running_loop()
+
+    class CloseTrackingSocket(socket.socket):
+        close_calls = 0
+
+        def close(self) -> None:  # pragma: no cover - the assertion is that this never runs
+            self.close_calls += 1
+            super().close()
+
+    raw, peer = socket.socketpair()
+    accepted = CloseTrackingSocket(fileno=raw.detach())
+    accepted.setblocking(False)
+    server = Server(loop, (), asyncio.Protocol, server_context, 1, None, None)
+    server._active = 1
+
+    try:
+        handshake = loop.create_task(loop._accept_tls(accepted, asyncio.Protocol, server))
+        await asyncio.sleep(0)
+        handshake.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await handshake
+        await asyncio.sleep(0)
+
+        assert accepted.close_calls == 0
+        assert accepted.fileno() == -1
+        assert server._active == 0
+    finally:
+        peer.close()
 
 
 async def test_a_failed_handshake_is_reported(server_context: ssl.SSLContext) -> None:
@@ -118,6 +154,97 @@ async def test_start_tls_upgrades_a_plain_connection(
         await asyncio.sleep(0.05)
 
 
+async def test_start_tls_consumes_a_buffered_client_hello(
+    server_context: ssl.SSLContext, client_context: ssl.SSLContext
+) -> None:
+    loop = running_loop()
+    proxy_line = b"PROXY TCP4 127.0.0.1 127.0.0.1 54321 443\r\n"
+    target_done: asyncio.Future[int] = loop.create_future()
+
+    async def handle_target(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            assert await reader.readline() == proxy_line
+            buffer: bytearray = getattr(reader, "_buffer")
+            async with asyncio.timeout(1):
+                while not getattr(reader, "_paused"):  # pragma: no cover - TCP chunking varies by platform
+                    await asyncio.sleep(0)
+            buffered = len(buffer)
+            assert buffered > 0
+            await writer.start_tls(server_context)
+            assert getattr(reader, "_paused") is False
+            payload = await reader.readexactly(6)
+            writer.write(payload)
+            await writer.drain()
+            target_done.set_result(buffered)
+        except BaseException as exc:  # pragma: no cover - assertion diagnostic
+            if not target_done.done():
+                target_done.set_exception(exc)
+        finally:
+            writer.close()
+            with contextlib.suppress(OSError):
+                await writer.wait_closed()
+
+    target = await asyncio.start_server(handle_target, "127.0.0.1", 0, limit=64)
+    target_address = target.sockets[0].getsockname()
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    listener.setblocking(False)
+
+    async def relay(source: socket.socket, destination: socket.socket) -> None:
+        while data := await loop.sock_recv(source, 65_536):
+            await loop.sock_sendall(destination, data)
+
+    async def proxy_once() -> None:
+        client, _address = await loop.sock_accept(listener)
+        remote = socket.socket()
+        client.setblocking(False)
+        remote.setblocking(False)
+        try:
+            await loop.sock_connect(remote, target_address)
+            client_hello = bytearray()
+            while len(client_hello) < 5:
+                client_hello += await loop.sock_recv(client, 5 - len(client_hello))
+            record_size = 5 + int.from_bytes(client_hello[3:5])
+            while len(client_hello) < record_size:
+                client_hello += await loop.sock_recv(client, 65_536)
+            await loop.sock_sendall(remote, proxy_line + client_hello)
+
+            relays = [
+                loop.create_task(relay(client, remote)),
+                loop.create_task(relay(remote, client)),
+            ]
+            _done, pending = await asyncio.wait(relays, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*relays, return_exceptions=True)
+        finally:
+            client.close()
+            remote.close()
+
+    proxy_task = loop.create_task(proxy_once())
+    writer: asyncio.StreamWriter | None = None
+    try:
+        reader, writer = await asyncio.open_connection(*listener.getsockname())
+        await writer.start_tls(client_context, server_hostname="localhost")
+        writer.write(b"secure")
+        await writer.drain()
+        assert await asyncio.wait_for(reader.readexactly(6), 5) == b"secure"
+        assert await asyncio.wait_for(target_done, 5) > 0
+    finally:
+        if writer is not None:  # pragma: no branch - open failure is cleanup-only
+            writer.close()
+            with contextlib.suppress(OSError):
+                await writer.wait_closed()
+        listener.close()
+        target.close()
+        await target.wait_closed()
+        if not proxy_task.done():  # pragma: no branch - completion timing is platform-dependent
+            proxy_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await proxy_task
+
+
 async def test_server_side_tls_needs_a_context() -> None:
     loop = running_loop()
     with pytest.raises(ValueError, match="needs an SSLContext"):
@@ -144,3 +271,8 @@ async def test_start_tls_closes_the_transport_when_the_handshake_fails(client_co
             await loop.start_tls(transport, protocol, client_context, server_hostname="localhost")
         assert transport.is_closing()
         await asyncio.sleep(0.05)
+
+
+async def test_start_tls_rejects_a_write_only_transport(client_context: ssl.SSLContext) -> None:
+    with pytest.raises(TypeError, match="both reading and writing"):
+        await running_loop().start_tls(asyncio.WriteTransport(), asyncio.Protocol(), client_context)

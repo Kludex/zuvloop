@@ -39,6 +39,19 @@ fn onPoll(handle: ?*uv.Poll, status: c_int, events: c_int) callconv(.c) void {
     const fire_write = status < 0 or events & uv.WRITABLE != 0;
     if (fire_read) schedule(st, self.reader);
     if (fire_write) schedule(st, self.writer);
+    if (status < 0) {
+        // libuv stopped the handle before reporting the error, so the cache
+        // must stop claiming the descriptor is polled - `rearm` compares
+        // against it. What stays registered wants the poll running again: a
+        // selector keeps polling a registered descriptor through an error,
+        // once per turn, until a callback consumes it or removes the
+        // registration. The woken callbacks run before the restarted poll is
+        // submitted to the kernel, so a callback that consumes the error - a
+        // datagram endpoint eating an ICMP rejection - leaves a clean
+        // descriptor behind, not a spin.
+        self.events = 0;
+        rearm(st, self) catch py.writeUnraisable(@ptrCast(self.loop));
+    }
     loopmod.startIdle(st);
 }
 

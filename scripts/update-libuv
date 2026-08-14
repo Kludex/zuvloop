@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Update to the latest signed libuv release, or to the version passed explicitly.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+keys="$root/vendor/libuv-maintainer-keys.txt"
+version="${1:-}"
+if [[ -z "$version" ]]; then
+    version="$(curl -fsSL https://api.github.com/repos/libuv/libuv/releases/latest |
+        python3 -c 'import json, sys; print(json.load(sys.stdin)["tag_name"].removeprefix("v"))')"
+fi
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "invalid libuv release version: $version" >&2
+    exit 2
+fi
+
+current="$(sed -n -E 's/^- Version: \*\*([^*]+)\*\*/\1/p' "$root/vendor/README.md")"
+if [[ "$version" == "$current" ]]; then
+    echo "libuv $version is already vendored"
+    if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+        printf 'changed=false\nversion=%s\n' "$version" >> "$GITHUB_OUTPUT"
+    fi
+    exit 0
+fi
+
+url="https://dist.libuv.org/dist/v${version}/libuv-v${version}.tar.gz"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+mkdir -m 700 "$tmp/gnupg"
+
+git -C "$tmp" init --quiet keys
+git -C "$tmp/keys" remote add origin https://github.com/libuv/libuv.git
+while read -r fingerprint source; do
+    [[ -z "$fingerprint" || "$fingerprint" == \#* ]] && continue
+    key_file="$tmp/key.asc"
+    if [[ "$source" == github:* ]]; then
+        user="${source#github:}"
+        curl -fsSL "https://api.github.com/users/${user}/gpg_keys" |
+            python3 -c 'import json, sys
+for key in json.load(sys.stdin):
+    if key.get("raw_key"):
+        print(key["raw_key"])' > "$key_file"
+    else
+        git -C "$tmp/keys" fetch --quiet --depth=1 origin "refs/tags/${source}:refs/tags/${source}"
+        git -C "$tmp/keys" show "$source" > "$key_file"
+    fi
+    if ! gpg --batch --show-keys --with-colons "$key_file" 2>/dev/null |
+        awk -F: '$1 == "fpr" { print $10 }' |
+        grep -Fxq "$fingerprint"; then
+        echo "libuv key source $source does not contain trusted fingerprint $fingerprint" >&2
+        exit 1
+    fi
+    GNUPGHOME="$tmp/gnupg" gpg --batch --import "$key_file" >/dev/null 2>&1
+done < "$keys"
+
+curl -fsSL "$url" -o "$tmp/libuv.tar.gz"
+curl -fsSL "${url}.sign" -o "$tmp/libuv.tar.gz.sign"
+status="$(GNUPGHOME="$tmp/gnupg" gpg --batch --status-fd 1 \
+    --verify "$tmp/libuv.tar.gz.sign" "$tmp/libuv.tar.gz" 2>/dev/null)"
+signer="$(awk '$2 == "VALIDSIG" { print $NF }' <<< "$status")"
+if [[ -z "$signer" ]]; then
+    echo "libuv $version signature produced no VALIDSIG status" >&2
+    exit 1
+fi
+if ! awk 'NF && !/^#/ { print $1 }' "$keys" | grep -Fxq "$signer"; then
+    echo "libuv $version was signed by untrusted fingerprint $signer" >&2
+    exit 1
+fi
+
+checksum="$(shasum -a 256 "$tmp/libuv.tar.gz" | awk '{ print $1 }')"
+"$root/vendor/update-libuv.sh" "$version" "$checksum"
+
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    printf 'changed=true\nversion=%s\nsigner=%s\n' "$version" "$signer" >> "$GITHUB_OUTPUT"
+fi

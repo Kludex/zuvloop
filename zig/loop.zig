@@ -11,6 +11,8 @@ const c = py.c;
 const uv = @import("uv.zig");
 const collections = @import("collections.zig");
 const handlemod = @import("handle.zig");
+const tshandle = @import("tshandle.zig");
+const timermod = @import("timer.zig");
 const pollermod = @import("poller.zig");
 const dns = @import("dns.zig");
 const transportmod = @import("transport.zig");
@@ -117,9 +119,23 @@ pub inline fn now() f64 {
     return @as(f64, @floatFromInt(ns)) / 1e9;
 }
 
-fn isHandleCancelled(obj: *py.Object) bool {
-    const h: *Handle = @ptrCast(@alignCast(obj));
-    return h.isCancelled();
+/// Converts a positive duration to libuv's millisecond clock without letting
+/// an infinite or oversized Python float reach a trapping float-to-int cast.
+fn timerMilliseconds(seconds: f64, guard_ms: f64) u64 {
+    if (!(seconds > 0)) return 0;
+    const rounded = @ceil(seconds * 1000.0) + guard_ms;
+    const limit: f64 = @floatFromInt(std.math.maxInt(u64));
+    if (!std.math.isFinite(rounded) or rounded >= limit) return std.math.maxInt(u64);
+    return @intFromFloat(rounded);
+}
+
+/// Cancelled means dropped, and being dropped from the heap is what ends being
+/// scheduled - so the flag is cleared on the way out, as it is everywhere else
+/// a timer leaves.
+fn retireIfCancelled(obj: *py.Object) bool {
+    if (!timermod.isCancelled(obj)) return false;
+    timermod.clearScheduled(obj);
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +266,18 @@ pub inline fn startIdle(st: *State) void {
     }
 }
 
+/// The ready queue holds both handle types; only the type says which protocol
+/// a callback runs under.
+inline fn runOne(obj: *py.Object) void {
+    if (timermod.owns(obj)) {
+        timermod.run(obj);
+    } else if (tshandle.owns(obj)) {
+        tshandle.run(obj);
+    } else {
+        handlemod.run(@ptrCast(@alignCast(obj)));
+    }
+}
+
 /// Runs exactly the callbacks queued on entry. asyncio guarantees everything
 /// already scheduled runs even if one of them calls `stop()`, so the batch is
 /// never cut short.
@@ -260,14 +288,13 @@ fn runReady(self: *LoopObject) void {
     st.callbacks_run += remaining;
     while (remaining != 0) : (remaining -= 1) {
         const obj = st.ready.pop() orelse break;
-        const h: *Handle = @ptrCast(@alignCast(obj));
         if ((st.debug or st.slow_callback_monitoring) and st.slow_callback_duration < std.math.inf(f64)) {
             const started = uv.uv_hrtime();
-            handlemod.run(h);
+            runOne(obj);
             const elapsed = @as(f64, @floatFromInt(uv.uv_hrtime() - started)) / 1e9;
             if (elapsed > st.slow_callback_duration) reportSlowCallback(self, obj, elapsed);
         } else {
-            handlemod.run(h);
+            runOne(obj);
         }
         py.decref(obj);
     }
@@ -295,8 +322,8 @@ fn collectDueTimers(self: *LoopObject) void {
     while (st.timers.peek()) |entry| {
         if (entry.when > deadline) break;
         _ = st.timers.pop();
-        const h: *Handle = @ptrCast(@alignCast(entry.handle));
-        if (h.isCancelled()) {
+        timermod.clearScheduled(entry.handle);
+        if (timermod.isCancelled(entry.handle)) {
             py.decref(entry.handle);
             if (st.timers.cancelled != 0) st.timers.cancelled -= 1;
             continue;
@@ -310,9 +337,9 @@ fn collectDueTimers(self: *LoopObject) void {
 fn armTimer(self: *LoopObject) void {
     const st = self.state();
     while (st.timers.peek()) |entry| {
-        const h: *Handle = @ptrCast(@alignCast(entry.handle));
-        if (!h.isCancelled()) break;
+        if (!timermod.isCancelled(entry.handle)) break;
         _ = st.timers.pop();
+        timermod.clearScheduled(entry.handle);
         py.decref(entry.handle);
         if (st.timers.cancelled != 0) st.timers.cancelled -= 1;
     }
@@ -326,7 +353,7 @@ fn armTimer(self: *LoopObject) void {
     const delta = entry.when - now();
     // libuv's millisecond clock can fire up to 1ms early; +1 keeps callbacks
     // from running before their deadline, which asyncio callers rely on.
-    const ms: u64 = if (delta <= 0) 0 else @intFromFloat(@ceil(delta * 1000.0) + 1);
+    const ms = timerMilliseconds(delta, 1);
     _ = uv.uv_timer_start(st.timer, onTimer, ms, 0);
     st.timer_active = true;
 }
@@ -335,7 +362,7 @@ pub fn noteTimerCancelled(self: *LoopObject) void {
     const st = self.st orelse return;
     st.timers.cancelled += 1;
     if (st.timers.cancelled > min_cancelled_timers and st.timers.cancelled * 2 > st.timers.len) {
-        st.timers.compact(isHandleCancelled);
+        st.timers.compact(retireIfCancelled);
         armTimer(self);
     }
 }
@@ -350,8 +377,8 @@ pub fn captureFatal(self: *LoopObject) void {
 
 /// Routes a failed callback to `call_exception_handler`, except for the two
 /// exceptions asyncio propagates out of `run_forever`.
-pub fn handleCallbackError(h: *Handle) void {
-    const loop_obj = h.loop orelse {
+pub fn callbackFailed(loop_obj_opt: ?*py.Object, h: *py.Object) void {
+    const loop_obj = loop_obj_opt orelse {
         c.PyErr_Clear();
         return;
     };
@@ -364,7 +391,7 @@ pub fn handleCallbackError(h: *Handle) void {
     }
     const exc = c.PyErr_GetRaisedException() orelse return;
     defer py.decref(exc);
-    callExceptionHandler(self, "Exception in callback", exc, @ptrCast(h));
+    callExceptionHandler(self, "Exception in callback", exc, h);
 }
 
 pub fn callExceptionHandler(self: *LoopObject, comptime message: [:0]const u8, exc: *py.Object, h: ?*py.Object) void {
@@ -456,12 +483,12 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
     const st = self.state();
     try checkClosed(st);
     const p = try parseCall(args, nargs, kwnames, 1);
-    const h = try handlemod.create(handlemod.handle_type.?, self_obj, args[0].?, p.positional, p.context);
+    const h = try tshandle.create(self_obj, args[0].?, p.positional, p.context);
     py.incref(h);
     // One FIFO for both schedulers, so a `call_soon` issued after a
     // `call_soon_threadsafe` still runs after it. The caller holds the GIL and the
     // loop touches `ready` only while holding it, so the push is atomic against it.
-    st.ready.push(@as(*py.Object, @ptrCast(h))) catch {
+    st.ready.push(h) catch {
         py.decref(h);
         py.decref(h);
         return py.errNoMemory();
@@ -469,23 +496,27 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
     // The only libuv call legal from a foreign thread; `uv_idle_start` is not, so
     // the idle handle is armed by the waker on the loop thread.
     _ = uv.uv_async_send(st.waker);
-    return @ptrCast(h);
+    return h;
 }
 
-fn scheduleAt(self: *LoopObject, when: f64, callback: *py.Object, p: Parsed) py.Error!*py.Object {
+fn scheduleAt(
+    self: *LoopObject,
+    when: f64,
+    original_when: ?*py.Object,
+    callback: *py.Object,
+    p: Parsed,
+) py.Error!*py.Object {
     const st = self.state();
     try checkClosed(st);
-    const h = try handlemod.create(handlemod.timer_type.?, @ptrCast(self), callback, p.positional, p.context);
-    h.flags |= handlemod.IS_TIMER;
-    h.when = when;
+    const h = try timermod.create(@ptrCast(self), callback, p.positional, p.context, when, original_when);
     py.incref(h);
-    st.timers.push(when, @as(*py.Object, @ptrCast(h))) catch {
+    st.timers.push(when, h) catch {
         py.decref(h);
         py.decref(h);
         return py.errNoMemory();
     };
     armTimer(self);
-    return @ptrCast(h);
+    return h;
 }
 
 fn callLater(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames: ?*py.Object) py.Error!*py.Object {
@@ -493,14 +524,14 @@ fn callLater(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwna
     const delay = try py.asF64(args[0].?);
     const p = try parseCall(args, nargs, kwnames, 2);
     const when = now() + @max(delay, 0);
-    return scheduleAt(asLoop(self_obj), when, args[1].?, p);
+    return scheduleAt(asLoop(self_obj), when, null, args[1].?, p);
 }
 
 fn callAt(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames: ?*py.Object) py.Error!*py.Object {
     if (nargs < 2) return py.errType("call_at() requires a time and a callback");
     const when = try py.asF64(args[0].?);
     const p = try parseCall(args, nargs, kwnames, 2);
-    return scheduleAt(asLoop(self_obj), when, args[1].?, p);
+    return scheduleAt(asLoop(self_obj), when, args[0], args[1].?, p);
 }
 
 fn time(self_obj: *py.Object) py.Error!*py.Object {
@@ -647,7 +678,7 @@ fn startMetrics(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py.Ob
     py.incref(args[1].?);
     st.metrics_cb = args[1];
 
-    const ms: u64 = @intFromFloat(@ceil(interval * 1000.0));
+    const ms = timerMilliseconds(interval, 0);
     try py.errUvIfNeg(uv.uv_timer_start(st.sampler, onSampler, ms, ms));
     // The sampler must not be what keeps the loop alive.
     uv.uv_unref(uv.asHandle(st.sampler));
@@ -936,8 +967,12 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
             if (r != 0) return r;
             transport = owned.owner_next;
         }
-        r = dns.traverse(st, visitproc, arg);
-        if (r != 0) return r;
+        // Once close hands resolver requests to the native reaper, their
+        // futures are gone and the request list mutates without the GIL.
+        if (!isReaping(st)) {
+            r = dns.traverse(st, visitproc, arg);
+            if (r != 0) return r;
+        }
         r = pollermod.traverse(st, visitproc, arg);
         if (r != 0) return r;
     }

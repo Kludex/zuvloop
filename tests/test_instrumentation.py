@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import logging
+import sys
 import time
+import traceback
 from collections.abc import Mapping
+from types import MethodType
+from typing import Literal, Never
 
 import pytest
 from opentelemetry.trace import StatusCode
 
 import zuvloop
-from conftest import Telemetry, attribute, collect_contexts, numeric_attribute, running_loop
+from tests.conftest import Telemetry, attribute, collect_contexts, numeric_attribute, running_loop
 from zuvloop._instrumentation import (
+    _safe_repr,
     capture_call_graph,
     instrumentation_provider_installed,
     metrics_provider_installed,
@@ -39,7 +46,10 @@ async def test_slow_callbacks_are_reported_without_debug_mode(telemetry: Telemet
         for span in telemetry.spans("zuvloop.slow_callback")
         if "slow_callback" in str(attribute(span, "code.callback"))
     )
-    assert span.status.status_code is StatusCode.ERROR
+    # A slow callback is a warning, not an error: the span status stays unset
+    # and the severity is carried as Logfire's numeric level.
+    assert span.status.status_code is StatusCode.UNSET
+    assert numeric_attribute(span, "logfire.level_num") == 13
     assert numeric_attribute(span, "duration") >= 0.01
     assert "Handle" in str(attribute(span, "code.callback"))
     assert telemetry.counted("zuvloop.slow_callbacks") >= 1
@@ -140,6 +150,209 @@ async def test_unhandled_exceptions_are_reported(telemetry: Telemetry) -> None:
     assert telemetry.counted("zuvloop.unhandled_exceptions") >= 1
 
 
+def test_default_exception_reporting_survives_telemetry_failure(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def exporter_failure(_instrumentation: object, _context: dict[str, object]) -> None:
+        raise RuntimeError("exporter failed")
+
+    monkeypatch.setattr(zuvloop.Instrumentation, "report_exception", exporter_failure)
+    loop = zuvloop.new_event_loop()
+    try:
+        with caplog.at_level(logging.ERROR, logger="asyncio"):
+            loop.call_exception_handler(
+                {"message": "sentinel production error", "exception": RuntimeError("application failed")}
+            )
+    finally:
+        loop.close()
+
+    assert "sentinel production error" in caplog.text
+    assert "RuntimeError: application failed" in caplog.text
+
+
+def test_exception_telemetry_bounds_attributes_and_survives_a_broken_repr(telemetry: Telemetry) -> None:
+    class BrokenRepr:
+        def __repr__(self) -> str:
+            raise RuntimeError("repr failed")
+
+    class LongNamedBrokenRepr:
+        def __repr__(self) -> str:
+            raise RuntimeError("repr failed")
+
+    LongNamedBrokenRepr.__name__ = "X" * 10_000
+
+    zuvloop.Instrumentation().report_exception(
+        {
+            "message": "bounded",
+            "large": "x" * 10_000,
+            "broken": BrokenRepr(),
+            "long_broken": LongNamedBrokenRepr(),
+        }
+    )
+
+    span = telemetry.spans("zuvloop.unhandled_exception")[0]
+    assert len(str(attribute(span, "large"))) == 4096
+    assert attribute(span, "broken") == "<BrokenRepr repr failed>"
+    assert len(str(attribute(span, "long_broken"))) == 4096
+
+
+def test_exception_telemetry_bounds_the_recorded_exception(telemetry: Telemetry) -> None:
+    exception = RuntimeError("x" * 10_000)
+    exception.add_note("y" * 10_000)
+    zuvloop.Instrumentation().report_exception({"message": "bounded", "exception": exception})
+
+    event = telemetry.spans("zuvloop.unhandled_exception")[0].events[0]
+    assert event.attributes is not None
+    assert event.attributes["exception.type"] == "RuntimeError"
+    assert len(str(event.attributes["exception.message"])) == 4096
+    assert len(str(event.attributes["exception.stacktrace"])) == 4096
+
+
+@pytest.mark.parametrize("failure", [SystemExit(7), KeyboardInterrupt()])
+@pytest.mark.parametrize("method", ["report_slow_callback", "report_exception"])
+def test_instrumentation_does_not_swallow_process_control_exceptions(
+    failure: BaseException,
+    method: Literal["report_slow_callback", "report_exception"],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def stop(_name: str, _description: str) -> Never:
+        raise failure
+
+    monkeypatch.setattr("zuvloop._instrumentation._counter", stop)
+    instrumentation = zuvloop.Instrumentation()
+    with pytest.raises(type(failure)):
+        if method == "report_slow_callback":
+            instrumentation.report_slow_callback(object(), 1.0)
+        else:
+            instrumentation.report_exception({"message": "failure"})
+
+
+@pytest.mark.parametrize("failure", [SystemExit(7), KeyboardInterrupt()])
+def test_safe_repr_does_not_swallow_process_control_exceptions(failure: BaseException) -> None:
+    class StopsDuringRepr:
+        def __repr__(self) -> str:
+            raise failure
+
+    with pytest.raises(type(failure)):
+        _safe_repr(StopsDuringRepr())
+
+
+def test_exception_logging_formats_creation_tracebacks(caplog: pytest.LogCaptureFixture) -> None:
+    loop = zuvloop.new_event_loop()
+    stack = traceback.extract_stack(limit=1)
+    try:
+        with caplog.at_level(logging.ERROR, logger="asyncio"):
+            loop.default_exception_handler(
+                {"message": "with creation sites", "source_traceback": stack, "handle_traceback": stack}
+            )
+    finally:
+        loop.close()
+
+    assert "Object created at (most recent call last)" in caplog.text
+    assert "Handle created at (most recent call last)" in caplog.text
+
+
+def test_system_exit_from_an_overridden_default_exception_handler_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def stop(_loop: object, _context: Mapping[str, object]) -> None:
+        raise SystemExit(7)
+
+    loop = zuvloop.new_event_loop()
+    monkeypatch.setattr(type(loop), "default_exception_handler", stop)
+    try:
+        with pytest.raises(SystemExit, match="7"):
+            loop.call_exception_handler({"message": "stop"})
+    finally:
+        loop.close()
+
+
+@pytest.mark.parametrize("owner_key", ["task", "future"])
+def test_an_owned_exception_handler_runs_in_the_owner_context(owner_key: str) -> None:
+    marker = contextvars.ContextVar("exception-handler-marker", default="outside")
+    owner_context = contextvars.copy_context()
+    owner_context.run(marker.set, "owner")
+
+    class ContextOwner:
+        def get_context(self) -> contextvars.Context:
+            return owner_context
+
+    loop = zuvloop.new_event_loop()
+    seen: list[str] = []
+    loop.set_exception_handler(lambda _loop, _context: seen.append(marker.get()))
+    try:
+        loop.call_exception_handler({"message": "owned", owner_key: ContextOwner()})
+    finally:
+        loop.close()
+    assert seen == ["owner"]
+
+
+def test_a_native_handle_exposes_its_exception_handler_context() -> None:
+    marker = contextvars.ContextVar("native-handle-marker", default="outside")
+    owner_context = contextvars.copy_context()
+    owner_context.run(marker.set, "owner")
+    loop = zuvloop.new_event_loop()
+    handle = owner_context.run(loop.call_soon, lambda: None)
+    seen: list[str] = []
+    loop.set_exception_handler(lambda _loop, _context: seen.append(marker.get()))
+    try:
+        loop.call_exception_handler({"message": "owned", "handle": handle})
+    finally:
+        handle.cancel()
+        loop.close()
+    assert seen == ["owner"]
+
+
+def test_default_exception_handler_survives_a_broken_context_repr(caplog: pytest.LogCaptureFixture) -> None:
+    class BrokenRepr:
+        def __repr__(self) -> str:
+            raise RuntimeError("repr failed")
+
+    loop = zuvloop.new_event_loop()
+    try:
+        with caplog.at_level(logging.ERROR, logger="asyncio"):
+            loop.default_exception_handler({"message": "original diagnostic", "detail": BrokenRepr()})
+    finally:
+        loop.close()
+    assert "original diagnostic" in caplog.text
+    assert "detail: <BrokenRepr repr failed>" in caplog.text
+
+
+@pytest.mark.parametrize("default_failure", [SystemExit(8), RuntimeError("default failed")])
+def test_failure_while_reporting_a_broken_custom_handler_is_guarded(
+    default_failure: BaseException, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken_custom(_loop: asyncio.AbstractEventLoop, _context: Mapping[str, object]) -> None:
+        raise RuntimeError("custom failed")
+
+    def broken_default(_loop: object, _context: Mapping[str, object]) -> None:
+        raise default_failure
+
+    loop = zuvloop.new_event_loop()
+    loop.set_exception_handler(broken_custom)
+    monkeypatch.setattr(type(loop), "default_exception_handler", broken_default)
+    try:
+        if isinstance(default_failure, SystemExit):
+            with pytest.raises(SystemExit, match="8"):
+                loop.call_exception_handler({"message": "original"})
+        else:
+            with caplog.at_level(logging.ERROR, logger="asyncio"):
+                loop.call_exception_handler({"message": "original"})
+            assert "while handling an unexpected error in custom exception handler" in caplog.text
+    finally:
+        loop.close()
+
+
+def test_telemetry_provider_failures_are_contained(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken_counter(_name: str, _description: str) -> object:
+        raise RuntimeError("provider failed")
+
+    monkeypatch.setattr("zuvloop._instrumentation._counter", broken_counter)
+    instrumentation = zuvloop.Instrumentation()
+    instrumentation.report_slow_callback(object(), 1.0)
+    instrumentation.report_exception({"message": "application failure"})
+
+
 async def test_a_custom_exception_handler_takes_over() -> None:
     loop = running_loop()
     previous = loop.get_exception_handler()
@@ -210,6 +423,103 @@ async def test_gauges_sample_on_a_native_timer(monkeypatch: pytest.MonkeyPatch) 
     before = len(snapshots)
     await asyncio.sleep(0.05)
     assert len(snapshots) == before
+
+
+async def test_monitoring_arms_when_a_provider_appears_mid_run(
+    telemetry: Telemetry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Providers configured from inside the loop - logfire.configure() in
+    main() - must still arm slow-callback monitoring."""
+    installed = False
+    monkeypatch.setattr("zuvloop._base.instrumentation_provider_installed", lambda: installed)
+
+    def main() -> None:
+        loop = zuvloop.new_event_loop()
+        loop.metrics_interval = 0.02
+        loop.slow_callback_duration = 0.01
+
+        def blocks_before_provider() -> None:
+            time.sleep(0.02)
+
+        def blocks_after_provider() -> None:
+            time.sleep(0.02)
+
+        async def scenario() -> None:
+            nonlocal installed
+            loop.call_soon(blocks_before_provider)
+            await asyncio.sleep(0.01)
+            installed = True
+            # More than metrics_interval, so the sampler has re-checked.
+            await asyncio.sleep(0.06)
+            loop.call_soon(blocks_after_provider)
+            await asyncio.sleep(0.05)
+
+        try:
+            loop.run_until_complete(scenario())
+        finally:
+            loop.close()
+
+    await asyncio.to_thread(main)
+    callbacks = [str(attribute(span, "code.callback")) for span in telemetry.spans("zuvloop.slow_callback")]
+    assert not any("blocks_before_provider" in callback for callback in callbacks)
+    assert any("blocks_after_provider" in callback for callback in callbacks)
+
+
+async def test_provider_checks_stop_once_a_provider_is_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The armed flags are latches: after a provider says yes, later sampler
+    ticks publish without asking again."""
+    snapshots: list[dict[str, int]] = []
+    checks = 0
+    installed = False
+
+    def probe() -> bool:
+        nonlocal checks
+        checks += 1
+        return installed
+
+    monkeypatch.setattr("zuvloop._base.publish_metrics", snapshots.append)
+    monkeypatch.setattr("zuvloop._base.metrics_provider_installed", probe)
+
+    def main() -> None:
+        loop = zuvloop.new_event_loop()
+        loop.metrics_interval = 0.02
+
+        async def scenario() -> None:
+            nonlocal installed
+            await asyncio.sleep(0.05)
+            assert not snapshots
+            installed = True
+            await asyncio.sleep(0.05)
+            assert snapshots
+            checks_when_armed = checks
+            published = len(snapshots)
+            await asyncio.sleep(0.05)
+            assert len(snapshots) > published
+            assert checks == checks_when_armed
+
+        try:
+            loop.run_until_complete(scenario())
+        finally:
+            loop.close()
+
+    await asyncio.to_thread(main)
+
+
+async def test_gauges_stay_unpublished_without_a_meter_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    snapshots: list[dict[str, int]] = []
+    monkeypatch.setattr("zuvloop._base.publish_metrics", snapshots.append)
+    monkeypatch.setattr("zuvloop._base.metrics_provider_installed", lambda: False)
+
+    def main() -> None:
+        loop = zuvloop.new_event_loop()
+        loop.metrics_interval = 0.02
+        try:
+            loop.run_until_complete(asyncio.sleep(0.07))
+        finally:
+            loop.close()
+
+    await asyncio.to_thread(main)
+    assert snapshots == []
 
 
 async def test_gauges_reach_the_exporter(telemetry: Telemetry) -> None:
@@ -309,6 +619,34 @@ async def test_the_sampling_interval_must_be_positive() -> None:
         loop._start_metrics(0, print)
 
 
+async def test_an_infinite_sampling_interval_does_not_overflow() -> None:
+    loop = running_loop()
+    snapshots: list[dict[str, int]] = []
+    loop._start_metrics(float("inf"), snapshots.append)
+    try:
+        await asyncio.sleep(0.01)
+    finally:
+        loop._stop_metrics()
+    assert snapshots == []
+
+
+def test_a_failed_metrics_start_restores_running_loop_state() -> None:
+    loop = zuvloop.new_event_loop()
+    old_hooks = sys.get_asyncgen_hooks()
+    loop.metrics_interval = 0
+    try:
+        with pytest.raises(ValueError, match="must be positive"):
+            loop.run_forever()
+        assert asyncio.events._get_running_loop() is None
+        assert sys.get_asyncgen_hooks() == old_hooks
+
+        loop.metrics_interval = 0.01
+        loop.call_soon(loop.stop)
+        loop.run_forever()
+    finally:
+        loop.close()
+
+
 async def test_a_failing_sampler_callback_is_reported() -> None:
     loop = running_loop()
 
@@ -330,6 +668,17 @@ async def test_metrics_on_a_closed_loop_are_zero() -> None:
     loop = zuvloop.new_event_loop()
     loop.close()
     assert loop._metrics()["loop_count"] == 0
+
+
+async def test_completed_task_recovered_from_a_handle_has_no_call_graph() -> None:
+    task = asyncio.create_task(asyncio.sleep(0))
+    await task
+    callback = MethodType(lambda _task: None, task)
+    handle = running_loop().call_soon(callback)
+    try:
+        assert capture_call_graph(handle) is None
+    finally:
+        handle.cancel()
 
 
 async def test_the_stdlib_call_graph_apis_work_on_this_loop() -> None:

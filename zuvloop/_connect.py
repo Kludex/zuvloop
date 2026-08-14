@@ -11,16 +11,18 @@ import subprocess
 import sys
 from asyncio import base_subprocess, sslproto, staggered, trsock
 from asyncio.base_events import _interleave_addrinfos  # type: ignore[attr-defined]  # private, not in typeshed
+from asyncio.streams import StreamReaderProtocol
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, cast
+from typing import Any, Protocol
 
 from . import _zuvloop
 from ._process import _SIGKILL, Popen
+from ._sendfile import SendfileOperations
 from ._server import Server
-from ._sockets import SocketOperations
 
 # What `getaddrinfo` hands back: family, kind, protocol, canonical name, address.
 type _AddrInfo = tuple[int, int, int, str, tuple[str, int] | tuple[str, int, int, int]]
+type _DatagramAddress = tuple[str, int] | str | bytes
 _SSLArg = ssl_module.SSLContext | bool | None
 
 if sys.platform == "win32":
@@ -33,7 +35,12 @@ else:
     _SHELL = ("/bin/sh", "-c")
 
 
-class ConnectionOperations(SocketOperations):
+class _BufferedStreamReader(Protocol):
+    _buffer: bytearray
+    _paused: bool
+
+
+class ConnectionOperations(SendfileOperations):
     """Connection and server setup.
 
     Sockets are created and bound here; once connected the descriptor is handed
@@ -487,31 +494,45 @@ class ConnectionOperations(SocketOperations):
         ssl_shutdown_timeout: float | None,
         server: Server | None,
     ) -> tuple[asyncio.Transport, Any]:
-        protocol = protocol_factory()
-        waiter = self.create_future()
-        if ssl:
-            context = _resolve_context(ssl, server_side)
-            driver: asyncio.BaseProtocol = sslproto.SSLProtocol(
-                self,
-                protocol,
-                context,
-                waiter,
-                server_side,
-                server_hostname,
-                ssl_handshake_timeout=ssl_handshake_timeout,  # type: ignore[arg-type]  # typeshed says int
-                ssl_shutdown_timeout=ssl_shutdown_timeout,
-            )
-            transport = self._attach_transport(sock, driver, None, server)
-        else:
-            driver = protocol
-            transport = self._attach_transport(sock, driver, waiter, server)
+        try:
+            protocol = protocol_factory()
+            waiter = self.create_future()
+            if ssl:
+                context = _resolve_context(ssl, server_side)
+                driver: asyncio.BaseProtocol = sslproto.SSLProtocol(
+                    self,
+                    protocol,
+                    context,
+                    waiter,
+                    server_side,
+                    server_hostname,
+                    ssl_handshake_timeout=ssl_handshake_timeout,  # type: ignore[arg-type]  # typeshed says int
+                    ssl_shutdown_timeout=ssl_shutdown_timeout,
+                )
+                transport = self._attach_transport(sock, driver, None, server)
+            else:
+                driver = protocol
+                transport = self._attach_transport(sock, driver, waiter, server)
+        except BaseException:
+            # Before native adoption, accepting the socket makes every setup
+            # failure ours to close. After adoption the socket view is detached.
+            # TLS server accepts have an outer owner that must also detach the
+            # server count; leaving its live descriptor intact tells it to do both.
+            if server is None and sock.fileno() != -1:
+                sock.close()
+            raise
         try:
             await waiter
         except BaseException:
             transport.close()
             raise
         if ssl:
-            return cast("asyncio.Transport", driver._app_transport), protocol  # type: ignore[attr-defined]
+            if not isinstance(driver, sslproto.SSLProtocol):  # pragma: no cover - internal TLS invariant
+                raise RuntimeError("TLS setup did not create an SSL protocol")
+            app_transport = driver._app_transport
+            if not isinstance(app_transport, asyncio.Transport):  # pragma: no cover - CPython TLS invariant
+                raise RuntimeError("TLS setup did not create an application transport")
+            return app_transport, protocol
         return transport, protocol
 
     async def start_tls(
@@ -525,6 +546,8 @@ class ConnectionOperations(SocketOperations):
         ssl_handshake_timeout: float | None = None,
         ssl_shutdown_timeout: float | None = None,
     ) -> asyncio.Transport:
+        if not isinstance(transport, asyncio.Transport):
+            raise TypeError("transport must support both reading and writing")
         waiter = self.create_future()
         ssl_protocol = sslproto.SSLProtocol(
             self,
@@ -537,8 +560,14 @@ class ConnectionOperations(SocketOperations):
             ssl_handshake_timeout=ssl_handshake_timeout,  # type: ignore[arg-type]  # typeshed says int
             ssl_shutdown_timeout=ssl_shutdown_timeout,
         )
-        stream = cast("asyncio.Transport", transport)
+        stream = transport
         stream.pause_reading()
+        if server_side and isinstance(protocol, StreamReaderProtocol):
+            stream_reader: _BufferedStreamReader | None = getattr(protocol, "_stream_reader", None)
+            if stream_reader is not None and stream_reader._buffer:  # pragma: no branch - only data needs transfer
+                ssl_protocol._incoming.write(stream_reader._buffer)  # type: ignore[attr-defined]
+                stream_reader._buffer.clear()
+                stream_reader._paused = False
         stream.set_protocol(ssl_protocol)
         self.call_soon(ssl_protocol.connection_made, stream)
         self.call_soon(stream.resume_reading)
@@ -547,15 +576,18 @@ class ConnectionOperations(SocketOperations):
         except BaseException:
             stream.close()
             raise
-        return cast("asyncio.Transport", ssl_protocol._app_transport)
+        app_transport = ssl_protocol._app_transport
+        if not isinstance(app_transport, asyncio.Transport):  # pragma: no cover - CPython TLS invariant
+            raise RuntimeError("TLS setup did not create an application transport")
+        return app_transport
 
     # -- unsupported -------------------------------------------------------
 
     async def create_datagram_endpoint(  # type: ignore[override]  # typeshed omits reuse_port
         self,
         protocol_factory: Callable[[], asyncio.BaseProtocol],
-        local_addr: tuple[str, int] | str | None = None,
-        remote_addr: tuple[str, int] | str | None = None,
+        local_addr: _DatagramAddress | None = None,
+        remote_addr: _DatagramAddress | None = None,
         *,
         family: int = 0,
         proto: int = 0,
@@ -575,9 +607,9 @@ class ConnectionOperations(SocketOperations):
                 local_addr, remote_addr, family, proto, flags, reuse_port, allow_broadcast
             )
 
-        protocol = protocol_factory()
-        waiter = self.create_future()
         try:
+            protocol = protocol_factory()
+            waiter = self.create_future()
             transport = self._attach_datagram(sock, protocol, connected)
         except BaseException:
             # Until libuv adopts the descriptor, the socket is still ours.
@@ -595,8 +627,8 @@ class ConnectionOperations(SocketOperations):
 
     async def _bind_datagram(
         self,
-        local_addr: tuple[str, int] | str | None,
-        remote_addr: tuple[str, int] | str | None,
+        local_addr: _DatagramAddress | None,
+        remote_addr: _DatagramAddress | None,
         family: int,
         proto: int,
         flags: int,
@@ -631,9 +663,7 @@ class ConnectionOperations(SocketOperations):
             raise
         return sock, resolved_remote is not None
 
-    async def _resolve_datagram(
-        self, address: tuple[str, int] | str | None, family: int, proto: int, flags: int
-    ) -> Any:
+    async def _resolve_datagram(self, address: _DatagramAddress | None, family: int, proto: int, flags: int) -> Any:
         if address is None:
             return None
         if family == _AF_UNIX:
@@ -663,7 +693,12 @@ class ConnectionOperations(SocketOperations):
         # and `create_datagram_endpoint(sock=...)` callers go on using it.
         extra["socket"] = trsock.TransportSocket(sock)
         transport = self._make_datagram_transport(fd, sock.family, connected, protocol, extra)
-        transport._adopt_socket_view(sock)
+        try:
+            transport._adopt_socket_view(sock)
+        except BaseException:
+            sock.detach()
+            transport.abort()
+            raise
         return transport
 
     async def subprocess_shell(
@@ -732,10 +767,12 @@ class ConnectionOperations(SocketOperations):
         # and `connect_write_pipe` from the loop, and those are native here. A
         # process is spawned once, so the readable implementation is worth more
         # than owning the fork.
+        if not isinstance(protocol, asyncio.SubprocessProtocol):
+            raise TypeError("protocol_factory must return a subprocess protocol")
         waiter = self.create_future()
         transport = _SubprocessTransport(
             self,
-            cast("asyncio.SubprocessProtocol", protocol),
+            protocol,
             args,
             shell,
             stdin,
@@ -754,7 +791,9 @@ class ConnectionOperations(SocketOperations):
             transport.close()
             await transport._wait()
             raise
-        return cast("asyncio.SubprocessTransport", transport)
+        if not isinstance(transport, asyncio.SubprocessTransport):  # pragma: no cover - concrete base class
+            raise RuntimeError("subprocess setup did not create a subprocess transport")
+        return transport
 
     async def connect_read_pipe(
         self, protocol_factory: Callable[[], asyncio.BaseProtocol], pipe: Any
@@ -770,7 +809,8 @@ class ConnectionOperations(SocketOperations):
         self, protocol_factory: Callable[[], asyncio.BaseProtocol], pipe: Any, kind: int
     ) -> tuple[_zuvloop.Transport, Any]:
         fd = pipe.fileno()
-        mode = os.fstat(fd).st_mode
+        pipe_stat = os.fstat(fd)
+        mode = pipe_stat.st_mode
         if not (stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode) or stat.S_ISCHR(mode)):
             raise ValueError("Pipe transport is only for pipes, sockets and character devices")
         os.set_blocking(fd, False)
@@ -790,8 +830,19 @@ class ConnectionOperations(SocketOperations):
         try:
             # A socket write pipe learns of the hangup by reading; `uv_pipe_open`
             # clears the readable flag on an `O_WRONLY` FIFO, so that one needs a
-            # poll of its own. Character devices report no hangup at all.
-            if kind == _zuvloop.KIND_PIPE_WRITE and stat.S_ISFIFO(mode):
+            # poll of its own. XNU and Solaris named FIFOs cannot provide this
+            # notification: they either reject the read poll or report unread
+            # data as a false hangup (CPython gh-145030). Character devices also
+            # report no hangup at all.
+            named_fifo_without_close_event = (
+                sys.platform in {"darwin", "ios", "tvos", "watchos", "sunos5"} and pipe_stat.st_nlink > 0
+            )
+            if (
+                kind == _zuvloop.KIND_PIPE_WRITE
+                and stat.S_ISFIFO(mode)
+                and not sys.platform.startswith("aix")
+                and not named_fifo_without_close_event
+            ):
                 watch = _HangupWatch(self, pipe, fd, transport)
                 transport._adopt_pipe(watch)
                 watch.arm()
@@ -925,11 +976,13 @@ class _SubprocessTransport(base_subprocess.BaseSubprocessTransport):
         # asyncio signals the pid directly, which can race a reaped pid onto a
         # new process. libuv holds the handle, so it signals the child it spawned
         # or nothing at all. An exited child is a no-op, as asyncio has it.
+        if self.get_returncode() is not None:
+            return
         self._check_proc()
         assert self._proc is not None
         try:
             self._proc.send_signal(signal_number)
-        except ProcessLookupError:
+        except ProcessLookupError:  # pragma: no cover - pid exit race
             pass
 
     def terminate(self) -> None:
@@ -957,8 +1010,10 @@ class _SubprocessTransport(base_subprocess.BaseSubprocessTransport):
                 # libuv's MSVCRT-style argv escaping switched off.
                 argv = [*_SHELL, f'"{os.fsdecode(args)}"']
                 windows_verbatim = True
+        if not isinstance(self._loop, ConnectionOperations):  # pragma: no cover - constructed by this loop only
+            raise RuntimeError("subprocess transport requires a zuvloop event loop")
         self._proc = Popen(  # type: ignore[assignment]  # a Popen-shaped object, not a Popen
-            cast("ConnectionOperations", self._loop),
+            self._loop,
             argv,
             stdin=stdin,
             stdout=stdout,

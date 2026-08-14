@@ -1,14 +1,18 @@
 [build-system]
-requires = ["hatchling", "hatch-ziglang", "ziglang==0.16.0"]
+# hatch-ziglang is pinned exactly: it runs during the isolated wheel build and
+# invokes the native compiler, so a future version resolved from a lower bound
+# could execute unreviewed code into the wheels the publish job trusts. The
+# compiler is pinned for the same reason. Bump both deliberately.
+requires = ["hatchling==1.32.0", "hatch-vcs==0.5.0", "hatch-ziglang==0.2.1", "ziglang==0.16.0"]
 build-backend = "hatchling.build"
 
 [project]
 name = "zuvloop"
-version = "0.0.1"
 description = "A libuv event loop for asyncio, written in Zig."
 readme = "README.md"
 requires-python = ">=3.14"
 license = "MIT"
+dynamic = ["version"]
 # libuv is compiled into the extension, so its licence ships with the wheel.
 license-files = ["LICENSE", "vendor/libuv/LICENSE*"]
 authors = [{ name = "Marcelo Trylesinski", email = "marcelotryle@gmail.com" }]
@@ -24,7 +28,7 @@ classifiers = [
     "Programming Language :: Zig",
     "Typing :: Typed",
 ]
-dependencies = ["opentelemetry-api>=1.23"]
+dependencies = ["opentelemetry-api>=1.23", "typing-extensions>=4.15"]
 
 [project.urls]
 Source = "https://github.com/Kludex/zuvloop"
@@ -33,6 +37,7 @@ Source = "https://github.com/Kludex/zuvloop"
 dev = [
     "anyio>=4.6",
     "coverage[toml]>=7.6",
+    "hypothesis>=6.138",
     "mypy>=1.13",
     "opentelemetry-sdk>=1.23",
     "pytest>=8.3",
@@ -41,6 +46,17 @@ dev = [
 ]
 bench = ["aiohttp", "httptools", "pytest-codspeed>=5", "uvicorn", "uvloop>=0.21; sys_platform != 'win32'"]
 docs = ["zensical"]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+# A tag is the version; commits after it are the next patch's dev builds, so an
+# untagged build can never claim to be the release. `no-local-version` drops the
+# `+<hash>` segment, which PyPI refuses on upload.
+version_scheme = "guess-next-dev"
+local_scheme = "no-local-version"
+fallback_version = "0.0.0"
 
 [tool.hatch.build.targets.wheel]
 packages = ["zuvloop"]
@@ -86,14 +102,19 @@ xfail_strict = true
 filterwarnings = ["error"]
 
 [tool.cibuildwheel]
-# Only what the project supports: CPython 3.14 on Linux and macOS. The
+# Only what the project supports: CPython 3.14 on Linux, macOS and Windows. The
 # free-threaded build is excluded until the loop's GIL handling is tested
 # against one - it saves a thread state and counts nesting, and assumes there is
 # a GIL to save.
 build = "cp314-*"
 skip = "*-musllinux_i686 *t-*"
-build-frontend = "build[uv]"
-test-command = "python -c \"import zuvloop, asyncio; asyncio.run(asyncio.sleep(0), loop_factory=zuvloop.new_event_loop); print(zuvloop.libuv_version())\""
+# Let uv own the project build so hash checking applies only to the pinned build
+# requirements. Setting UV_REQUIRE_HASHES globally also affects cibuildwheel's
+# own bootstrap tools (for example, delocate) before the project build starts.
+build-frontend = { name = "uv", args = ["--require-hashes"] }
+environment = { UV_BUILD_CONSTRAINT = "$(pwd)/.github/build-constraints.txt" }
+test-requires = ["aiohttp", "anyio", "httptools", "hypothesis", "opentelemetry-sdk", "pytest", "uvicorn"]
+test-command = "pytest {project}/tests -q --import-mode=importlib"
 
 [tool.cibuildwheel.linux]
 # The Zig toolchain comes from PyPI, so the manylinux image needs nothing extra.
@@ -119,6 +140,7 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
     "@overload",
+    "class .*\\bProtocol\\):",
 ]
 # Windows-only branches: the Windows CI job runs the suite without the
 # coverage gate, so these are asserted by tests there rather than counted here.
