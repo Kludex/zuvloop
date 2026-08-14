@@ -167,7 +167,9 @@ loop outside the standard library can satisfy.
 The aiohttp compatibility run disables its optional `blockbuster` plugin because that plugin
 exempts stdlib asyncio calls by source filename and therefore reports equivalent `os.stat` and
 `os.sendfile` calls from any third-party loop. Its remaining strict expected failure is the
-`loop.time()` difference below.
+`loop.time()` difference below. One concurrent WebSocket-close test is skipped because it assumes
+selector-loop ready/I/O ordering and fails intermittently on uvloop too; every other aiohttp test
+remains enforced.
 
 (For reference: uvloop cannot complete the aiohttp suite — it fails fifteen tests and then hangs.)
 

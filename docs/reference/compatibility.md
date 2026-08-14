@@ -33,6 +33,9 @@ failure too, so this list cannot quietly go stale.
 aiohttp's optional `blockbuster` plugin is disabled for this run because it
 exempts blocking calls by stdlib asyncio source filename and therefore reports
 the equivalent `os.stat` and `os.sendfile` calls from every third-party loop.
+One concurrent WebSocket-close test is skipped because it assumes selector-loop
+ready/I/O ordering and fails intermittently on uvloop too; every other aiohttp
+test remains enforced.
 
 For reference, uvloop cannot complete that suite: it fails fifteen tests in
 `test_client_functional.py` and then hangs.
