@@ -9,12 +9,6 @@ on:
 permissions:
   contents: read
 
-# Editable upstream checkouts still resolve their transitive dependencies from
-# package indexes. Freeze that resolution window so an unrelated release cannot
-# turn an unchanged compatibility gate red.
-env:
-  UV_EXCLUDE_NEWER: "2026-08-15T00:00:00Z"
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -213,6 +207,8 @@ jobs:
           version: 0.12.3
 
       - name: Install the pinned upstream suite and zuvloop
+        env:
+          UV_EXCLUDE_NEWER: "2026-08-15T00:00:00Z"
         run: |
           uv venv --python 3.14 .upstream-venv
           uv pip install --python .upstream-venv/bin/python \
@@ -264,6 +260,8 @@ jobs:
           version: 0.12.3
 
       - name: Install the pinned upstream package and zuvloop
+        env:
+          UV_EXCLUDE_NEWER: "2026-08-15T00:00:00Z"
         run: |
           uv venv --python 3.14 .upstream-venv
           uv pip install --python .upstream-venv/bin/python --editable upstream
@@ -305,6 +303,8 @@ jobs:
           version: 0.12.3
 
       - name: Install the pinned upstream package and zuvloop
+        env:
+          UV_EXCLUDE_NEWER: "2026-08-15T00:00:00Z"
         run: |
           uv venv --python 3.14 .upstream-venv
           uv pip install --python .upstream-venv/bin/python --editable upstream
@@ -344,6 +344,8 @@ jobs:
           version: 0.12.3
 
       - name: Install the pinned upstream package and zuvloop
+        env:
+          UV_EXCLUDE_NEWER: "2026-08-15T00:00:00Z"
         run: |
           uv venv --python 3.14 .upstream-venv
           uv pip install --python .upstream-venv/bin/python --editable upstream
