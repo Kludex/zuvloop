@@ -12,7 +12,7 @@ from types import FrameType
 import pytest
 
 import zuvloop
-from conftest import running_loop
+from tests.conftest import running_loop
 from zuvloop._base import SignalOwner, _finish_deferred_signal_cleanup, _signal_owners
 from zuvloop._loop import _noop_signal_handler
 

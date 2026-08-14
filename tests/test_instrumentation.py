@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import logging
 import sys
 import time
+import traceback
 from collections.abc import Mapping
 from types import MethodType
+from typing import Literal, Never
 
 import pytest
 from opentelemetry.trace import StatusCode
 
 import zuvloop
-from conftest import Telemetry, attribute, collect_contexts, numeric_attribute, running_loop
+from tests.conftest import Telemetry, attribute, collect_contexts, numeric_attribute, running_loop
 from zuvloop._instrumentation import (
+    _safe_repr,
     capture_call_graph,
     instrumentation_provider_installed,
     metrics_provider_installed,
@@ -143,6 +148,209 @@ async def test_unhandled_exceptions_are_reported(telemetry: Telemetry) -> None:
     assert span.events[0].attributes is not None
     assert span.events[0].attributes["exception.type"] == "ValueError"
     assert telemetry.counted("zuvloop.unhandled_exceptions") >= 1
+
+
+def test_default_exception_reporting_survives_telemetry_failure(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def exporter_failure(_instrumentation: object, _context: dict[str, object]) -> None:
+        raise RuntimeError("exporter failed")
+
+    monkeypatch.setattr(zuvloop.Instrumentation, "report_exception", exporter_failure)
+    loop = zuvloop.new_event_loop()
+    try:
+        with caplog.at_level(logging.ERROR, logger="asyncio"):
+            loop.call_exception_handler(
+                {"message": "sentinel production error", "exception": RuntimeError("application failed")}
+            )
+    finally:
+        loop.close()
+
+    assert "sentinel production error" in caplog.text
+    assert "RuntimeError: application failed" in caplog.text
+
+
+def test_exception_telemetry_bounds_attributes_and_survives_a_broken_repr(telemetry: Telemetry) -> None:
+    class BrokenRepr:
+        def __repr__(self) -> str:
+            raise RuntimeError("repr failed")
+
+    class LongNamedBrokenRepr:
+        def __repr__(self) -> str:
+            raise RuntimeError("repr failed")
+
+    LongNamedBrokenRepr.__name__ = "X" * 10_000
+
+    zuvloop.Instrumentation().report_exception(
+        {
+            "message": "bounded",
+            "large": "x" * 10_000,
+            "broken": BrokenRepr(),
+            "long_broken": LongNamedBrokenRepr(),
+        }
+    )
+
+    span = telemetry.spans("zuvloop.unhandled_exception")[0]
+    assert len(str(attribute(span, "large"))) == 4096
+    assert attribute(span, "broken") == "<BrokenRepr repr failed>"
+    assert len(str(attribute(span, "long_broken"))) == 4096
+
+
+def test_exception_telemetry_bounds_the_recorded_exception(telemetry: Telemetry) -> None:
+    exception = RuntimeError("x" * 10_000)
+    exception.add_note("y" * 10_000)
+    zuvloop.Instrumentation().report_exception({"message": "bounded", "exception": exception})
+
+    event = telemetry.spans("zuvloop.unhandled_exception")[0].events[0]
+    assert event.attributes is not None
+    assert event.attributes["exception.type"] == "RuntimeError"
+    assert len(str(event.attributes["exception.message"])) == 4096
+    assert len(str(event.attributes["exception.stacktrace"])) == 4096
+
+
+@pytest.mark.parametrize("failure", [SystemExit(7), KeyboardInterrupt()])
+@pytest.mark.parametrize("method", ["report_slow_callback", "report_exception"])
+def test_instrumentation_does_not_swallow_process_control_exceptions(
+    failure: BaseException,
+    method: Literal["report_slow_callback", "report_exception"],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def stop(_name: str, _description: str) -> Never:
+        raise failure
+
+    monkeypatch.setattr("zuvloop._instrumentation._counter", stop)
+    instrumentation = zuvloop.Instrumentation()
+    with pytest.raises(type(failure)):
+        if method == "report_slow_callback":
+            instrumentation.report_slow_callback(object(), 1.0)
+        else:
+            instrumentation.report_exception({"message": "failure"})
+
+
+@pytest.mark.parametrize("failure", [SystemExit(7), KeyboardInterrupt()])
+def test_safe_repr_does_not_swallow_process_control_exceptions(failure: BaseException) -> None:
+    class StopsDuringRepr:
+        def __repr__(self) -> str:
+            raise failure
+
+    with pytest.raises(type(failure)):
+        _safe_repr(StopsDuringRepr())
+
+
+def test_exception_logging_formats_creation_tracebacks(caplog: pytest.LogCaptureFixture) -> None:
+    loop = zuvloop.new_event_loop()
+    stack = traceback.extract_stack(limit=1)
+    try:
+        with caplog.at_level(logging.ERROR, logger="asyncio"):
+            loop.default_exception_handler(
+                {"message": "with creation sites", "source_traceback": stack, "handle_traceback": stack}
+            )
+    finally:
+        loop.close()
+
+    assert "Object created at (most recent call last)" in caplog.text
+    assert "Handle created at (most recent call last)" in caplog.text
+
+
+def test_system_exit_from_an_overridden_default_exception_handler_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def stop(_loop: object, _context: Mapping[str, object]) -> None:
+        raise SystemExit(7)
+
+    loop = zuvloop.new_event_loop()
+    monkeypatch.setattr(type(loop), "default_exception_handler", stop)
+    try:
+        with pytest.raises(SystemExit, match="7"):
+            loop.call_exception_handler({"message": "stop"})
+    finally:
+        loop.close()
+
+
+@pytest.mark.parametrize("owner_key", ["task", "future"])
+def test_an_owned_exception_handler_runs_in_the_owner_context(owner_key: str) -> None:
+    marker = contextvars.ContextVar("exception-handler-marker", default="outside")
+    owner_context = contextvars.copy_context()
+    owner_context.run(marker.set, "owner")
+
+    class ContextOwner:
+        def get_context(self) -> contextvars.Context:
+            return owner_context
+
+    loop = zuvloop.new_event_loop()
+    seen: list[str] = []
+    loop.set_exception_handler(lambda _loop, _context: seen.append(marker.get()))
+    try:
+        loop.call_exception_handler({"message": "owned", owner_key: ContextOwner()})
+    finally:
+        loop.close()
+    assert seen == ["owner"]
+
+
+def test_a_native_handle_exposes_its_exception_handler_context() -> None:
+    marker = contextvars.ContextVar("native-handle-marker", default="outside")
+    owner_context = contextvars.copy_context()
+    owner_context.run(marker.set, "owner")
+    loop = zuvloop.new_event_loop()
+    handle = owner_context.run(loop.call_soon, lambda: None)
+    seen: list[str] = []
+    loop.set_exception_handler(lambda _loop, _context: seen.append(marker.get()))
+    try:
+        loop.call_exception_handler({"message": "owned", "handle": handle})
+    finally:
+        handle.cancel()
+        loop.close()
+    assert seen == ["owner"]
+
+
+def test_default_exception_handler_survives_a_broken_context_repr(caplog: pytest.LogCaptureFixture) -> None:
+    class BrokenRepr:
+        def __repr__(self) -> str:
+            raise RuntimeError("repr failed")
+
+    loop = zuvloop.new_event_loop()
+    try:
+        with caplog.at_level(logging.ERROR, logger="asyncio"):
+            loop.default_exception_handler({"message": "original diagnostic", "detail": BrokenRepr()})
+    finally:
+        loop.close()
+    assert "original diagnostic" in caplog.text
+    assert "detail: <BrokenRepr repr failed>" in caplog.text
+
+
+@pytest.mark.parametrize("default_failure", [SystemExit(8), RuntimeError("default failed")])
+def test_failure_while_reporting_a_broken_custom_handler_is_guarded(
+    default_failure: BaseException, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken_custom(_loop: asyncio.AbstractEventLoop, _context: Mapping[str, object]) -> None:
+        raise RuntimeError("custom failed")
+
+    def broken_default(_loop: object, _context: Mapping[str, object]) -> None:
+        raise default_failure
+
+    loop = zuvloop.new_event_loop()
+    loop.set_exception_handler(broken_custom)
+    monkeypatch.setattr(type(loop), "default_exception_handler", broken_default)
+    try:
+        if isinstance(default_failure, SystemExit):
+            with pytest.raises(SystemExit, match="8"):
+                loop.call_exception_handler({"message": "original"})
+        else:
+            with caplog.at_level(logging.ERROR, logger="asyncio"):
+                loop.call_exception_handler({"message": "original"})
+            assert "while handling an unexpected error in custom exception handler" in caplog.text
+    finally:
+        loop.close()
+
+
+def test_telemetry_provider_failures_are_contained(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken_counter(_name: str, _description: str) -> object:
+        raise RuntimeError("provider failed")
+
+    monkeypatch.setattr("zuvloop._instrumentation._counter", broken_counter)
+    instrumentation = zuvloop.Instrumentation()
+    instrumentation.report_slow_callback(object(), 1.0)
+    instrumentation.report_exception({"message": "application failure"})
 
 
 async def test_a_custom_exception_handler_takes_over() -> None:

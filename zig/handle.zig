@@ -113,12 +113,17 @@ pub fn invoke(
         return;
     }
     const result = c.PyObject_Vectorcall(callback, argv, @intCast(nargs), null);
-    if (result) |r| {
+    const failure = if (result) |r| blk: {
         py.decref(r);
-    } else {
+        break :blk null;
+    } else c.PyErr_GetRaisedException();
+    if (c.PyContext_Exit(ctx) < 0) py.writeUnraisable(owner);
+    // asyncio reports callback failures after Context.run() has returned. Do
+    // the same so an exception handler can re-enter the handle's context.
+    if (failure) |exc| {
+        c.PyErr_SetRaisedException(exc);
         loopmod.callbackFailed(loop, owner);
     }
-    if (c.PyContext_Exit(ctx) < 0) py.writeUnraisable(owner);
 }
 
 fn clearArgs(self: *Handle) void {
@@ -192,6 +197,11 @@ fn cancelled(self_obj: *py.Object) py.Error!*py.Object {
     return py.boolRef(self.isCancelled());
 }
 
+fn getContext(self_obj: *py.Object) py.Error!*py.Object {
+    const self: *Handle = @ptrCast(@alignCast(self_obj));
+    return py.newref(self.context orelse py.none()).?;
+}
+
 fn getCallback(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
     const self: *Handle = @ptrCast(@alignCast(self_obj.?));
     return py.newref(self.callback orelse py.none());
@@ -225,6 +235,7 @@ fn repr(obj: ?*py.Object) callconv(.c) ?*py.Object {
 var handle_methods = [_]c.PyMethodDef{
     py.methodNoArgs("cancel", cancel, "Cancel the callback."),
     py.methodNoArgs("cancelled", cancelled, "Return True if the callback was cancelled."),
+    py.methodNoArgs("get_context", getContext, "Return the context the callback runs in."),
     py.sentinel,
 };
 

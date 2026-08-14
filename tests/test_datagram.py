@@ -9,11 +9,11 @@ import sys
 import tempfile
 from collections.abc import Iterator, Mapping
 from pathlib import Path
-from typing import NoReturn, cast
+from typing import NoReturn
 
 import pytest
 
-from conftest import running_loop
+from tests.conftest import running_loop
 from zuvloop import _connect, _zuvloop
 
 pytestmark = pytest.mark.anyio
@@ -81,7 +81,14 @@ class Collector(asyncio.DatagramProtocol):
 
 async def start_echo() -> tuple[asyncio.DatagramTransport, Echo, tuple[str, int]]:
     transport, protocol = await running_loop().create_datagram_endpoint(Echo, local_addr=("127.0.0.1", 0))
-    return transport, protocol, cast("tuple[str, int]", transport.get_extra_info("sockname"))
+    sockname = transport.get_extra_info("sockname")
+    assert (
+        isinstance(sockname, tuple)
+        and len(sockname) == 2
+        and isinstance(sockname[0], str)
+        and isinstance(sockname[1], int)
+    )
+    return transport, protocol, sockname
 
 
 async def test_datagram_round_trip() -> None:
@@ -213,7 +220,8 @@ async def test_shutdown_does_not_resume_or_report_cancelled_sends(abort: bool) -
                 self.lost.set_result(None)
 
         raw, protocol = await loop.create_datagram_endpoint(FlowControl, sock=sender)
-        transport = cast("_zuvloop.DatagramTransport", raw)
+        assert isinstance(raw, _zuvloop.DatagramTransport)
+        transport = raw
         transport.set_write_buffer_limits(high=1, low=0)
         try:
             for _ in range(100):  # pragma: no branch - exhaustion fails via the assertion below
@@ -286,7 +294,8 @@ async def test_the_protocol_can_be_replaced() -> None:
 
 async def test_write_buffer_limits_are_reported() -> None:
     raw, _protocol = await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
-    transport = cast("_zuvloop.DatagramTransport", raw)
+    assert isinstance(raw, _zuvloop.DatagramTransport)
+    transport = raw
     try:
         assert transport.get_write_buffer_size() == 0
         transport.set_write_buffer_limits(high=4096, low=1024)
@@ -549,10 +558,10 @@ async def test_a_transport_that_fails_to_adopt_its_socket_view_is_aborted(
         _connected: bool,
         _protocol: asyncio.BaseProtocol,
         _extra: Mapping[str, object],
-    ) -> _zuvloop.DatagramTransport:
+    ) -> RefusingTransport:
         nonlocal refusing
         refusing = RefusingTransport(fd)
-        return cast("_zuvloop.DatagramTransport", refusing)
+        return refusing
 
     monkeypatch.setattr(socket, "socket", track)
     monkeypatch.setattr(type(running_loop()), "_make_datagram_transport", make_refusing_transport)
@@ -736,7 +745,8 @@ async def test_pausing_reading_stops_delivery_until_resumed() -> None:
     from `asyncio.Transport` made them raise here."""
     loop = running_loop()
     raw, protocol = await loop.create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
-    receiver = cast("_zuvloop.DatagramTransport", raw)
+    assert isinstance(raw, _zuvloop.DatagramTransport)
+    receiver = raw
     address = receiver.get_extra_info("sockname")
     sender, _sender_protocol = await loop.create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
     control, control_protocol = await loop.create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
@@ -763,7 +773,8 @@ async def test_pausing_reading_stops_delivery_until_resumed() -> None:
 
 async def test_pausing_reading_after_close_is_rejected() -> None:
     raw, _protocol = await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
-    transport = cast("_zuvloop.DatagramTransport", raw)
+    assert isinstance(raw, _zuvloop.DatagramTransport)
+    transport = raw
     transport.close()
     with pytest.raises(RuntimeError, match="after close"):
         transport.pause_reading()

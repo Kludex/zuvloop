@@ -64,7 +64,9 @@ and has to be freed.
 Everything the shortcut cannot answer identically falls back to libc: a scoped
 address, whose zone only libc can resolve; a legacy form like `127.1` that
 `inet_pton` rejects and `getaddrinfo` accepts; an unspecified socket type, which
-libc answers with one entry per type. Real hostnames resolve on libuv's
+libc answers with one entry per type. On Darwin this also includes link-local
+IPv6 literals whose embedded KAME scope bytes libc normalizes into `sin6_scope_id`.
+Real hostnames resolve on libuv's
 threadpool, not the executor.
 
 ## Sockets

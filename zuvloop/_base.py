@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import logging
 import os
 import signal
 import socket
 import sys
 import threading
+import traceback
 import warnings
 import weakref
 from asyncio import events as _events
@@ -14,17 +16,27 @@ from collections.abc import Callable, Coroutine
 from contextvars import Context
 from dataclasses import dataclass
 from functools import partial
-from typing import Any
+from typing import Any, Protocol
 
 from . import _zuvloop
 from ._instrumentation import (
     Instrumentation,
+    _safe_repr,
     instrumentation_provider_installed,
     metrics_provider_installed,
     publish_metrics,
 )
 
 _ExceptionHandler = Callable[[asyncio.AbstractEventLoop, dict[str, Any]], object]
+
+
+class _ExecutorNotifier(Protocol):
+    def call_soon_threadsafe(self, callback: Callable[..., object], *args: object) -> object: ...
+    def is_closed(self) -> bool: ...
+
+
+class _ExecutorShutdown(Protocol):
+    def shutdown(self, *, wait: bool) -> None: ...
 
 
 # Signal dispositions and the wakeup fd are process-global. Tokens let delayed
@@ -266,20 +278,66 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         self._exception_handler = handler
 
     def default_exception_handler(self, context: dict[str, Any]) -> None:
+        message = context.get("message") or "Unhandled exception in event loop"
+        exception = context.get("exception")
+        exc_info = (
+            (type(exception), exception, exception.__traceback__) if isinstance(exception, BaseException) else False
+        )
+        log_lines = [str(message)]
+        for key in sorted(context):
+            if key in ("message", "exception"):
+                continue
+            value = context[key]
+            if key == "source_traceback":
+                value = "Object created at (most recent call last):\n" + "".join(traceback.format_list(value)).rstrip()
+            elif key == "handle_traceback":
+                value = "Handle created at (most recent call last):\n" + "".join(traceback.format_list(value)).rstrip()
+            else:
+                value = _safe_repr(value)
+            log_lines.append(f"{key}: {value}")
+
+        # Keep asyncio's built-in stderr/logging behaviour. Telemetry is an
+        # additional destination, not a replacement: without an installed
+        # provider OpenTelemetry is deliberately a no-op, and an application
+        # must not lose "Task exception was never retrieved" and callback
+        # failures merely because it has not configured an exporter.
+        logging.getLogger("asyncio").error("\n".join(log_lines), exc_info=exc_info)
         self._instrumentation.report_exception(context)
 
     def call_exception_handler(self, context: dict[str, Any]) -> None:
         if self._exception_handler is None:
-            self.default_exception_handler(context)
+            try:
+                self.default_exception_handler(context)
+            except SystemExit, KeyboardInterrupt:
+                raise
+            except BaseException:
+                logging.getLogger("asyncio").exception("Exception in default exception handler")
             return
         try:
-            self._exception_handler(self, context)
+            thing = context.get("task")
+            if thing is None:
+                thing = context.get("future")
+            if thing is None:
+                thing = context.get("handle")
+            ctx = thing.get_context() if thing is not None and hasattr(thing, "get_context") else None
+            if ctx is not None and hasattr(ctx, "run"):
+                ctx.run(self._exception_handler, self, context)
+            else:
+                self._exception_handler(self, context)
         except SystemExit, KeyboardInterrupt:
             raise
         except BaseException as exc:
-            self.default_exception_handler(
-                {"message": "Unhandled error in exception handler", "exception": exc, "context": context}
-            )
+            try:
+                self.default_exception_handler(
+                    {"message": "Unhandled error in exception handler", "exception": exc, "context": context}
+                )
+            except SystemExit, KeyboardInterrupt:
+                raise
+            except BaseException:
+                logging.getLogger("asyncio").exception(
+                    "Exception in default exception handler while handling "
+                    "an unexpected error in custom exception handler"
+                )
 
     def _on_slow_callback(self, handle: object, duration: float) -> None:
         self._instrumentation.report_slow_callback(handle, duration)
@@ -457,7 +515,7 @@ def _finish_deferred_signal_cleanup(signals: tuple[int, ...], wakeup_fd: int, ow
         os.close(wakeup_fd)
 
 
-def _shutdown_executor(loop: LoopBase, future: asyncio.Future[None], executor: concurrent.futures.Executor) -> None:
+def _shutdown_executor(loop: _ExecutorNotifier, future: asyncio.Future[None], executor: _ExecutorShutdown) -> None:
     try:
         executor.shutdown(wait=True)
     finally:

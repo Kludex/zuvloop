@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 import pytest
 
-from conftest import running_loop
+from tests.conftest import running_loop
 
 pytestmark = pytest.mark.anyio
 

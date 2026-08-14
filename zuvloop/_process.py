@@ -6,7 +6,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable, Sequence
-from typing import IO, TYPE_CHECKING, Any
+from typing import IO, TYPE_CHECKING, Any, Protocol
 
 from . import _zuvloop
 
@@ -15,6 +15,18 @@ if TYPE_CHECKING:
 
 _DEVNULL = -3
 _NAMES = ("stdin", "stdout", "stderr")
+
+
+class _PolledProcess(Protocol):
+    def poll(self) -> int | None: ...
+
+
+class _ReaperLoop(Protocol):
+    def call_soon_threadsafe(self, callback: Callable[[int], object], returncode: int) -> object: ...
+
+
+class _ExitReceiver(Protocol):
+    def exited(self, returncode: int) -> None: ...
 
 
 class Popen:
@@ -170,7 +182,7 @@ class ProcessReaper:
 
     def __init__(self) -> None:
         self.condition = threading.Condition()
-        self.processes: dict[int, tuple[subprocess.Popen[bytes], ConnectionOperations, Popen]] = {}
+        self.processes: dict[int, tuple[_PolledProcess, _ReaperLoop, _ExitReceiver]] = {}
         self.started = False
 
     def register(self, process: subprocess.Popen[bytes], loop: ConnectionOperations, wrapper: Popen) -> None:

@@ -6,7 +6,7 @@ import ssl
 import subprocess
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import TypedDict
 
 import pytest
 from opentelemetry import metrics, trace
@@ -20,17 +20,24 @@ from opentelemetry.util.types import AttributeValue
 import zuvloop
 
 
-class ExceptionContext(TypedDict, total=False):
+class ExceptionContext(TypedDict):
     """The keys of asyncio's exception-handler context that the tests inspect."""
 
     message: str
-    exception: BaseException
+    exception: BaseException | None
 
 
 def collect_contexts(loop: asyncio.AbstractEventLoop) -> list[ExceptionContext]:
     """Install an exception handler that records every reported context."""
     seen: list[ExceptionContext] = []
-    loop.set_exception_handler(lambda _loop, context: seen.append(cast("ExceptionContext", context)))
+    loop.set_exception_handler(
+        lambda _loop, context: seen.append(
+            ExceptionContext(
+                message=message if isinstance(message := context.get("message"), str) else "",
+                exception=exception if isinstance(exception := context.get("exception"), BaseException) else None,
+            )
+        )
+    )
     return seen
 
 

@@ -8,11 +8,12 @@ import socket
 import ssl as ssl_module
 import stat
 import subprocess
+import sys
 from asyncio import base_subprocess, sslproto, staggered, trsock
 from asyncio.base_events import _interleave_addrinfos  # type: ignore[attr-defined]  # private, not in typeshed
 from asyncio.streams import StreamReaderProtocol
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 from . import _zuvloop
 from ._process import Popen
@@ -511,7 +512,12 @@ class ConnectionOperations(SendfileOperations):
             transport.close()
             raise
         if ssl:
-            return cast("asyncio.Transport", driver._app_transport), protocol  # type: ignore[attr-defined]
+            if not isinstance(driver, sslproto.SSLProtocol):  # pragma: no cover - internal TLS invariant
+                raise RuntimeError("TLS setup did not create an SSL protocol")
+            app_transport = driver._app_transport
+            if not isinstance(app_transport, asyncio.Transport):  # pragma: no cover - CPython TLS invariant
+                raise RuntimeError("TLS setup did not create an application transport")
+            return app_transport, protocol
         return transport, protocol
 
     async def start_tls(
@@ -525,6 +531,8 @@ class ConnectionOperations(SendfileOperations):
         ssl_handshake_timeout: float | None = None,
         ssl_shutdown_timeout: float | None = None,
     ) -> asyncio.Transport:
+        if not isinstance(transport, asyncio.Transport):
+            raise TypeError("transport must support both reading and writing")
         waiter = self.create_future()
         ssl_protocol = sslproto.SSLProtocol(
             self,
@@ -537,7 +545,7 @@ class ConnectionOperations(SendfileOperations):
             ssl_handshake_timeout=ssl_handshake_timeout,  # type: ignore[arg-type]  # typeshed says int
             ssl_shutdown_timeout=ssl_shutdown_timeout,
         )
-        stream = cast("asyncio.Transport", transport)
+        stream = transport
         stream.pause_reading()
         if server_side and isinstance(protocol, StreamReaderProtocol):
             stream_reader: _BufferedStreamReader | None = getattr(protocol, "_stream_reader", None)
@@ -553,7 +561,10 @@ class ConnectionOperations(SendfileOperations):
         except BaseException:
             stream.close()
             raise
-        return cast("asyncio.Transport", ssl_protocol._app_transport)
+        app_transport = ssl_protocol._app_transport
+        if not isinstance(app_transport, asyncio.Transport):  # pragma: no cover - CPython TLS invariant
+            raise RuntimeError("TLS setup did not create an application transport")
+        return app_transport
 
     # -- unsupported -------------------------------------------------------
 
@@ -741,10 +752,12 @@ class ConnectionOperations(SendfileOperations):
         # and `connect_write_pipe` from the loop, and those are native here. A
         # process is spawned once, so the readable implementation is worth more
         # than owning the fork.
+        if not isinstance(protocol, asyncio.SubprocessProtocol):
+            raise TypeError("protocol_factory must return a subprocess protocol")
         waiter = self.create_future()
         transport = _SubprocessTransport(
             self,
-            cast("asyncio.SubprocessProtocol", protocol),
+            protocol,
             args,
             shell,
             stdin,
@@ -763,7 +776,9 @@ class ConnectionOperations(SendfileOperations):
             transport.close()
             await transport._wait()
             raise
-        return cast("asyncio.SubprocessTransport", transport)
+        if not isinstance(transport, asyncio.SubprocessTransport):  # pragma: no cover - concrete base class
+            raise RuntimeError("subprocess setup did not create a subprocess transport")
+        return transport
 
     async def connect_read_pipe(
         self, protocol_factory: Callable[[], asyncio.BaseProtocol], pipe: Any
@@ -779,7 +794,8 @@ class ConnectionOperations(SendfileOperations):
         self, protocol_factory: Callable[[], asyncio.BaseProtocol], pipe: Any, kind: int
     ) -> tuple[_zuvloop.Transport, Any]:
         fd = pipe.fileno()
-        mode = os.fstat(fd).st_mode
+        pipe_stat = os.fstat(fd)
+        mode = pipe_stat.st_mode
         if not (stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode) or stat.S_ISCHR(mode)):
             raise ValueError("Pipe transport is only for pipes, sockets and character devices")
         os.set_blocking(fd, False)
@@ -799,8 +815,19 @@ class ConnectionOperations(SendfileOperations):
         try:
             # A socket write pipe learns of the hangup by reading; `uv_pipe_open`
             # clears the readable flag on an `O_WRONLY` FIFO, so that one needs a
-            # poll of its own. Character devices report no hangup at all.
-            if kind == _zuvloop.KIND_PIPE_WRITE and stat.S_ISFIFO(mode):
+            # poll of its own. XNU and Solaris named FIFOs cannot provide this
+            # notification: they either reject the read poll or report unread
+            # data as a false hangup (CPython gh-145030). Character devices also
+            # report no hangup at all.
+            named_fifo_without_close_event = (
+                sys.platform in {"darwin", "ios", "tvos", "watchos", "sunos5"} and pipe_stat.st_nlink > 0
+            )
+            if (
+                kind == _zuvloop.KIND_PIPE_WRITE
+                and stat.S_ISFIFO(mode)
+                and not sys.platform.startswith("aix")
+                and not named_fifo_without_close_event
+            ):
                 watch = _HangupWatch(self, pipe, fd, transport)
                 transport._adopt_pipe(watch)
                 watch.arm()
@@ -934,6 +961,8 @@ class _SubprocessTransport(base_subprocess.BaseSubprocessTransport):
         # asyncio signals the pid directly, which can race a reaped pid onto a
         # new process. libuv holds the handle, so it signals the child it spawned
         # or nothing at all. An exited child is a no-op, as asyncio has it.
+        if self.get_returncode() is not None:
+            return
         self._check_proc()
         assert self._proc is not None
         try:
@@ -958,8 +987,10 @@ class _SubprocessTransport(base_subprocess.BaseSubprocessTransport):
         **kwargs: Any,
     ) -> None:
         argv = ["/bin/sh", "-c", args] if shell else [os.fsdecode(arg) for arg in args]
+        if not isinstance(self._loop, ConnectionOperations):  # pragma: no cover - constructed by this loop only
+            raise RuntimeError("subprocess transport requires a zuvloop event loop")
         self._proc = Popen(  # type: ignore[assignment]  # a Popen-shaped object, not a Popen
-            cast("ConnectionOperations", self._loop),
+            self._loop,
             argv,
             stdin=stdin,
             stdout=stdout,

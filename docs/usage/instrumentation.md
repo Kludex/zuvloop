@@ -13,6 +13,12 @@ within one interval.
 
 **The measurement happens in Zig. Python only records it.**
 
+Unhandled exceptions are also reported through the standard `asyncio` logger,
+whether or not an OpenTelemetry provider exists. Telemetry is an additional
+signal, never the only error path. A broken exporter or provider is contained:
+its exception is not allowed to escape the loop's exception handler or suppress
+the normal log record.
+
 ## Signals
 
 | Signal | Kind | Measured by |
@@ -58,6 +64,13 @@ loop.metrics_interval = 1.0
 Slow-callback spans carry the awaiting call graph, captured with
 `asyncio.format_call_graph()`, so you see *why* the callback was running rather
 than just its repr.
+
+Callback reprs, call graphs and exception messages can contain application data.
+Each string attribute is truncated to 4 KiB before it is handed to a provider,
+and repr failures are replaced with a safe type description. zuvloop does not
+attach callback arguments, network payloads or environment variables. Treat the
+remaining diagnostic strings according to the data policy of your telemetry
+backend.
 
 The span's duration is reconstructed backwards from the loop's own monotonic
 measurement, so it covers the callback itself rather than the moment it was

@@ -23,8 +23,15 @@ import urllib.request
 from pathlib import Path
 
 CACHE = Path(__file__).resolve().parent.parent / ".conformance"
-VERSION = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-URL = f"https://www.python.org/ftp/python/{VERSION}/Python-{VERSION}.tgz"
+BASE_VERSION = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+VERSION = (
+    BASE_VERSION
+    if sys.version_info.releaselevel == "final"
+    else f"{BASE_VERSION}{dict(alpha='a', beta='b', candidate='rc')[sys.version_info.releaselevel]}"
+    f"{sys.version_info.serial}"
+)
+ARCHIVE_ROOT = f"cpython-{VERSION}"
+URL = f"https://codeload.github.com/python/cpython/tar.gz/refs/tags/v{VERSION}"
 MODULE = "test.test_asyncio.test_zuvloop_conformance"
 
 # Only what the asyncio suite reaches for, so the download stays a few megabytes
@@ -105,14 +112,14 @@ if __name__ == "__main__":
 
 def lib_root() -> Path:
     """The `Lib` directory of a matching CPython source tree, downloading it once."""
-    root = CACHE / f"Python-{VERSION}" / "Lib"
+    root = CACHE / ARCHIVE_ROOT / "Lib"
     if not root.exists():
         CACHE.mkdir(exist_ok=True)
-        tarball = CACHE / f"Python-{VERSION}.tgz"
+        tarball = CACHE / f"{ARCHIVE_ROOT}.tar.gz"
         if not tarball.exists():
             print(f"downloading {URL}", file=sys.stderr)
             urllib.request.urlretrieve(URL, tarball)
-        prefix = f"Python-{VERSION}/"
+        prefix = f"{ARCHIVE_ROOT}/"
         with tarfile.open(tarball) as archive:
             wanted = [f"{prefix}{name}" for name in WANTED]
             members = [m for m in archive.getmembers() if m.name.startswith(tuple(wanted))]
@@ -129,12 +136,12 @@ def collect(root: Path, pattern: str | None) -> list[str]:
         sys.path.pop(0)
     found: list[str] = []
 
-    def walk(item: object) -> None:
+    def walk(item: unittest.TestSuite | unittest.TestCase) -> None:
         if isinstance(item, unittest.TestSuite):
             for child in item:
                 walk(child)
         else:
-            found.append(item.id())  # type: ignore[attr-defined]
+            found.append(item.id())
 
     walk(suite)
     return [t for t in found if pattern is None or pattern in t]

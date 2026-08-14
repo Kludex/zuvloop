@@ -9,6 +9,15 @@ const handle = @import("handle.zig");
 const tshandle = @import("tshandle.zig");
 const timer = @import("timer.zig");
 
+comptime {
+    if (@hasDecl(c, "Py_GIL_DISABLED")) {
+        @compileError(
+            "zuvloop does not yet support free-threaded CPython builds; " ++
+                "use a standard GIL-enabled CPython interpreter",
+        );
+    }
+}
+
 fn libuvVersion(_: ?*py.Object, _: ?*py.Object) callconv(.c) ?*py.Object {
     return py.strZ(uv.uv_version_string());
 }
