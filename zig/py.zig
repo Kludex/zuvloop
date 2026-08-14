@@ -11,17 +11,29 @@ pub const Ref = *Object;
 /// calls in `initConstants`. Referencing the DLL's data symbols directly would
 /// need cross-library data imports, which the linker's auto-import machinery
 /// does not fix up for this extension on Windows - every read would fault.
+// SAFETY: module exec initializes this cache before registering any code that reads it.
 var none_object: *Object = undefined;
+// SAFETY: module exec initializes this cache before registering any code that reads it.
 var true_object: *Object = undefined;
+// SAFETY: module exec initializes this cache before registering any code that reads it.
 var false_object: *Object = undefined;
+// SAFETY: module exec initializes this cache before registering any code that reads it.
 pub var exc_system_exit: *Object = undefined;
+// SAFETY: module exec initializes this cache before registering any code that reads it.
 pub var exc_keyboard_interrupt: *Object = undefined;
+// SAFETY: module exec initializes this cache before registering any code that reads it.
 pub var exc_runtime_error: *Object = undefined;
+// SAFETY: module exec initializes this cache before registering any code that reads it.
 pub var exc_value_error: *Object = undefined;
+// SAFETY: module exec initializes this cache before registering any code that reads it.
 pub var exc_type_error: *Object = undefined;
+// SAFETY: module exec initializes this cache before registering any code that reads it.
 pub var exc_overflow_error: *Object = undefined;
+// SAFETY: module exec initializes this cache before registering any code that reads it.
 pub var exc_not_implemented_error: *Object = undefined;
+// SAFETY: module exec initializes this cache before registering any code that reads it.
 pub var exc_os_error: *Object = undefined;
+// SAFETY: module exec initializes this cache before registering any code that reads it.
 pub var exc_process_lookup_error: *Object = undefined;
 
 /// Must run before anything else touches this module; `exec` calls it first.
