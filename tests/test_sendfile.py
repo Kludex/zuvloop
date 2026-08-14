@@ -10,11 +10,11 @@ import tempfile
 from asyncio.constants import _SendfileMode
 from collections.abc import Iterator
 from pathlib import Path
-from typing import IO, cast
+from typing import IO
 
 import pytest
 
-from conftest import running_loop
+from tests.conftest import running_loop
 from zuvloop import _zuvloop
 from zuvloop._sendfile import _SendfileProtocol
 from zuvloop._server import Server
@@ -78,7 +78,8 @@ class Sink(asyncio.Protocol):
         self.closed: asyncio.Future[None] = running_loop().create_future()
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        self.transport = cast("asyncio.Transport", transport)
+        assert isinstance(transport, asyncio.Transport)
+        self.transport = transport
 
     def data_received(self, data: bytes) -> None:
         self.received += data
@@ -97,7 +98,8 @@ class StalledSink(Sink):
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         super().connection_made(transport)
-        running_loop().call_soon(cast("asyncio.Transport", transport).pause_reading)
+        assert isinstance(transport, asyncio.Transport)
+        running_loop().call_soon(transport.pause_reading)
 
 
 async def start_sink(protocol_type: type[Sink] = Sink) -> tuple[Server, int, list[Sink]]:
@@ -211,7 +213,7 @@ async def test_sock_sendfile_falls_back_when_the_descriptor_is_not_a_file(
     try:
         source = PipeBackedFile(read_end, b"0123456789")
         reader = loop.create_task(read_exactly(right, 10))
-        sent = await loop.sock_sendfile(left, cast("IO[bytes]", source), count=10)
+        sent = await loop.sock_sendfile(left, source, count=10)
         assert sent == 10
         assert await reader == b"0123456789"
     finally:
@@ -229,12 +231,33 @@ class SeeklessFile:
         return self._buffer.read(size)
 
 
+class InvalidDescriptorFile(SeeklessFile):
+    def fileno(self) -> str:
+        return "not-a-descriptor"
+
+
 async def test_sock_sendfile_treats_a_missing_descriptor_as_no_file(
     stream_pair: tuple[socket.socket, socket.socket],
 ) -> None:
     left, _right = stream_pair
     loop = running_loop()
-    assert await loop.sock_sendfile(left, cast("IO[bytes]", SeeklessFile(b""))) == 0
+    assert await loop.sock_sendfile(left, SeeklessFile(b"")) == 0
+
+
+async def test_sock_sendfile_rejects_offset_on_a_seekless_source(
+    stream_pair: tuple[socket.socket, socket.socket],
+) -> None:
+    left, _right = stream_pair
+    with pytest.raises(AttributeError, match="does not support seek"):
+        await running_loop().sock_sendfile(left, SeeklessFile(b"data"), offset=1)
+
+
+async def test_sock_sendfile_rejects_a_non_integer_descriptor(
+    stream_pair: tuple[socket.socket, socket.socket],
+) -> None:
+    left, _right = stream_pair
+    with pytest.raises(TypeError, match="non-integer file descriptor"):
+        await running_loop().sock_sendfile(left, InvalidDescriptorFile(b"data"), fallback=False)
 
 
 async def test_sock_sendfile_validates_its_arguments(
@@ -250,7 +273,7 @@ async def test_sock_sendfile_validates_its_arguments(
             await loop.sock_sendfile(blocking, io.BytesIO())
     with path.open("r") as text:
         with pytest.raises(ValueError, match="binary mode"):
-            await loop.sock_sendfile(left, cast("IO[bytes]", text))
+            await loop.sock_sendfile(left, text)  # type: ignore[arg-type]  # deliberately invalid text source
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as datagram:
         datagram.setblocking(False)
         with pytest.raises(ValueError, match="SOCK_STREAM"):
@@ -494,7 +517,7 @@ async def test_sendfile_is_unsupported_for_datagram_transports(payload_file: IO[
     transport, _ = await loop.create_datagram_endpoint(asyncio.DatagramProtocol, local_addr=("127.0.0.1", 0))
     try:
         with pytest.raises(RuntimeError, match="not supported"):
-            await loop.sendfile(cast("asyncio.WriteTransport", transport), payload_file)
+            await loop.sendfile(transport, payload_file)  # type: ignore[arg-type]  # deliberately unsupported
     finally:
         transport.close()
 
@@ -611,23 +634,38 @@ class PausedFallbackFakeTransport(FallbackFakeTransport):
     _protocol_paused = True
 
 
+class IncompleteFallbackTransport:
+    _sendfile_compatible = _SendfileMode.FALLBACK
+
+    def is_closing(self) -> bool:
+        return False
+
+
 async def test_sendfile_on_a_foreign_transport_without_support(payload_file: IO[bytes]) -> None:
     loop = running_loop()
     with pytest.raises(RuntimeError, match="not supported"):
-        await loop.sendfile(cast("asyncio.WriteTransport", FakeTransport()), payload_file)
+        await loop.sendfile(FakeTransport(), payload_file)
+
+
+async def test_sendfile_rejects_an_incomplete_fallback_transport(payload_file: IO[bytes]) -> None:
+    with pytest.raises(RuntimeError, match="not supported"):
+        await running_loop().sendfile(
+            IncompleteFallbackTransport(),  # type: ignore[arg-type]  # deliberately incomplete transport
+            payload_file,
+        )
 
 
 async def test_sendfile_on_a_foreign_transport_claiming_native_support() -> None:
     loop = running_loop()
     fake = NativeFakeTransport()
     with pytest.raises(asyncio.SendfileNotAvailableError):
-        await loop.sendfile(cast("asyncio.WriteTransport", fake), io.BytesIO(b"data"), fallback=False)
-    sent = await loop.sendfile(cast("asyncio.WriteTransport", fake), io.BytesIO(PAYLOAD[:50_000]))
+        await loop.sendfile(fake, io.BytesIO(b"data"), fallback=False)
+    sent = await loop.sendfile(fake, io.BytesIO(PAYLOAD[:50_000]))
     assert sent == 50_000
     assert b"".join(fake.written) == PAYLOAD[:50_000]
     unseekable = NativeFakeTransport()
-    source = cast("IO[bytes]", SeeklessFile(PAYLOAD[:20_000]))
-    sent = await loop.sendfile(cast("asyncio.WriteTransport", unseekable), source)
+    source = SeeklessFile(PAYLOAD[:20_000])
+    sent = await loop.sendfile(unseekable, source)
     assert sent == 20_000
     assert b"".join(unseekable.written) == PAYLOAD[:20_000]
 
@@ -635,7 +673,7 @@ async def test_sendfile_on_a_foreign_transport_claiming_native_support() -> None
 async def test_sendfile_on_a_foreign_transport_with_fallback_disabled(payload_file: IO[bytes]) -> None:
     loop = running_loop()
     with pytest.raises(RuntimeError, match="fallback is disabled"):
-        await loop.sendfile(cast("asyncio.WriteTransport", FallbackFakeTransport()), payload_file, fallback=False)
+        await loop.sendfile(FallbackFakeTransport(), payload_file, fallback=False)
 
 
 async def test_sendfile_leaves_a_still_paused_protocol_paused() -> None:
@@ -645,24 +683,29 @@ async def test_sendfile_leaves_a_still_paused_protocol_paused() -> None:
     fake = PausedFallbackFakeTransport()
     recorder = Recorder()
     fake.protocol = recorder
-    assert await loop.sendfile(cast("asyncio.WriteTransport", fake), io.BytesIO()) == 0
+    assert await loop.sendfile(fake, io.BytesIO()) == 0
     assert fake.protocol is recorder
     assert recorder.resumed == 0
+
+
+async def test_transport_sendfile_rejects_offset_on_a_seekless_source() -> None:
+    with pytest.raises(AttributeError, match="does not support seek"):
+        await running_loop().sendfile(FallbackFakeTransport(), SeeklessFile(b"data"), offset=1)
 
 
 async def test_sendfile_stops_when_the_transport_closes_mid_transfer() -> None:
     loop = running_loop()
     fake = FallbackFakeTransport(close_after=1)
     with pytest.raises(ConnectionError, match="closed by peer"):
-        await loop.sendfile(cast("asyncio.WriteTransport", fake), io.BytesIO(PAYLOAD[:100_000]))
+        await loop.sendfile(fake, io.BytesIO(PAYLOAD[:100_000]))
 
 
 async def test_sendfile_protocol_guards_its_invalid_states() -> None:
     loop = running_loop()
-    fake = cast("asyncio.WriteTransport", FakeTransport())
+    fake = FakeTransport()
     stand_in = _SendfileProtocol(loop, fake, paused=False)
     with pytest.raises(RuntimeError, match="established"):
-        stand_in.connection_made(fake)
+        stand_in.connection_made(asyncio.BaseTransport())
     with pytest.raises(RuntimeError, match="paused"):
         stand_in.data_received(b"data")
     with pytest.raises(RuntimeError, match="paused"):
@@ -678,7 +721,7 @@ async def test_sendfile_protocol_guards_its_invalid_states() -> None:
 async def test_sendfile_protocol_wakes_its_waiter_on_connection_lost() -> None:
     loop = running_loop()
     fake = FakeTransport()
-    stand_in = _SendfileProtocol(loop, cast("asyncio.WriteTransport", fake), paused=True)
+    stand_in = _SendfileProtocol(loop, fake, paused=True)
     stand_in.connection_lost(RuntimeError("gone"))
     with pytest.raises(RuntimeError, match="gone"):
         await stand_in.drain()

@@ -27,6 +27,7 @@ const Payload = extern struct {
     loop: ?*py.Object,
     callback: ?*py.Object,
     context: ?*py.Object,
+    when_obj: ?*py.Object,
     heap_args: ?[*]?*py.Object,
     nargs: c.Py_ssize_t,
     flags: u32,
@@ -70,11 +71,16 @@ pub fn create(
     args: []const ?*py.Object,
     context: ?*py.Object,
     at: f64,
+    original_when: ?*py.Object,
 ) py.Error!*py.Object {
     const obj = c.PyType_GenericAlloc(timer_type.?, 0) orelse return py.Error.Python;
     const self = payload(obj);
     self.when = at;
     self.flags = SCHEDULED;
+    if (original_when) |value| {
+        py.incref(value);
+        self.when_obj = value;
+    }
 
     if (args.len > inline_args) {
         const buf = arg_alloc.alloc(?*py.Object, args.len) catch {
@@ -143,7 +149,9 @@ fn cancelled(self_obj: *py.Object) py.Error!*py.Object {
 }
 
 fn when(self_obj: *py.Object) py.Error!*py.Object {
-    return py.float(payload(self_obj).when) orelse py.Error.Python;
+    const self = payload(self_obj);
+    if (self.when_obj) |value| return py.newref(value).?;
+    return py.float(self.when) orelse py.Error.Python;
 }
 
 fn repr(obj: ?*py.Object) callconv(.c) ?*py.Object {
@@ -162,6 +170,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     py.clear(&self.loop);
     py.clear(&self.callback);
     py.clear(&self.context);
+    py.clear(&self.when_obj);
     tp.tp_free.?(obj);
     py.decref(tp);
 }
@@ -173,6 +182,8 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
     r = py.visit(self.callback, visitproc, arg);
     if (r != 0) return r;
     r = py.visit(self.context, visitproc, arg);
+    if (r != 0) return r;
+    r = py.visit(self.when_obj, visitproc, arg);
     if (r != 0) return r;
     const n: usize = @intCast(self.nargs);
     const items = self.argv();
@@ -190,6 +201,7 @@ fn clear_(obj: ?*py.Object) callconv(.c) c_int {
     py.clear(&self.loop);
     py.clear(&self.callback);
     py.clear(&self.context);
+    py.clear(&self.when_obj);
     return 0;
 }
 
@@ -225,7 +237,9 @@ fn getContext(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 }
 
 fn getWhen(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
-    return py.float(payload(self_obj.?).when);
+    const self = payload(self_obj.?);
+    if (self.when_obj) |value| return py.newref(value);
+    return py.float(self.when);
 }
 
 fn getScheduled(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {

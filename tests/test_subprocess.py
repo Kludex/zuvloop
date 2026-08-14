@@ -6,18 +6,16 @@ import errno
 import os
 import signal
 import socket
-import subprocess
 import sys
 from asyncio.subprocess import Process
 from collections.abc import Callable
 from pathlib import Path
-from typing import NoReturn, cast
+from typing import NoReturn
 
 import pytest
 
-from conftest import running_loop
-from zuvloop._connect import ConnectionOperations
-from zuvloop._process import Popen, ProcessReaper
+from tests.conftest import running_loop
+from zuvloop._process import ProcessReaper
 
 pytestmark = pytest.mark.anyio
 
@@ -33,7 +31,7 @@ def test_process_reaper_does_not_discard_a_reused_pid() -> None:
             raise StopReaper
 
     class RecordingLoop:
-        def call_soon_threadsafe(self, callback: Callable[[int], None], returncode: int) -> None:
+        def call_soon_threadsafe(self, callback: Callable[[int], object], returncode: int) -> None:
             callback(returncode)
 
     class RecordingWrapper:
@@ -47,7 +45,7 @@ def test_process_reaper_does_not_discard_a_reused_pid() -> None:
         def __init__(
             self,
             reaper: ProcessReaper,
-            replacement: tuple[subprocess.Popen[bytes], ConnectionOperations, Popen],
+            replacement: tuple[ReplacementProcess, RecordingLoop, RecordingWrapper],
         ) -> None:
             self.reaper = reaper
             self.replacement = replacement
@@ -58,12 +56,12 @@ def test_process_reaper_does_not_discard_a_reused_pid() -> None:
             return 0
 
     reaper = ProcessReaper()
-    new_process = cast("subprocess.Popen[bytes]", ReplacementProcess())
-    loop = cast("ConnectionOperations", RecordingLoop())
+    new_process = ReplacementProcess()
+    loop = RecordingLoop()
     recording_wrapper = RecordingWrapper()
-    wrapper = cast("Popen", recording_wrapper)
+    wrapper = recording_wrapper
     replacement = (new_process, loop, wrapper)
-    old_process = cast("subprocess.Popen[bytes]", ReplacedProcess(reaper, replacement))
+    old_process = ReplacedProcess(reaper, replacement)
     reaper.processes[42] = (old_process, loop, wrapper)
 
     with pytest.raises(StopReaper):
@@ -79,6 +77,11 @@ async def test_a_command_runs_and_reports_its_output() -> None:
     assert stdout == b"hello\n"
     assert stderr is None
     assert process.returncode == 0
+
+
+async def test_subprocess_setup_rejects_a_non_subprocess_protocol() -> None:
+    with pytest.raises(TypeError, match="subprocess protocol"):
+        await running_loop()._make_subprocess_transport(asyncio.Protocol(), ["/bin/true"], False, None, None, None, 0)
 
 
 async def test_a_shell_command_reports_its_exit_status() -> None:

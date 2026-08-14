@@ -63,7 +63,9 @@ for address literals.
 $ pip install zuvloop
 ```
 
-To build from source you also need [Zig](https://ziglang.org/download/) 0.16.
+Source distributions install a pinned Zig 0.16 toolchain in their isolated build
+environment. Direct native development commands require Zig 0.16 on `PATH`.
+Free-threaded CPython builds are not supported and fail explicitly at build time.
 
 ## Example
 
@@ -145,7 +147,13 @@ $ python -m asyncio pstree <pid>
 ## Compatibility
 
 zuvloop is checked against CPython's own conformance suite and against the test suites of the
-projects that exercise an event loop hardest — run unmodified, with the loop swapped underneath:
+projects that exercise an event loop hardest — run unmodified, with the loop swapped underneath.
+The in-repository suite and CPython-derived conformance run on every change. A weekly workflow
+tests CPython 3.14.0, the newest 3.14 patch, the 3.15 prerelease, and immutable uvicorn 0.52.3 and
+aiohttp 3.14.3 commits.
+
+The following counts are the recorded compatibility baseline that motivated those automated
+gates; the workflow, not this table, is the current source of truth:
 
 | Suite | Result |
 | --- | --- |
@@ -192,7 +200,7 @@ $ ./scripts/check-zig  # requires ZLint 0.9.1 on PATH
 $ uv run --group bench python benchmarks/run.py
 ```
 
-The extension is rebuilt by `hatch_build.py` on every install. To rebuild in place:
+The extension is rebuilt by the hatch-ziglang build hook on every install. To rebuild in place:
 
 ```console
 $ python scripts/build.py

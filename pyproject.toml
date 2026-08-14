@@ -3,7 +3,7 @@
 # invokes the native compiler, so a future version resolved from a lower bound
 # could execute unreviewed code into the wheels the publish job trusts. The
 # compiler is pinned for the same reason. Bump both deliberately.
-requires = ["hatchling", "hatch-vcs==0.5.0", "hatch-ziglang==0.2.1", "ziglang==0.16.0"]
+requires = ["hatchling==1.32.0", "hatch-vcs==0.5.0", "hatch-ziglang==0.2.1", "ziglang==0.16.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -27,7 +27,7 @@ classifiers = [
     "Programming Language :: Zig",
     "Typing :: Typed",
 ]
-dependencies = ["opentelemetry-api>=1.23"]
+dependencies = ["opentelemetry-api>=1.23", "typing-extensions>=4.15"]
 
 [project.urls]
 Source = "https://github.com/Kludex/zuvloop"
@@ -36,6 +36,7 @@ Source = "https://github.com/Kludex/zuvloop"
 dev = [
     "anyio>=4.6",
     "coverage[toml]>=7.6",
+    "hypothesis>=6.138",
     "mypy>=1.13",
     "opentelemetry-sdk>=1.23",
     "pytest>=8.3",
@@ -106,7 +107,9 @@ filterwarnings = ["error"]
 build = "cp314-*"
 skip = "*-musllinux_i686 *t-*"
 build-frontend = "build[uv]"
-test-command = "python -c \"import zuvloop, asyncio; asyncio.run(asyncio.sleep(0), loop_factory=zuvloop.new_event_loop); print(zuvloop.libuv_version())\""
+environment = { UV_BUILD_CONSTRAINT = "$(pwd)/.github/build-constraints.txt", UV_REQUIRE_HASHES = "1" }
+test-requires = ["aiohttp", "anyio", "httptools", "hypothesis", "opentelemetry-sdk", "pytest", "uvicorn"]
+test-command = "pytest {project}/tests -q --import-mode=importlib"
 
 [tool.cibuildwheel.linux]
 # The Zig toolchain comes from PyPI, so the manylinux image needs nothing extra.
@@ -132,4 +135,5 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",
     "@overload",
+    "class .*\\bProtocol\\):",
 ]

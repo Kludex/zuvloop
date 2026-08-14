@@ -7,7 +7,7 @@ import ssl
 
 import pytest
 
-from conftest import collect_contexts, running_loop
+from tests.conftest import collect_contexts, running_loop
 from zuvloop._server import Server
 
 pytestmark = pytest.mark.anyio
@@ -271,3 +271,8 @@ async def test_start_tls_closes_the_transport_when_the_handshake_fails(client_co
             await loop.start_tls(transport, protocol, client_context, server_hostname="localhost")
         assert transport.is_closing()
         await asyncio.sleep(0.05)
+
+
+async def test_start_tls_rejects_a_write_only_transport(client_context: ssl.SSLContext) -> None:
+    with pytest.raises(TypeError, match="both reading and writing"):
+        await running_loop().start_tls(asyncio.WriteTransport(), asyncio.Protocol(), client_context)

@@ -17,8 +17,9 @@ from typing import NoReturn
 import pytest
 
 import zuvloop
-from conftest import running_loop
+from tests.conftest import running_loop
 from zuvloop._server import Server
+from zuvloop._sockets import _SocketAddress
 
 pytestmark = pytest.mark.anyio
 
@@ -1743,7 +1744,7 @@ async def test_happy_eyeballs_beats_a_black_holed_address() -> None:
             return resolved
         return await original_getaddrinfo(host, port, **kwargs)
 
-    async def sock_connect(sock: socket.socket, address: tuple[str, int]) -> None:
+    async def sock_connect(sock: socket.socket, address: _SocketAddress) -> None:
         if address == black_hole:
             await asyncio.Event().wait()
         await original_sock_connect(sock, address)
@@ -1818,7 +1819,7 @@ async def test_identical_failures_are_reported_once() -> None:
             return [info, info]
         return await original_getaddrinfo(host, port, **kwargs)
 
-    async def sock_connect(sock: socket.socket, address: tuple[str, int]) -> None:
+    async def sock_connect(sock: socket.socket, address: _SocketAddress) -> None:
         nonlocal attempts
         attempts += 1
         await original_sock_connect(sock, address)

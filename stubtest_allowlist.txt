@@ -1,0 +1,6 @@
+# These are private source-level aliases and decorated OpenTelemetry factories,
+# not importable parts of zuvloop's public typing contract.
+zuvloop\._connect\._AddrInfo
+zuvloop\._connect\._DatagramAddress
+zuvloop\._instrumentation\._(counter|gauge|histogram|meter|tracer)
+zuvloop\._sockets\._SocketAddress

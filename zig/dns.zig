@@ -4,6 +4,7 @@
 //! libuv keeps resolution off the Python thread pool entirely.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const py = @import("py.zig");
 const c = py.c;
 const uv = @import("uv.zig");
@@ -348,6 +349,12 @@ fn onNameInfo(req: ?*uv.GetNameInfo, status: c_int, hostname: ?[*:0]const u8, se
 /// is built through `buildResults`, so it is rendered by the same code as the
 /// libc path rather than by a second implementation of the same formatting.
 fn resolveLiteral(hints: *const std.c.addrinfo, host: ?[*:0]const u8, service: ?[*:0]const u8) ?*py.Object {
+    // musl populates `ai_canonname` for numeric addresses even when callers do
+    // not request `AI_CANONNAME`. Synthesizing the result here would lose that
+    // platform-visible field and disagree with `socket.getaddrinfo`, so let the
+    // numeric libc path below answer instead.
+    if (builtin.abi.isMusl()) return null;
+
     const flags: u32 = @bitCast(hints.flags);
     const ignorable: u32 = @bitCast(std.c.AI{ .NUMERICHOST = true, .NUMERICSERV = true, .PASSIVE = true });
     if (flags & ~ignorable != 0) return null;
@@ -385,6 +392,13 @@ fn resolveLiteral(hints: *const std.c.addrinfo, host: ?[*:0]const u8, service: ?
     if (family == std.c.AF.INET6 or family == std.c.AF.UNSPEC) {
         const sin6: *posix.sockaddr.in6 = @ptrCast(@alignCast(&storage));
         if (inet_pton(std.c.AF.INET6, name.ptr, &sin6.addr) == 1) {
+            // Darwin carries a KAME-style scope id in bytes 2-3 of a link-local
+            // literal: libc turns `fe80:1::` into `("fe80::", ..., scope=1)`.
+            // Bypassing libc would expose a different address and scope. Plain
+            // link-local literals have zero there and remain safe to answer.
+            if (builtin.os.tag.isDarwin() and
+                sin6.addr[0] == 0xfe and (sin6.addr[1] & 0xc0) == 0x80 and
+                (sin6.addr[2] != 0 or sin6.addr[3] != 0)) return null;
             sin6.* = .{ .port = std.mem.nativeToBig(u16, port), .flowinfo = 0, .addr = sin6.addr, .scope_id = 0 };
             return finishLiteral(std.c.AF.INET6, hints.socktype, protocol, @ptrCast(sin6));
         }

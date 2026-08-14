@@ -1,0 +1,4 @@
+hatchling==1.32.0
+hatch-vcs==0.5.0
+hatch-ziglang==0.2.1
+ziglang==0.16.0

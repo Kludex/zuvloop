@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
+from pathlib import Path
 from typing import IO
 
 import pytest
 
 import zuvloop
-from conftest import running_loop
+from tests.conftest import running_loop
 
 pytestmark = pytest.mark.anyio
 
@@ -223,6 +224,25 @@ async def test_a_write_pipe_notices_the_reader_going_away() -> None:
         assert await asyncio.wait_for(lost, 2) is None
     finally:
         transport.close()
+
+
+async def test_unread_data_does_not_close_a_named_fifo(tmp_path: Path) -> None:
+    loop = running_loop()
+    path = tmp_path / "named-fifo"
+    os.mkfifo(path)
+    read_fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    write_fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK)
+    writer_file = open(write_fd, "wb", buffering=0)
+    transport, _writer = await loop.connect_write_pipe(asyncio.BaseProtocol, writer_file)
+    try:
+        transport.write(b"unread")
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not transport.is_closing()
+        assert os.read(read_fd, 64) == b"unread"
+    finally:
+        transport.close()
+        os.close(read_fd)
 
 
 async def test_an_undelivered_write_ends_the_write_pipe_with_a_broken_pipe() -> None:

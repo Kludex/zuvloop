@@ -1,13 +1,25 @@
 version: 2
 
 updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: ""
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    # A release has to be a week old before it is proposed. Actions are pinned by
-    # major tag, so a bad release lands here as a green CI run against a broken
-    # toolchain rather than as an obvious failure.
+    # A release has to be a week old before Dependabot proposes its immutable
+    # commit. The PR exposes the exact code that a privileged workflow will run.
     cooldown:
       default-days: 7
     groups:

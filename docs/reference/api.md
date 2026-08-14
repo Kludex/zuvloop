@@ -61,9 +61,13 @@ Returned by `call_soon`, `call_later` and `call_at`. They carry `cancel()`,
 
 /// warning
 
-These are not `asyncio.Handle` subclasses. Code that checks
-`isinstance(handle, asyncio.Handle)` will not recognise them. uvloop's handles
-have the same property.
+The lean handle returned by `call_soon` is not an `asyncio.Handle` subclass. Code
+that checks `isinstance(handle, asyncio.Handle)` will not recognise it. It still
+implements `cancel()` and `cancelled()`.
+
+`TimerHandle` is a real `asyncio.TimerHandle`, so timer handles order and compare
+by deadline. `call_soon_threadsafe` returns an `asyncio.Handle` subclass with the
+cross-thread cancellation synchronization Python 3.14 requires.
 ///
 
 ## Instrumentation

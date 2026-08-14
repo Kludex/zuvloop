@@ -62,6 +62,7 @@ pub fn build(b: *std.Build) void {
     // runner. `-Dcpu=native` is still there for a build meant for one machine.
     const target = b.standardTargetOptions(.{ .default_target = .{ .cpu_model = .baseline } });
     const optimize = b.standardOptimizeOption(.{});
+    const sanitize_c = b.option(std.zig.SanitizeC, "sanitize-c", "C undefined-behavior sanitizer mode");
 
     // hatch-ziglang passes the building interpreter through the environment, so a
     // wheel is always built against the interpreter that asked for it. The `-D`
@@ -77,6 +78,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("zig/module.zig"),
         .target = target,
         .optimize = optimize,
+        .sanitize_c = sanitize_c,
         .link_libc = true,
         .pic = true,
     });

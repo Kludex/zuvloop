@@ -3,13 +3,15 @@ from __future__ import annotations
 import asyncio
 import functools
 import time
-from typing import Any
+from collections.abc import Mapping
 
 from opentelemetry import metrics, trace
 from opentelemetry.metrics import NoOpMeterProvider
 from opentelemetry.trace import NoOpTracerProvider, ProxyTracerProvider, Status, StatusCode
+from opentelemetry.util.types import AttributeValue
 
 _NAMESPACE = "zuvloop"
+_MAX_ATTRIBUTE_LENGTH = 4096
 
 
 @functools.cache
@@ -48,43 +50,64 @@ class Instrumentation:
     """
 
     def report_slow_callback(self, handle: object, duration: float) -> None:
-        _counter("slow_callbacks", "Callbacks that exceeded slow_callback_duration").add(1)
-        _histogram("callback_duration", "Duration of slow callbacks", "s").record(duration)
-        if not tracing_provider_installed():
+        try:
+            _counter("slow_callbacks", "Callbacks that exceeded slow_callback_duration").add(1)
+            _histogram("callback_duration", "Duration of slow callbacks", "s").record(duration)
+            if not tracing_provider_installed():
+                return
+
+            # The loop timed the callback with a monotonic clock, so the span is
+            # reconstructed backwards from now rather than started after the fact.
+            ended = time.time_ns()
+            graph = capture_call_graph(handle)
+            attributes: dict[str, AttributeValue] = {
+                "code.callback": _safe_repr(handle),
+                "duration": duration,
+                "logfire.level_num": 13,
+            }
+            if graph is not None:
+                attributes["asyncio.call_graph"] = _bounded(graph)
+            span = _tracer().start_span(
+                f"{_NAMESPACE}.slow_callback",
+                start_time=ended - int(duration * 1e9),
+                attributes=attributes,
+            )
+            span.end(end_time=ended)
+        except BaseException:
+            # Instrumentation runs on exception and slow-callback paths. An
+            # exporter, provider, user __repr__, or call-graph failure must not
+            # replace the application failure that led here.
             return
 
-        # The loop timed the callback with a monotonic clock, so the span is
-        # reconstructed backwards from now rather than started after the fact.
-        ended = time.time_ns()
-        span = _tracer().start_span(
-            f"{_NAMESPACE}.slow_callback",
-            start_time=ended - int(duration * 1e9),
-            attributes=_without_none(
-                {
-                    "code.callback": repr(handle),
-                    "duration": duration,
-                    "asyncio.call_graph": capture_call_graph(handle),
-                    "logfire.level_num": 13,
-                }
-            ),
-        )
-        span.end(end_time=ended)
+    def report_exception(self, context: Mapping[str, object]) -> None:
+        try:
+            _counter("unhandled_exceptions", "Exceptions routed to the loop exception handler").add(1)
+            exception = context.get("exception")
+            message = context.get("message") or "Unhandled exception in event loop"
+            attributes = {
+                key: _safe_repr(value) for key, value in context.items() if key not in ("message", "exception")
+            }
 
-    def report_exception(self, context: dict[str, Any]) -> None:
-        _counter("unhandled_exceptions", "Exceptions routed to the loop exception handler").add(1)
-        exception = context.get("exception")
-        message = context.get("message") or "Unhandled exception in event loop"
-        attributes = {key: repr(value) for key, value in context.items() if key not in ("message", "exception")}
-
-        span = _tracer().start_span(f"{_NAMESPACE}.unhandled_exception", attributes=attributes)
-        if isinstance(exception, BaseException):
-            span.record_exception(exception)
-        span.set_status(Status(StatusCode.ERROR, message))
-        span.end()
+            span = _tracer().start_span(f"{_NAMESPACE}.unhandled_exception", attributes=attributes)
+            if isinstance(exception, BaseException):
+                span.record_exception(exception)
+            span.set_status(Status(StatusCode.ERROR, _bounded(str(message))))
+            span.end()
+        except BaseException:
+            return
 
 
-def _without_none(attributes: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in attributes.items() if value is not None}
+def _bounded(value: str) -> str:
+    if len(value) <= _MAX_ATTRIBUTE_LENGTH:
+        return value
+    return value[: _MAX_ATTRIBUTE_LENGTH - 1] + "…"
+
+
+def _safe_repr(value: object) -> str:
+    try:
+        return _bounded(repr(value))
+    except BaseException:
+        return f"<{type(value).__name__} repr failed>"
 
 
 def capture_call_graph(handle: object = None) -> str | None:

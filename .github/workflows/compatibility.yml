@@ -1,0 +1,172 @@
+name: Compatibility
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compatibility
+  cancel-in-progress: false
+
+jobs:
+  python:
+    name: CPython ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor, the newest patch, and the next prerelease are all distinct
+        # risks for an extension that uses CPython's C API directly.
+        python-version: ["3.14.0", "3.14", "3.15"]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+
+      - uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867 # v7.1.6
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+          version: 0.12.3
+
+      - name: Install
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
+        run: uv sync --locked --python "$PYTHON_VERSION" --group dev --group bench
+
+      - name: Test public behavior and CPython conformance
+        run: |
+          uv run --no-sync pytest -q
+          uv run --no-sync python scripts/conformance.py
+
+  free-threaded:
+    name: Reject unsupported free-threaded builds clearly
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+
+      - uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867 # v7.1.6
+        with:
+          enable-cache: true
+          python-version: 3.14t
+          version: 0.12.3
+
+      - name: Confirm the build fails before producing an unusable wheel
+        run: |
+          if uv build --wheel --python 3.14t --out-dir /tmp/free-threaded-wheel \
+            --build-constraints .github/build-constraints.txt --require-hashes \
+            > /tmp/free-threaded-build.log 2>&1; then
+            echo "::error::The free-threaded build unexpectedly succeeded. Test it before publishing cp314t wheels."
+            exit 1
+          fi
+          cat /tmp/free-threaded-build.log
+          grep -q "does not yet support free-threaded CPython builds" /tmp/free-threaded-build.log
+
+  aiohttp:
+    name: aiohttp 3.14.3 full suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: aio-libs/aiohttp
+          ref: 5e392ce0456f5235a4ee6ad46f0e806df2f15873 # v3.14.3
+          path: upstream
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867 # v7.1.6
+        with:
+          enable-cache: true
+          python-version: "3.14"
+          version: 0.12.3
+
+      - name: Install the pinned upstream suite and zuvloop
+        run: |
+          uv venv --python 3.14 .upstream-venv
+          uv pip install --python .upstream-venv/bin/python -r upstream/requirements/test.txt
+          uv pip install --python .upstream-venv/bin/python aiohttp==3.14.3 .
+          # Blockbuster exempts stdlib asyncio calls by source filename, so it
+          # reports equivalent os.stat/os.sendfile calls from any third-party
+          # loop. That measures its allowlist, not event-loop compatibility.
+          uv pip uninstall --python .upstream-venv/bin/python blockbuster
+          # Ensure the installed release wheel is imported. The Git checkout's
+          # package has no generated native parser modules.
+          mv upstream/aiohttp /tmp/aiohttp-source
+
+      - name: Run aiohttp on zuvloop
+        working-directory: upstream
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts/upstream
+        run: |
+          ../.upstream-venv/bin/python -c \
+            'import asyncio, zuvloop; assert asyncio.new_event_loop is zuvloop.new_event_loop'
+          ../.upstream-venv/bin/pytest -q -n 4 --no-cov --aiohttp-loop=pyloop \
+            --import-mode=importlib -p zuvloop_upstream_expectations \
+            -m 'not dev_mode and not autobahn'
+
+  uvicorn:
+    name: uvicorn 0.52.3 full suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: encode/uvicorn
+          ref: a68da608147c5f79d962352dce11de8f6e32d972 # 0.52.3
+          path: upstream
+          persist-credentials: false
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+
+      - uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867 # v7.1.6
+        with:
+          enable-cache: true
+          python-version: "3.14"
+          version: 0.12.3
+
+      - name: Install the pinned upstream suite and zuvloop
+        working-directory: upstream
+        run: |
+          uv sync --locked --python 3.14 --only-group dev
+          # Do not apply uvicorn's `exclude-newer` policy to zuvloop's newer,
+          # separately pinned build backend.
+          uv --no-config pip install --python .venv/bin/python ..
+
+      - name: Run uvicorn on zuvloop
+        working-directory: upstream
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts/upstream
+        run: |
+          .venv/bin/python -c \
+            'import asyncio, zuvloop; assert asyncio.new_event_loop is zuvloop.new_event_loop'
+          .venv/bin/pytest -q -n 4 -p zuvloop_upstream_expectations

@@ -499,10 +499,16 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
     return h;
 }
 
-fn scheduleAt(self: *LoopObject, when: f64, callback: *py.Object, p: Parsed) py.Error!*py.Object {
+fn scheduleAt(
+    self: *LoopObject,
+    when: f64,
+    original_when: ?*py.Object,
+    callback: *py.Object,
+    p: Parsed,
+) py.Error!*py.Object {
     const st = self.state();
     try checkClosed(st);
-    const h = try timermod.create(@ptrCast(self), callback, p.positional, p.context, when);
+    const h = try timermod.create(@ptrCast(self), callback, p.positional, p.context, when, original_when);
     py.incref(h);
     st.timers.push(when, h) catch {
         py.decref(h);
@@ -518,14 +524,14 @@ fn callLater(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwna
     const delay = try py.asF64(args[0].?);
     const p = try parseCall(args, nargs, kwnames, 2);
     const when = now() + @max(delay, 0);
-    return scheduleAt(asLoop(self_obj), when, args[1].?, p);
+    return scheduleAt(asLoop(self_obj), when, null, args[1].?, p);
 }
 
 fn callAt(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames: ?*py.Object) py.Error!*py.Object {
     if (nargs < 2) return py.errType("call_at() requires a time and a callback");
     const when = try py.asF64(args[0].?);
     const p = try parseCall(args, nargs, kwnames, 2);
-    return scheduleAt(asLoop(self_obj), when, args[1].?, p);
+    return scheduleAt(asLoop(self_obj), when, args[0], args[1].?, p);
 }
 
 fn time(self_obj: *py.Object) py.Error!*py.Object {

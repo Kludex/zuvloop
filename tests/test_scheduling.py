@@ -10,7 +10,7 @@ from collections.abc import Coroutine
 import pytest
 
 import zuvloop
-from conftest import running_loop
+from tests.conftest import running_loop
 
 pytestmark = pytest.mark.anyio
 
@@ -84,7 +84,7 @@ async def test_cancelled_callback_does_not_run() -> None:
 @pytest.mark.parametrize("args", [(1, 2, 3), (1, 2, 3, 4, 5, 6)])
 async def test_callback_can_cancel_its_own_handle_during_vectorcall(args: tuple[int, ...]) -> None:
     loop = running_loop()
-    handles: list[asyncio.Handle] = []
+    handles: list[zuvloop.Handle] = []
     seen: list[tuple[int, ...]] = []
 
     def callback(*received: int) -> None:
@@ -148,6 +148,20 @@ async def test_call_at_accepts_a_time_monotonic_deadline() -> None:
     done = loop.create_future()
     loop.call_at(time.monotonic() + 0.01, done.set_result, None)
     await asyncio.wait_for(done, 1)
+
+
+async def test_call_at_preserves_the_deadline_number_type() -> None:
+    loop = running_loop()
+    integer = loop.call_at(2**31, print)
+    floating = loop.call_at(float(2**31), print)
+    try:
+        assert type(integer.when()) is int
+        assert type(integer._when) is int
+        assert type(floating.when()) is float
+        assert type(floating._when) is float
+    finally:
+        integer.cancel()
+        floating.cancel()
 
 
 async def test_call_at_uses_the_loop_clock() -> None:

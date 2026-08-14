@@ -8,12 +8,11 @@ import threading
 import time
 import weakref
 from collections.abc import AsyncGenerator, Callable, Mapping
-from typing import cast
 
 import pytest
 
 import zuvloop
-from conftest import collect_contexts, running_loop
+from tests.conftest import collect_contexts, running_loop
 from zuvloop._base import _shutdown_executor
 from zuvloop._connect import ConnectionOperations
 
@@ -527,11 +526,12 @@ def test_executor_shutdown_tolerates_close_racing_with_notification() -> None:
         def shutdown(self, *, wait: bool) -> None:
             assert wait
 
-    fake_loop = cast("zuvloop.EventLoop", ClosingLoop())
-    fake_future = cast("asyncio.Future[None]", object())
-    fake_executor = cast("concurrent.futures.Executor", FinishedExecutor())
-
-    _shutdown_executor(fake_loop, fake_future, fake_executor)
+    future_loop = zuvloop.new_event_loop()
+    try:
+        fake_future = future_loop.create_future()
+        _shutdown_executor(ClosingLoop(), fake_future, FinishedExecutor())
+    finally:
+        future_loop.close()
 
 
 async def test_shutdown_asyncgens_closes_generators() -> None:

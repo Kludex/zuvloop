@@ -6,7 +6,7 @@ import os
 import socket
 import ssl
 from asyncio.constants import _SendfileMode
-from typing import IO, cast
+from typing import Protocol, runtime_checkable
 
 from . import _zuvloop
 from ._sockets import SocketOperations
@@ -17,13 +17,34 @@ _SOCKET_CHUNK = 256 * 1024
 _TRANSPORT_CHUNK = 16 * 1024
 
 
+@runtime_checkable
+class _SendfileTransport(Protocol):
+    def get_protocol(self) -> asyncio.BaseProtocol: ...
+    def is_closing(self) -> bool: ...
+    def is_reading(self) -> bool: ...
+    def pause_reading(self) -> None: ...
+    def resume_reading(self) -> None: ...
+    def set_protocol(self, protocol: asyncio.BaseProtocol) -> None: ...
+    def write(self, data: bytes) -> None: ...
+
+
+class _SendfileSource(Protocol):
+    def read(self, size: int, /) -> bytes: ...
+
+
 class SendfileOperations(SocketOperations):
     """`sendfile()` and `sock_sendfile()`: `os.sendfile` straight to the
     descriptor when the target is a plain socket, chunked writes when it is
     behind TLS or not a regular file."""
 
     async def sock_sendfile(  # type: ignore[override]  # typeshed allows fallback=None
-        self, sock: socket.socket, file: IO[bytes], offset: int = 0, count: int | None = None, *, fallback: bool = True
+        self,
+        sock: socket.socket,
+        file: _SendfileSource,
+        offset: int = 0,
+        count: int | None = None,
+        *,
+        fallback: bool = True,
     ) -> int:
         self._check_non_blocking(sock)
         _check_sendfile_params(sock, file, offset, count)
@@ -36,8 +57,8 @@ class SendfileOperations(SocketOperations):
 
     async def sendfile(
         self,
-        transport: asyncio.WriteTransport,
-        file: IO[bytes],
+        transport: asyncio.WriteTransport | _SendfileTransport,
+        file: _SendfileSource,
         offset: int = 0,
         count: int | None = None,
         *,
@@ -64,10 +85,12 @@ class SendfileOperations(SocketOperations):
             raise RuntimeError(f"fallback is disabled and native sendfile is not supported for transport {transport!r}")
         if not fallback:
             raise asyncio.SendfileNotAvailableError(f"native sendfile is not supported for transport {transport!r}")
+        if not isinstance(transport, _SendfileTransport):
+            raise RuntimeError(f"sendfile is not supported for transport {transport!r}")
         return await self._sendfile_fallback(transport, file, offset, count)
 
     async def _transport_sendfile_native(
-        self, transport: _zuvloop.Transport, sock: socket.socket, file: IO[bytes], offset: int, count: int | None
+        self, transport: _zuvloop.Transport, sock: socket.socket, file: _SendfileSource, offset: int, count: int | None
     ) -> int:
         # Reject non-regular files before disturbing the transport at all.
         fileno = _regular_fileno(file)
@@ -92,7 +115,7 @@ class SendfileOperations(SocketOperations):
             waiter.restore()
 
     async def _sendfile_to_fd(
-        self, fd: int, file: IO[bytes], offset: int, count: int | None, fileno: int | None = None
+        self, fd: int, file: _SendfileSource, offset: int, count: int | None, fileno: int | None = None
     ) -> int:
         if fileno is None:
             fileno = _regular_fileno(file)
@@ -101,7 +124,7 @@ class SendfileOperations(SocketOperations):
         try:
             while blocksize > 0:
                 try:
-                    sent = cast("int", await self._retry_ready(fd, True, os.sendfile, (fd, fileno, offset, blocksize)))
+                    sent = await self._retry_ready(fd, True, lambda: os.sendfile(fd, fileno, offset, blocksize))
                 except OSError as exc:
                     if total_sent == 0:
                         # The main reason to get here is `file` not being a
@@ -125,10 +148,13 @@ class SendfileOperations(SocketOperations):
                 os.lseek(fileno, offset, os.SEEK_SET)
 
     async def _sock_sendfile_fallback(
-        self, sock: socket.socket, file: IO[bytes], offset: int, count: int | None
+        self, sock: socket.socket, file: _SendfileSource, offset: int, count: int | None
     ) -> int:
         if offset:
-            file.seek(offset)
+            seek = getattr(file, "seek", None)
+            if not callable(seek):
+                raise AttributeError("sendfile source does not support seek")
+            seek(offset)
         blocksize = min(count, _SOCKET_CHUNK) if count is not None else _SOCKET_CHUNK
         total_sent = 0
         try:
@@ -146,10 +172,13 @@ class SendfileOperations(SocketOperations):
                 file.seek(offset + total_sent)
 
     async def _sendfile_fallback(
-        self, transport: asyncio.WriteTransport, file: IO[bytes], offset: int, count: int | None
+        self, transport: _SendfileTransport, file: _SendfileSource, offset: int, count: int | None
     ) -> int:
         if offset:
-            file.seek(offset)
+            seek = getattr(file, "seek", None)
+            if not callable(seek):
+                raise AttributeError("sendfile source does not support seek")
+            seek(offset)
         blocksize = min(count, _TRANSPORT_CHUNK) if count is not None else _TRANSPORT_CHUNK
         total_sent = 0
         waiter = _SendfileProtocol(self, transport, bool(getattr(transport, "_protocol_paused", False)))
@@ -178,9 +207,9 @@ class _SendfileProtocol(asyncio.Protocol):
     real protocol and replays the flow-control state it last saw.
     """
 
-    def __init__(self, loop: SendfileOperations, transport: asyncio.WriteTransport, paused: bool) -> None:
+    def __init__(self, loop: SendfileOperations, transport: _SendfileTransport, paused: bool) -> None:
         self._loop = loop
-        self._transport = cast("asyncio.Transport", transport)
+        self._transport = transport
         self._protocol = self._transport.get_protocol()
         self._should_resume_reading = self._transport.is_reading()
         self._should_resume_writing = paused
@@ -236,7 +265,7 @@ class _SendfileProtocol(asyncio.Protocol):
             self._protocol.resume_writing()
 
 
-def _check_sendfile_params(sock: socket.socket, file: IO[bytes], offset: int, count: int | None) -> None:
+def _check_sendfile_params(sock: socket.socket, file: _SendfileSource, offset: int, count: int | None) -> None:
     if isinstance(sock, ssl.SSLSocket):
         raise TypeError("Socket cannot be of type SSLSocket")
     if sock.type != socket.SOCK_STREAM:
@@ -244,7 +273,7 @@ def _check_sendfile_params(sock: socket.socket, file: IO[bytes], offset: int, co
     _check_file_params(file, offset, count)
 
 
-def _check_file_params(file: IO[bytes], offset: int, count: int | None) -> None:
+def _check_file_params(file: _SendfileSource, offset: int, count: int | None) -> None:
     if "b" not in getattr(file, "mode", "b"):
         raise ValueError("file should be opened in binary mode")
     if count is not None:
@@ -258,10 +287,15 @@ def _check_file_params(file: IO[bytes], offset: int, count: int | None) -> None:
         raise ValueError(f"offset must be a non-negative integer (got {offset!r})")
 
 
-def _regular_fileno(file: IO[bytes]) -> int:
+def _regular_fileno(file: _SendfileSource) -> int:
     """The descriptor `os.sendfile` can read, or `SendfileNotAvailableError`."""
     try:
-        fileno = file.fileno()
+        get_fileno = getattr(file, "fileno", None)
+        if not callable(get_fileno):
+            raise AttributeError("sendfile source has no file descriptor")
+        fileno = get_fileno()
+        if not isinstance(fileno, int):
+            raise TypeError("sendfile source returned a non-integer file descriptor")
         os.fstat(fileno)
     except (AttributeError, OSError) as exc:
         raise asyncio.SendfileNotAvailableError("not a regular file") from exc

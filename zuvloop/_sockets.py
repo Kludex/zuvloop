@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Buffer, Callable
 
 from ._base import LoopBase
 
@@ -11,11 +10,11 @@ from ._base import LoopBase
 class SocketOperations(LoopBase):
     """`sock_*` helpers, layered on the native reader/writer registrations."""
 
-    def _watch(self, fd: int, write: bool, callback: Callable[..., Any], *args: Any) -> object:
+    def _watch(self, fd: int, write: bool, callback: Callable[[], object]) -> object:
         """Register a reader or writer, tagged so its owner can recognise it later."""
         token = object()
         self._sock_watchers[fd, write] = token
-        (self.add_writer if write else self.add_reader)(fd, callback, *args)
+        (self.add_writer if write else self.add_reader)(fd, callback)
         return token
 
     def _unwatch(self, fd: int, write: bool, token: object) -> None:
@@ -30,18 +29,16 @@ class SocketOperations(LoopBase):
         del self._sock_watchers[fd, write]
         (self.remove_writer if write else self.remove_reader)(fd)
 
-    async def _retry_until_ready(
-        self, sock: socket.socket, op: Callable[..., Any], *args: Any, write: bool = False
-    ) -> Any:
+    async def _retry_until_ready[T](self, sock: socket.socket, op: Callable[[], T], *, write: bool = False) -> T:
         """Run `op`, retrying it each time `sock` reports itself ready."""
         self._check_non_blocking(sock)
-        return await self._retry_ready(sock.fileno(), write, op, args)
+        return await self._retry_ready(sock.fileno(), write, op)
 
-    async def _retry_ready(self, fd: int, write: bool, op: Callable[..., Any], args: tuple[Any, ...]) -> Any:
-        future = self.create_future()
-        if _attempt(future, op, args):
+    async def _retry_ready[T](self, fd: int, write: bool, op: Callable[[], T]) -> T:
+        future: asyncio.Future[T] = self.create_future()
+        if _attempt(future, op):
             return await future
-        token = self._watch(fd, write, _attempt, future, op, args)
+        token = self._watch(fd, write, lambda: _attempt(future, op))
         try:
             return await future
         finally:
@@ -52,35 +49,42 @@ class SocketOperations(LoopBase):
             raise ValueError("the socket must be non-blocking")
 
     async def sock_recv(self, sock: socket.socket, nbytes: int) -> bytes:
-        return await self._retry_until_ready(sock, sock.recv, nbytes)  # type: ignore[no-any-return]
+        return await self._retry_until_ready(sock, lambda: sock.recv(nbytes))
 
-    async def sock_recv_into(self, sock: socket.socket, buf: Any) -> int:
-        return await self._retry_until_ready(sock, sock.recv_into, buf)  # type: ignore[no-any-return]
+    async def sock_recv_into(self, sock: socket.socket, buf: Buffer) -> int:
+        return await self._retry_until_ready(sock, lambda: sock.recv_into(buf))
 
-    async def sock_recvfrom(self, sock: socket.socket, bufsize: int) -> tuple[bytes, Any]:
-        return await self._retry_until_ready(sock, sock.recvfrom, bufsize)  # type: ignore[no-any-return]
+    async def sock_recvfrom(self, sock: socket.socket, bufsize: int) -> tuple[bytes, _SocketAddress]:
+        return await self._retry_until_ready(sock, lambda: sock.recvfrom(bufsize))
 
-    async def sock_recvfrom_into(self, sock: socket.socket, buf: Any, nbytes: int = 0) -> tuple[int, Any]:
-        return await self._retry_until_ready(sock, sock.recvfrom_into, buf, nbytes)  # type: ignore[no-any-return]
+    async def sock_recvfrom_into(self, sock: socket.socket, buf: Buffer, nbytes: int = 0) -> tuple[int, _SocketAddress]:
+        return await self._retry_until_ready(sock, lambda: sock.recvfrom_into(buf, nbytes))
 
-    async def sock_sendto(self, sock: socket.socket, data: Any, address: Any) -> int:
-        return await self._retry_until_ready(sock, _sendto, sock, data, address, write=True)  # type: ignore[no-any-return]
+    async def sock_sendto(self, sock: socket.socket, data: Buffer, address: _SocketAddress) -> int:
+        # Resolve `sendto` on every attempt so test doubles and instrumentors can
+        # replace it while the descriptor is waiting to become writable.
+        return await self._retry_until_ready(sock, lambda: sock.sendto(data, address), write=True)
 
-    async def sock_accept(self, sock: socket.socket) -> tuple[socket.socket, Any]:
+    async def sock_accept(self, sock: socket.socket) -> tuple[socket.socket, _SocketAddress]:
         conn, address = await self._retry_until_ready(sock, sock.accept)
         conn.setblocking(False)
         return conn, address
 
-    async def sock_sendall(self, sock: socket.socket, data: Any) -> None:
+    async def sock_sendall(self, sock: socket.socket, data: Buffer) -> None:
         view = memoryview(data).cast("B")
         sent = 0
         while sent < len(view):
-            sent += await self._retry_until_ready(sock, _send_chunk, sock, view, sent, write=True)
+            sent += await self._retry_until_ready(sock, lambda: sock.send(view[sent:]), write=True)
 
-    async def sock_connect(self, sock: socket.socket, address: Any) -> None:
+    async def sock_connect(self, sock: socket.socket, address: _SocketAddress) -> None:
         self._check_non_blocking(sock)
         if sock.family in (socket.AF_INET, socket.AF_INET6):
-            resolved = await self.getaddrinfo(*address[:2], family=sock.family, type=sock.type, proto=sock.proto)
+            if not isinstance(address, tuple) or len(address) < 2:
+                raise TypeError("an internet socket address must be a tuple")
+            host, port = address[:2]
+            if not isinstance(host, (str, bytes)) or not isinstance(port, (str, bytes, int)):
+                raise TypeError("an internet socket address must contain a host and port")
+            resolved = await self.getaddrinfo(host, port, family=sock.family, type=sock.type, proto=sock.proto)
             address = resolved[0][4]
         try:
             sock.connect(address)
@@ -96,7 +100,7 @@ class SocketOperations(LoopBase):
                 return
             err = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
             if err:
-                future.set_exception(OSError(err, f"Connect call failed {address}"))
+                future.set_exception(OSError(err, f"Connect call failed {address!r}"))
             else:
                 future.set_result(None)
 
@@ -107,14 +111,14 @@ class SocketOperations(LoopBase):
             self._unwatch(fd, True, token)
 
 
-def _attempt(future: asyncio.Future[Any], op: Callable[..., Any], args: tuple[Any, ...]) -> bool:
+def _attempt[T](future: asyncio.Future[T], op: Callable[[], T]) -> bool:
     """Settle `future` from one attempt at `op`; False means "not ready yet"."""
     if future.done():  # pragma: no cover - guards a wakeup the tests cannot force
         # Watching is level-triggered, so a partially drained descriptor could
         # report ready again before the awaiting coroutine resumes.
         return True
     try:
-        result = op(*args)
+        result = op()
     except BlockingIOError, InterruptedError:
         return False
     except OSError as exc:
@@ -124,10 +128,4 @@ def _attempt(future: asyncio.Future[Any], op: Callable[..., Any], args: tuple[An
     return True
 
 
-def _send_chunk(sock: socket.socket, view: memoryview, sent: int) -> int:
-    return sock.send(view[sent:])
-
-
-def _sendto(sock: socket.socket, data: Any, address: Any) -> int:
-    """Resolved per attempt, not bound once: callers rebind `sendto` between retries."""
-    return sock.sendto(data, address)
+type _SocketAddress = tuple[str | bytes | int, ...] | str | Buffer | int
