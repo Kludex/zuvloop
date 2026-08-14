@@ -82,9 +82,9 @@ build fails at compile time with a direct explanation instead of producing a
 wheel that fails later with an unresolved CPython symbol.
 
 Linux glibc, Linux musl and macOS execute the full in-repository suite. Windows
-AMD64 builds and runs the portable suite natively; tests that require Unix-domain
-sockets, POSIX signal semantics, POSIX pipe descriptors or POSIX subprocess
-expectations are explicitly skipped.
+AMD64 and ARM64 build and run the portable suite natively; tests that require
+Unix-domain sockets, POSIX signal semantics, POSIX pipe descriptors or POSIX
+subprocess expectations are explicitly skipped.
 Windows does not provide Unix-domain socket methods or `SO_REUSEPORT` through
 zuvloop. Published wheels cover Linux x86-64/AArch64, macOS x86-64/arm64 and
-Windows AMD64.
+Windows AMD64/ARM64.
