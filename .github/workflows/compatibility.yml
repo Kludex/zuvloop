@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# Editable upstream checkouts still resolve their transitive dependencies from
+# package indexes. Freeze that resolution window so an unrelated release cannot
+# turn an unchanged compatibility gate red.
+env:
+  UV_EXCLUDE_NEWER: "2026-08-15T00:00:00Z"
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -228,7 +234,7 @@ jobs:
             --ignore=upstream/tests/test_sockets.py \
             --ignore=upstream/tests/test_subprocesses.py \
             --ignore=upstream/tests/test_to_thread.py \
-            -k 'not uvloop and not rsloop and not eager and not trio and not test_debug_via_env and not test_group and not test_patched_asyncio_task'
+            -k 'not uvloop and not rsloop and not trio and not test_debug_via_env and not test_group and not test_patched_asyncio_task'
 
   websockets:
     name: websockets upstream and public API
