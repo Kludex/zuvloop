@@ -31,8 +31,17 @@ jobs:
           persist-credentials: false
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        if: matrix.os != 'windows-11-arm'
         with:
           version: 0.16.0
+
+      # Zig 0.16's native ARM64 Windows compiler exits with an access violation
+      # on `zig build`. Windows 11 runs the pinned x86-64 compiler under
+      # emulation; build.zig still targets ARM64 through HATCH_ZIG_TARGET.
+      - name: Install x86-64 Zig under emulation
+        if: matrix.os == 'windows-11-arm'
+        shell: pwsh
+        run: ./scripts/setup-zig-x86_64-windows.ps1
 
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
@@ -41,6 +50,7 @@ jobs:
 
       - name: Install
         env:
+          HATCH_ZIG_TARGET: ${{ matrix.os == 'windows-11-arm' && 'aarch64-windows' || '' }}
           PYTHON_VERSION: ${{ matrix.python-version }}
         run: uv sync --locked --python "$PYTHON_VERSION" --group dev --group bench
 

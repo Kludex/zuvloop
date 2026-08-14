@@ -92,7 +92,17 @@ pub fn build(b: *std.Build) void {
     // manylinux wheel carried AVX2, BMI and MOVBE, so it would raise SIGILL on
     // anything older than Haswell. Which instructions it needed depended on the
     // runner. `-Dcpu=native` is still there for a build meant for one machine.
-    const target = b.standardTargetOptions(.{ .default_target = .{ .cpu_model = .baseline } });
+    // Zig 0.16's native Windows ARM64 compiler crashes while compiling this
+    // extension. CI runs the x86-64 compiler under Windows emulation and sets
+    // the artifact target explicitly; every other build keeps its native OS
+    // with a baseline CPU for portable wheels.
+    const target_name = b.graph.environ_map.get("HATCH_ZIG_TARGET") orelse "";
+    const default_target: std.Target.Query = if (target_name.len > 0)
+        std.Target.Query.parse(.{ .arch_os_abi = target_name }) catch
+            @panic("invalid HATCH_ZIG_TARGET")
+    else
+        .{ .cpu_model = .baseline };
+    const target = b.standardTargetOptions(.{ .default_target = default_target });
     const optimize = b.standardOptimizeOption(.{});
     const sanitize_c = b.option(std.zig.SanitizeC, "sanitize-c", "C undefined-behavior sanitizer mode");
 

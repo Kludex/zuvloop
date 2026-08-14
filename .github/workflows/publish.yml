@@ -99,13 +99,19 @@ jobs:
           enable-cache: false
           version: 0.12.3
 
-      # No Zig setup step: the build takes its toolchain from the `ziglang`
-      # package named in build-system.requires, which is the only way it can
-      # reach inside a manylinux container.
+      # The native Zig 0.16 ARM64 Windows compiler crashes on `zig build`.
+      # Windows emulates the pinned x86-64 compiler while build.zig explicitly
+      # targets ARM64; the other jobs use the `ziglang` build requirement.
+      - name: Install x86-64 Zig under emulation
+        if: matrix.os == 'windows-11-arm'
+        shell: pwsh
+        run: ./scripts/setup-zig-x86_64-windows.ps1
+
       - name: Build wheels
         uses: pypa/cibuildwheel@1828c10ab37f080699c7b81cea34097c684a7074 # v4.2.0
         env:
           CIBW_ARCHS: "${{ matrix.archs }}"
+          HATCH_ZIG_TARGET: "${{ matrix.archs == 'ARM64' && 'aarch64-windows' || '' }}"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
