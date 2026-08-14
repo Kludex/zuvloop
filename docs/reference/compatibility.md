@@ -1,25 +1,35 @@
 # Compatibility
 
-Compatibility is checked at three levels:
+Compatibility is checked at four levels:
 
-- Every change runs zuvloop's suite on Linux and macOS, plus a subprocess-isolated
-  selection of CPython's own `test_asyncio` mixins on Linux.
+- Every change runs zuvloop's full suite on Linux and macOS. Linux also runs
+  musl runtime tests and a subprocess-isolated selection of CPython's own
+  `test_asyncio` mixins.
+- Every pull request runs pinned upstream coverage from aiohttp, uvicorn, AnyIO,
+  websockets, aioquic, Tornado and HTTPX2 with zuvloop installed as the asyncio
+  loop. The upstream suites are used broadly where they test public behavior;
+  a small public client/server smoke supplements websockets tests that otherwise
+  inspect CPython's private server attributes.
+- Every pull request builds with native safety checks and the C sanitizer, then
+  repeats the loop lifecycle and resource-ownership scenario 500 times.
 - A weekly job builds and tests the declared floor (CPython 3.14.0), the newest
-  CPython 3.14 patch, and CPython 3.15 prereleases.
-- The same weekly job runs the full test suites from immutable uvicorn 0.52.3 and
-  aiohttp 3.14.3 commits, with `asyncio.new_event_loop` swapped for zuvloop before
-  either project imports asyncio.
+  CPython 3.14 patch and CPython 3.15 prereleases, and adds service-backed smoke
+  tests for gRPC AsyncIO, asyncpg, Psycopg and redis-py.
 
 The pinned commits and exact commands live in
 `.github/workflows/compatibility.yml`. Pinning makes a new upstream release an
 explicit review instead of allowing an unrelated moving target to turn the signal
-red. zuvloop's smaller in-repository aiohttp, anyio and uvicorn integration tests
-still run on every change.
+red. Stable aggregate checks sit above each matrix and workflow, so branch
+protection does not need to know when a new operating system or upstream project
+is added; it requires the aggregate and the aggregate requires every child job.
+zuvloop's smaller in-repository aiohttp, anyio and uvicorn integration tests still
+run on every change too.
 
 Tests that assert the identity of the platform's stock loop rather than an asyncio
-behavior remain in the run as strict expected failures. Their exact node ids and
-reasons are registered in `scripts/upstream/zuvloop_upstream_expectations.py`;
-an unexpected pass is a failure too, so this list cannot quietly go stale.
+behavior, and the intentional timer difference below, remain in the run as strict
+expected failures. Their exact node ids and reasons are registered in
+`scripts/upstream/zuvloop_upstream_expectations.py`; an unexpected pass is a
+failure too, so this list cannot quietly go stale.
 aiohttp's optional `blockbuster` plugin is disabled for this run because it
 exempts blocking calls by stdlib asyncio source filename and therefore reports
 the equivalent `os.stat` and `os.sendfile` calls from every third-party loop.
