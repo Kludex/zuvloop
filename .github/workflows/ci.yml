@@ -48,16 +48,6 @@ jobs:
           enable-cache: true
           version: 0.12.3
 
-      # Exercise the same builder and architecture selection used by Publish.
-      # A normal `uv sync` does not cover cibuildwheel's environment handling,
-      # which is platform-specific on Windows.
-      - name: Build and test the release wheel
-        if: runner.os == 'Windows'
-        uses: pypa/cibuildwheel@1828c10ab37f080699c7b81cea34097c684a7074 # v4.2.0
-        env:
-          CIBW_ARCHS: ${{ matrix.os == 'windows-11-arm' && 'ARM64' || 'AMD64' }}
-          HATCH_ZIG_TARGET: ${{ matrix.os == 'windows-11-arm' && 'aarch64-windows' || '' }}
-
       - name: Install
         env:
           HATCH_ZIG_TARGET: ${{ matrix.os == 'windows-11-arm' && 'aarch64-windows' || '' }}
@@ -144,6 +134,47 @@ jobs:
             uv run pytest "$f" --timeout=120 --timeout-method=thread || rc=1
           done
           exit $rc
+
+
+  # A normal `uv sync` does not cover cibuildwheel's environment handling. Keep
+  # this separate from `test`: an ARM64 wheel takes several minutes to compile,
+  # and serializing both jobs would consume the test job's hang timeout.
+  release-windows:
+    name: "release wheel (${{ matrix.archs }} on ${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            archs: AMD64
+            target: ""
+          - os: windows-11-arm
+            archs: ARM64
+            target: aarch64-windows
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          version: 0.12.3
+
+      - name: Install x86-64 Zig under emulation
+        if: matrix.archs == 'ARM64'
+        shell: pwsh
+        run: ./scripts/setup-zig-x86_64-windows.ps1
+
+      - name: Build and test the release wheel
+        uses: pypa/cibuildwheel@1828c10ab37f080699c7b81cea34097c684a7074 # v4.2.0
+        env:
+          CIBW_ARCHS: ${{ matrix.archs }}
+          HATCH_ZIG_TARGET: ${{ matrix.target }}
 
 
   # musl has only ever been compiled for, never run. It is a different libc under
@@ -361,7 +392,7 @@ jobs:
   pr-quality:
     name: PR quality gate
     if: always()
-    needs: [test, musl, cross-compile, release-safe, docs]
+    needs: [test, release-windows, musl, cross-compile, release-safe, docs]
     runs-on: ubuntu-latest
 
     steps:
