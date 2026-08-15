@@ -142,7 +142,10 @@ jobs:
   release-windows:
     name: "release wheel (${{ matrix.archs }} on ${{ matrix.os }})"
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # ARM64 compiles x86-64 Zig under emulation. Hosted-runner variance has put
+    # the same wheel build between 8 and 18 minutes; leave room for repair and
+    # tests while the per-test timeout still catches an actual hang quickly.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
