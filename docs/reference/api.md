@@ -50,10 +50,11 @@ on supported POSIX platforms, Unix sockets and pipes. You get one from
 `create_connection`, a server's `connection_made`, or `connect_read_pipe` /
 `connect_write_pipe`.
 
-### `zuvloop.DatagramTransport`
+### `zuvloop._zuvloop.DatagramTransport`
 
 The native datagram transport, an `asyncio.DatagramTransport` subclass, returned
-by `create_datagram_endpoint`.
+by `create_datagram_endpoint`. It is an implementation type rather than part of
+zuvloop's small top-level API.
 
 ### `zuvloop.Handle` and `zuvloop.TimerHandle`
 

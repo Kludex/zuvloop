@@ -1,7 +1,8 @@
 # Instrumentation
 
-zuvloop emits plain [OpenTelemetry](https://opentelemetry.io). Its only runtime
-dependency is `opentelemetry-api` — not the SDK, and nothing vendor-specific.
+zuvloop emits plain [OpenTelemetry](https://opentelemetry.io). Its instrumentation
+depends only on `opentelemetry-api` — not the SDK, and nothing vendor-specific.
+The package also uses `typing-extensions` for its shipped type declarations.
 
 Until an application installs a provider, OpenTelemetry hands back proxy
 instruments whose methods do nothing and slow-callback timing stays off.

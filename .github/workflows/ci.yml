@@ -48,6 +48,16 @@ jobs:
           enable-cache: true
           version: 0.12.3
 
+      # Exercise the same builder and architecture selection used by Publish.
+      # A normal `uv sync` does not cover cibuildwheel's environment handling,
+      # which is platform-specific on Windows.
+      - name: Build and test the release wheel
+        if: runner.os == 'Windows'
+        uses: pypa/cibuildwheel@1828c10ab37f080699c7b81cea34097c684a7074 # v4.2.0
+        env:
+          CIBW_ARCHS: ${{ matrix.os == 'windows-11-arm' && 'ARM64' || 'AMD64' }}
+          HATCH_ZIG_TARGET: ${{ matrix.os == 'windows-11-arm' && 'aarch64-windows' || '' }}
+
       - name: Install
         env:
           HATCH_ZIG_TARGET: ${{ matrix.os == 'windows-11-arm' && 'aarch64-windows' || '' }}
