@@ -113,8 +113,17 @@ skip = "*-musllinux_i686 *t-*"
 # on Windows ARM64, for example, httptools must build with an older setuptools
 # range than zuvloop's own build environment.
 build-frontend = { name = "uv", args = ["--require-hashes", "--build-constraints", ".github/build-constraints.txt"] }
-test-requires = ["aiohttp", "anyio", "httptools", "hypothesis", "opentelemetry-sdk", "pytest", "uvicorn"]
-test-command = "pytest {project}/tests -q --import-mode=importlib"
+test-requires = [
+    "aiohttp",
+    "anyio",
+    "httptools",
+    "hypothesis",
+    "opentelemetry-sdk",
+    "pytest",
+    "pytest-timeout",
+    "uvicorn",
+]
+test-command = "pytest {project}/tests -q --import-mode=importlib --timeout=120 --timeout-method=thread"
 
 [tool.cibuildwheel.linux]
 # The Zig toolchain comes from PyPI, so the manylinux image needs nothing extra.
