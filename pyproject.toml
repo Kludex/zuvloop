@@ -108,13 +108,22 @@ filterwarnings = ["error"]
 # a GIL to save.
 build = "cp314-*"
 skip = "*-musllinux_i686 *t-*"
-# Let uv own the project build so hash checking applies only to the pinned build
-# requirements. Setting UV_REQUIRE_HASHES globally also affects cibuildwheel's
-# own bootstrap tools (for example, delocate) before the project build starts.
-build-frontend = { name = "uv", args = ["--require-hashes"] }
-environment = { UV_BUILD_CONSTRAINT = "$(pwd)/.github/build-constraints.txt" }
-test-requires = ["aiohttp", "anyio", "httptools", "hypothesis", "opentelemetry-sdk", "pytest", "uvicorn"]
-test-command = "pytest {project}/tests -q --import-mode=importlib"
+# Pass hash and constraint enforcement directly to the project build. Global uv
+# environment variables also affect cibuildwheel's bootstrap and test tools;
+# on Windows ARM64, for example, httptools must build with an older setuptools
+# range than zuvloop's own build environment.
+build-frontend = { name = "uv", args = ["--require-hashes", "--build-constraints", ".github/build-constraints.txt"] }
+test-requires = [
+    "aiohttp",
+    "anyio",
+    "httptools",
+    "hypothesis",
+    "opentelemetry-sdk",
+    "pytest",
+    "pytest-timeout",
+    "uvicorn",
+]
+test-command = "pytest {project}/tests -q --import-mode=importlib --timeout=120 --timeout-method=thread"
 
 [tool.cibuildwheel.linux]
 # The Zig toolchain comes from PyPI, so the manylinux image needs nothing extra.

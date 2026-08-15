@@ -1,4 +1,4 @@
--r https://raw.githubusercontent.com/aio-libs/aiohttp/5e392ce0456f5235a4ee6ad46f0e806df2f15873/requirements/test.txt
+-r aiohttp-upstream-test-requirements.txt
 
 aiohttp==3.14.3
 opentelemetry-api>=1.23
