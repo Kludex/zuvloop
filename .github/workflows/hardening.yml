@@ -1,6 +1,7 @@
 name: Native hardening
 
 on:
+  pull_request:
   schedule:
     - cron: "41 3 * * *"
   workflow_dispatch:
@@ -9,8 +10,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: native-hardening
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   soak:
@@ -51,3 +52,19 @@ jobs:
           PYTHONDEVMODE: "1"
           PYTHONMALLOC: debug
         run: uv run --no-sync python scripts/soak.py --cycles 500
+
+  hardening-gate:
+    name: Native hardening gate
+    if: always()
+    needs: soak
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Require the sanitizer and soak job
+        env:
+          SOAK: ${{ needs.soak.result }}
+        run: |
+          if [ "$SOAK" != success ]; then
+            echo "::error::Native hardening ended with: $SOAK"
+            exit 1
+          fi
