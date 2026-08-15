@@ -146,20 +146,16 @@ $ python -m asyncio pstree <pid>
 
 ## Compatibility
 
-zuvloop is checked against CPython's own conformance suite and against the test suites of the
-projects that exercise an event loop hardest — run unmodified, with the loop swapped underneath.
-The in-repository suite and CPython-derived conformance run on every change. A weekly workflow
-tests CPython 3.14.0, the newest 3.14 patch, the 3.15 prerelease, and immutable uvicorn 0.52.3 and
-aiohttp 3.14.3 commits.
+Every pull request is held behind three stable aggregate gates. The first covers the in-repository
+suite on Linux and macOS, plus musl runtime tests, cross-compilation, ReleaseSafe builds and
+documentation. The second runs CPython conformance and pinned upstream suites from aiohttp,
+uvicorn, AnyIO, websockets, aioquic, Tornado and HTTPX2 with zuvloop swapped underneath. The third
+runs the native sanitizer build and a 500-cycle resource-ownership soak.
 
-The following counts are the recorded compatibility baseline that motivated those automated
-gates; the workflow, not this table, is the current source of truth:
-
-| Suite | Result |
-| --- | --- |
-| CPython `test_asyncio` | 88 passed, 4 skipped, none failing |
-| uvicorn | 1257 passed, no failures |
-| aiohttp | 4473 passed, 36 failed — 33 of which also fail on stock asyncio |
+The weekly compatibility run also tests CPython 3.14.0, the newest 3.14 patch and the 3.15
+prerelease, then exercises gRPC AsyncIO, asyncpg, Psycopg and redis-py against real local services.
+The immutable commits and exact commands in `.github/workflows/compatibility.yml` are the source
+of truth.
 
 `scripts/conformance.py` runs CPython's `EventLoopTestsMixin`, `SubprocessTestsMixin` and
 `BaseSockTestsMixin` against zuvloop, downloading the source of whichever interpreter is running
@@ -168,8 +164,12 @@ than stopping the run. Three of the four skips are white-box tests of CPython's 
 two patch `asyncio.base_events.socket`, one counts calls to `BaseEventLoop._run_once` - which no
 loop outside the standard library can satisfy.
 
-Of aiohttp's three remaining failures, two are `blockbuster` reporting a blocking `os.stat` that
-the standard library makes on the same path, and the third is the `loop.time()` difference below.
+The aiohttp compatibility run disables its optional `blockbuster` plugin because that plugin
+exempts stdlib asyncio calls by source filename and therefore reports equivalent `os.stat` and
+`os.sendfile` calls from any third-party loop. Its remaining strict expected failure is the
+`loop.time()` difference below. One concurrent WebSocket-close test is skipped because it assumes
+selector-loop ready/I/O ordering and fails intermittently on uvloop too; every other aiohttp test
+remains enforced.
 
 (For reference: uvloop cannot complete the aiohttp suite — it fails fifteen tests and then hangs.)
 

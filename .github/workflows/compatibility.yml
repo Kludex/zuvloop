@@ -1,6 +1,7 @@
 name: Compatibility
 
 on:
+  pull_request:
   schedule:
     - cron: "17 4 * * 1"
   workflow_dispatch:
@@ -8,9 +9,15 @@ on:
 permissions:
   contents: read
 
+# Advance this cutoff whenever a pinned upstream commit moves. It is mapped to
+# UV_EXCLUDE_NEWER only by editable-install steps; setting uv's variable for the
+# entire workflow would force locked jobs to re-resolve and reject their locks.
+env:
+  EDITABLE_UPSTREAM_EXCLUDE_NEWER: "2026-08-15T00:00:00Z"
+
 concurrency:
-  group: compatibility
-  cancel-in-progress: false
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   python:
@@ -161,7 +168,10 @@ jobs:
       - name: Install the pinned upstream suite and zuvloop
         working-directory: upstream
         run: |
-          uv sync --locked --python 3.14 --only-group dev
+          # The upstream project computes exclude-newer from the current date.
+          # --frozen installs its immutable lock without re-resolving that
+          # moving policy, which would reject the unchanged pinned lock later.
+          uv sync --frozen --python 3.14 --only-group dev
           # Do not apply uvicorn's `exclude-newer` policy to zuvloop's newer,
           # separately pinned build backend.
           uv --no-config pip install --python .venv/bin/python ..
@@ -174,3 +184,385 @@ jobs:
           .venv/bin/python -c \
             'import asyncio, zuvloop; assert asyncio.new_event_loop is zuvloop.new_event_loop'
           .venv/bin/pytest -q -n 4 -p zuvloop_upstream_expectations
+
+  anyio:
+    name: AnyIO core upstream suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: agronholm/anyio
+          ref: 76efcb2ebea1e059e2cdb66631c0f30582b76395
+          path: upstream
+          persist-credentials: false
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+          version: 0.12.3
+
+      - name: Install the pinned upstream suite and zuvloop
+        env:
+          UV_EXCLUDE_NEWER: ${{ env.EDITABLE_UPSTREAM_EXCLUDE_NEWER }}
+        run: |
+          uv venv --python 3.14 .upstream-venv
+          uv pip install --python .upstream-venv/bin/python \
+            --group upstream/pyproject.toml:test --editable 'upstream[trio]'
+          uv pip install --python .upstream-venv/bin/python .
+          # Blockbuster allows stdlib subprocess.Popen only when AnyIO reaches
+          # it directly. A third-party loop adds one stack frame and turns the
+          # same stdlib os.read into a false positive; the process-pool tests
+          # themselves remain in the run.
+          uv pip uninstall --python .upstream-venv/bin/python blockbuster
+
+      - name: Run AnyIO on zuvloop
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts/upstream
+        run: |
+          .upstream-venv/bin/python -c \
+            'import asyncio, zuvloop; assert asyncio.new_event_loop is zuvloop.new_event_loop'
+          .upstream-venv/bin/pytest -q upstream/tests --basetemp=/tmp/anyio \
+            --ignore=upstream/tests/test_sockets.py \
+            --ignore=upstream/tests/test_subprocesses.py \
+            --ignore=upstream/tests/test_to_thread.py \
+            -k 'not uvloop and not rsloop and not trio and not test_debug_via_env and not test_group and not test_patched_asyncio_task'
+
+  websockets:
+    name: websockets upstream and public API
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: python-websockets/websockets
+          ref: f6f7eda46fd0426f900f2157c40e3a968170d75a
+          path: upstream
+          persist-credentials: false
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+          version: 0.12.3
+
+      - name: Install the pinned upstream package and zuvloop
+        env:
+          UV_EXCLUDE_NEWER: ${{ env.EDITABLE_UPSTREAM_EXCLUDE_NEWER }}
+        run: |
+          uv venv --python 3.14 .upstream-venv
+          uv pip install --python .upstream-venv/bin/python --editable upstream
+          uv pip install --python .upstream-venv/bin/python .
+
+      - name: Run websockets on zuvloop
+        working-directory: upstream
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts/upstream
+        run: |
+          ../.upstream-venv/bin/python -m unittest tests.asyncio.test_messages
+          ../.upstream-venv/bin/python ../.github/compatibility/websockets_smoke.py
+
+  aioquic:
+    name: aioquic QUIC integration suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: aiortc/aioquic
+          ref: 6d36838d008c2202c337142fa07e8bf80e96bac8
+          path: upstream
+          persist-credentials: false
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+          version: 0.12.3
+
+      - name: Install the pinned upstream package and zuvloop
+        env:
+          UV_EXCLUDE_NEWER: ${{ env.EDITABLE_UPSTREAM_EXCLUDE_NEWER }}
+        run: |
+          uv venv --python 3.14 .upstream-venv
+          uv pip install --python .upstream-venv/bin/python --editable upstream
+          uv pip install --python .upstream-venv/bin/python .
+
+      - name: Run aioquic on zuvloop
+        working-directory: upstream
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts/upstream
+        run: ../.upstream-venv/bin/python -m unittest tests.test_asyncio
+
+  tornado:
+    name: Tornado full suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: tornadoweb/tornado
+          ref: 0096f2897c98facdcd9716009ee934a7381af5ef
+          path: upstream
+          persist-credentials: false
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+          version: 0.12.3
+
+      - name: Install the pinned upstream package and zuvloop
+        env:
+          UV_EXCLUDE_NEWER: ${{ env.EDITABLE_UPSTREAM_EXCLUDE_NEWER }}
+        run: |
+          uv venv --python 3.14 .upstream-venv
+          uv pip install --python .upstream-venv/bin/python --editable upstream
+          uv pip install --python .upstream-venv/bin/python .
+
+      - name: Run Tornado on zuvloop
+        env:
+          ASYNC_TEST_TIMEOUT: "25"
+          PYTHONPATH: ${{ github.workspace }}/scripts/upstream
+          PYTHONWARNINGS: error:::tornado
+          TORNADO_EXTENSION: "1"
+        run: .upstream-venv/bin/python -bb -m tornado.test
+
+  httpx2:
+    name: HTTPX2 full repository suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: pydantic/httpx2
+          ref: 829b93a2393212996f613e635261f777d9ec6eab
+          path: upstream
+          persist-credentials: false
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+          version: 0.12.3
+
+      - name: Install the pinned upstream suite and zuvloop
+        working-directory: upstream
+        run: |
+          uv sync --locked --python 3.14 --group dev
+          uv --no-config pip install --python .venv/bin/python ..
+
+      - name: Run HTTPX2 on zuvloop
+        working-directory: upstream
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts/upstream
+        run: .venv/bin/pytest -q tests/httpx2 tests/httpcore2 -m 'not benchmark and not network'
+
+  grpc-aio:
+    name: gRPC AsyncIO service smoke
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+          version: 0.12.3
+
+      - name: Install gRPC and zuvloop
+        run: |
+          uv venv --python 3.14 .upstream-venv
+          uv pip install --python .upstream-venv/bin/python grpcio==1.83.0 .
+
+      - name: Exercise a gRPC AsyncIO server and client
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts/upstream
+        run: .upstream-venv/bin/python .github/compatibility/grpc_smoke.py
+
+  postgres-drivers:
+    name: asyncpg and Psycopg service smoke
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18-alpine@sha256:63bdc97d67b5133bf0e5ebd500bec6d046fa851dc81340d838f0347e616107e8
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+          version: 0.12.3
+
+      - name: Install PostgreSQL drivers and zuvloop
+        run: |
+          uv venv --python 3.14 .upstream-venv
+          uv pip install --python .upstream-venv/bin/python \
+            asyncpg==0.31.0 'psycopg[binary]==3.3.4' .
+
+      - name: Exercise both async PostgreSQL drivers
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts/upstream
+        run: .upstream-venv/bin/python .github/compatibility/postgres_smoke.py
+
+  redis-py:
+    name: redis-py service smoke
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      redis:
+        image: redis:8.0.1-alpine@sha256:b388e6f9862b00b07ace1bec0a6f5fe3b83cc94938589b6554fbff063a764ba5
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.14"
+          version: 0.12.3
+
+      - name: Install redis-py and zuvloop
+        run: |
+          uv venv --python 3.14 .upstream-venv
+          uv pip install --python .upstream-venv/bin/python redis==8.1.0 .
+
+      - name: Exercise redis-py's asyncio client
+        env:
+          PYTHONPATH: ${{ github.workspace }}/scripts/upstream
+        run: .upstream-venv/bin/python .github/compatibility/redis_smoke.py
+
+  compatibility-gate:
+    name: Ecosystem compatibility gate
+    if: always()
+    needs: [python, free-threaded, aiohttp, uvicorn, anyio, websockets, aioquic, tornado, httpx2]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Require every compatibility job
+        env:
+          AIOHTTP: ${{ needs.aiohttp.result }}
+          AIOQUIC: ${{ needs.aioquic.result }}
+          ANYIO: ${{ needs.anyio.result }}
+          FREE_THREADED: ${{ needs.free-threaded.result }}
+          HTTPX2: ${{ needs.httpx2.result }}
+          PYTHON: ${{ needs.python.result }}
+          TORNADO: ${{ needs.tornado.result }}
+          UVICORN: ${{ needs.uvicorn.result }}
+          WEBSOCKETS: ${{ needs.websockets.result }}
+        run: |
+          for result in "$PYTHON" "$FREE_THREADED" "$AIOHTTP" "$UVICORN" \
+            "$ANYIO" "$WEBSOCKETS" "$AIOQUIC" "$TORNADO" "$HTTPX2"; do
+            if [ "$result" != success ]; then
+              echo "::error::A required compatibility job ended with: $result"
+              exit 1
+            fi
+          done
+
+  ecosystem-services-gate:
+    name: Service ecosystem gate
+    if: always() && github.event_name != 'pull_request'
+    needs: [grpc-aio, postgres-drivers, redis-py]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Require every service-backed job
+        env:
+          GRPC_AIO: ${{ needs.grpc-aio.result }}
+          POSTGRES_DRIVERS: ${{ needs.postgres-drivers.result }}
+          REDIS_PY: ${{ needs.redis-py.result }}
+        run: |
+          for result in "$GRPC_AIO" "$POSTGRES_DRIVERS" "$REDIS_PY"; do
+            if [ "$result" != success ]; then
+              echo "::error::A service-backed compatibility job ended with: $result"
+              exit 1
+            fi
+          done

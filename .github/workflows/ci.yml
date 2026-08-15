@@ -309,3 +309,25 @@ jobs:
       # link fails here rather than on the deploy that Cloudflare runs.
       - name: Build docs
         run: ./scripts/docs
+
+  pr-quality:
+    name: PR quality gate
+    if: always()
+    needs: [test, musl, cross-compile, release-safe, docs]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Require every CI job
+        env:
+          CROSS_COMPILE: ${{ needs.cross-compile.result }}
+          DOCS: ${{ needs.docs.result }}
+          MUSL: ${{ needs.musl.result }}
+          RELEASE_SAFE: ${{ needs.release-safe.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          for result in "$TEST" "$MUSL" "$CROSS_COMPILE" "$RELEASE_SAFE" "$DOCS"; do
+            if [ "$result" != success ]; then
+              echo "::error::A required CI job ended with: $result"
+              exit 1
+            fi
+          done
