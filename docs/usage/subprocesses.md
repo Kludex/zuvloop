@@ -7,24 +7,25 @@ process = await asyncio.create_subprocess_exec(
 stdout, _ = await process.communicate(b"round trip")
 ```
 
-`create_subprocess_exec` and `create_subprocess_shell` work as they do on any
-asyncio loop, with every `Popen` keyword — `env`, `cwd`, `pass_fds`,
-`start_new_session` and the rest.
+`create_subprocess_exec` and `create_subprocess_shell` follow asyncio's public
+contract, including `env`, `cwd`, `pass_fds` and `start_new_session` where the
+host platform supports them.
 
 ## How it is put together
 
-The child is spawned with `uv_spawn` and its stdio runs over native pipe
-transports. asyncio's own subprocess transport still drives it: that transport
-reaches for six things on a `subprocess.Popen` and the three pipe objects, so
-presenting that surface over a libuv process handle replaces the spawn without
-touching the protocol callbacks or the exit bookkeeping.
+On macOS and Windows, the child is spawned with `uv_spawn` and its stdio runs
+over native pipe transports. Linux uses `subprocess.Popen` so its race-free
+`close_fds` implementation preserves Python's descriptor-inheritance contract;
+non-empty `pass_fds` also selects that path on Unix. asyncio's own subprocess
+transport drives both implementations, so protocol callbacks and exit
+bookkeeping stay identical.
 
-libuv reaps the child itself and reports the status through its exit callback,
-so there is no child watcher - no thread per child, and no pidfd to poll.
+libuv reaps children it spawns and reports status through its exit callback.
+The Linux stdlib path uses one bounded, process-wide reaper thread for all
+children rather than a thread per child.
 
-Signals go through `uv_process_kill` rather than the pid. asyncio signals the raw
-pid and swallows the lookup error, which can reach a process that merely
-inherited a reaped pid; a handle can only signal the child it spawned.
+On the libuv path, signals go through `uv_process_kill` rather than the pid. The
+stdlib path delegates signalling to its `Popen` object.
 
 ## Pipes
 

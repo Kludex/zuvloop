@@ -55,7 +55,8 @@ for address literals.
 ## Requirements
 
 - Python 3.14+
-- Linux or macOS
+- Linux, macOS or Windows
+- Prebuilt wheels for Linux x86-64/AArch64, macOS x86-64/arm64 and Windows AMD64/ARM64
 
 ## Installation
 
@@ -99,8 +100,9 @@ That's it. That's the migration. 🎉
 
 ## Observability
 
-zuvloop emits plain OpenTelemetry. The only runtime dependency is `opentelemetry-api` — not the
-SDK, nothing vendor-specific. Providers can be configured before the loop starts or from inside
+zuvloop emits plain OpenTelemetry. Its small runtime surface is `opentelemetry-api` plus
+`typing-extensions` for the shipped type declarations — no SDK and nothing vendor-specific.
+Providers can be configured before the loop starts or from inside
 it — `logfire.configure()` in `main()` works: zuvloop checks at each `run_forever()` entry and
 re-checks on its sampling interval (`loop.metrics_interval`, 10 seconds by default) while the
 loop runs. Until a provider is installed the instruments are no-ops and slow-callback timing
@@ -147,10 +149,11 @@ $ python -m asyncio pstree <pid>
 ## Compatibility
 
 Every pull request is held behind three stable aggregate gates. The first covers the in-repository
-suite on Linux and macOS, plus musl runtime tests, cross-compilation, ReleaseSafe builds and
-documentation. The second runs CPython conformance and pinned upstream suites from aiohttp,
-uvicorn, AnyIO, websockets, aioquic, Tornado and HTTPX2 with zuvloop swapped underneath. The third
-runs the native sanitizer build and a 500-cycle resource-ownership soak.
+suite on Linux and macOS, the portable suite on Windows, plus musl runtime tests,
+cross-compilation, ReleaseSafe builds and documentation. The second runs CPython conformance and
+pinned upstream suites from aiohttp, uvicorn, AnyIO, websockets, aioquic, Tornado and HTTPX2 with
+zuvloop swapped underneath. The third runs the native sanitizer build and a 500-cycle
+resource-ownership soak.
 
 The weekly compatibility run also tests CPython 3.14.0, the newest 3.14 patch and the 3.15
 prerelease, then exercises gRPC AsyncIO, asyncpg, Psycopg and redis-py against real local services.

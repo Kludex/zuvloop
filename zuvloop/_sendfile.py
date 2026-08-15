@@ -5,6 +5,7 @@ import errno
 import os
 import socket
 import ssl
+import sys
 from asyncio.constants import _SendfileMode
 from typing import Protocol, runtime_checkable
 
@@ -92,6 +93,8 @@ class SendfileOperations(SocketOperations):
     async def _transport_sendfile_native(
         self, transport: _zuvloop.Transport, sock: socket.socket, file: _SendfileSource, offset: int, count: int | None
     ) -> int:
+        if sys.platform == "win32":
+            raise asyncio.SendfileNotAvailableError("os.sendfile is not available on Windows")
         # Reject non-regular files before disturbing the transport at all.
         fileno = _regular_fileno(file)
         waiter = _SendfileProtocol(self, transport, transport._protocol_paused)
@@ -119,6 +122,8 @@ class SendfileOperations(SocketOperations):
     ) -> int:
         if fileno is None:
             fileno = _regular_fileno(file)
+        if sys.platform == "win32":
+            raise asyncio.SendfileNotAvailableError("os.sendfile is not available on Windows")
         blocksize = count if count is not None else os.fstat(fileno).st_size
         total_sent = 0
         try:

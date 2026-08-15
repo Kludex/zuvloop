@@ -17,7 +17,10 @@ import pytest
 from tests.conftest import running_loop
 from zuvloop._process import ProcessReaper
 
-pytestmark = pytest.mark.anyio
+pytestmark = [
+    pytest.mark.anyio,
+    pytest.mark.skipif(sys.platform == "win32", reason="POSIX binaries and signal exit codes throughout"),
+]
 
 PIPE = asyncio.subprocess.PIPE
 

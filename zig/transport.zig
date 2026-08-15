@@ -280,8 +280,8 @@ fn callInContext(self: *Transport, callback: ?*py.Object, arg: ?*py.Object, comp
 
 fn isExit(exc: *py.Object) bool {
     const kind: *py.Object = @ptrCast(py.typeOf(exc));
-    return c.PyType_IsSubtype(@ptrCast(kind), @ptrCast(c.PyExc_SystemExit)) != 0 or
-        c.PyType_IsSubtype(@ptrCast(kind), @ptrCast(c.PyExc_KeyboardInterrupt)) != 0;
+    return c.PyType_IsSubtype(@ptrCast(kind), @ptrCast(py.exc_system_exit)) != 0 or
+        c.PyType_IsSubtype(@ptrCast(kind), @ptrCast(py.exc_keyboard_interrupt)) != 0;
 }
 
 fn reportError(self: *Transport, comptime message: [:0]const u8) void {
@@ -319,7 +319,7 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
     // this needs would be paid per read for nothing.
     if (self.flags & BUFFERED == 0 and self.read_bytes == null and self.read_size <= copy_threshold) {
         if (loopmod.scratchBuffer(st)) |scratch| {
-            buf.* = .{ .base = scratch, .len = self.read_size };
+            buf.* = uv.Buf.init(scratch, self.read_size);
             return;
         }
     }
@@ -348,7 +348,10 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
         if (target) |t| {
             defer py.decref(t);
             if (c.PyObject_GetBuffer(t, &self.view, c.PyBUF_WRITABLE) == 0) {
-                buf.* = .{ .base = @ptrCast(self.view.buf), .len = @intCast(self.view.len) };
+                // A short read is always allowed, so a buffer wider than the
+                // platform's vector element is simply not filled past it.
+                const avail = @min(@as(usize, @intCast(self.view.len)), uv.Buf.max_len);
+                buf.* = uv.Buf.init(@ptrCast(self.view.buf), avail);
                 return;
             }
         }
@@ -362,7 +365,7 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
         // Small traffic: read into the shared buffer and allocate exactly what
         // arrived. A null read_bytes marks this path for onRead.
         if (loopmod.scratchBuffer(st)) |scratch| {
-            buf.* = .{ .base = scratch, .len = self.read_size };
+            buf.* = uv.Buf.init(scratch, self.read_size);
             return;
         }
     }
@@ -373,7 +376,7 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
         return;
     };
     self.read_bytes = target;
-    buf.* = .{ .base = @ptrCast(c.PyBytes_AsString(target)), .len = self.read_size };
+    buf.* = uv.Buf.init(@ptrCast(c.PyBytes_AsString(target)), self.read_size);
 }
 
 fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) void {
@@ -446,12 +449,18 @@ fn repr(obj: ?*py.Object) callconv(.c) ?*py.Object {
     return c.PyUnicode_FromFormat("<%s closing>", name);
 }
 
-fn isSocket(fd: uv.OsFd) bool {
+fn isSocket(fd: c_int) bool {
     // getsockopt succeeds only on a socket, and unlike fstat it reaches libc on
     // every platform Zig targets (std.c.fstat is unavailable on Linux).
     var kind: c_int = 0;
-    var len: std.c.socklen_t = @sizeOf(c_int);
-    return std.c.getsockopt(fd, std.c.SOL.SOCKET, std.c.SO.TYPE, &kind, &len) == 0;
+    if (uv.is_windows) {
+        const win32 = @import("win32.zig");
+        var len: c_int = @sizeOf(c_int);
+        return win32.getsockopt(@intCast(fd), std.c.SOL.SOCKET, std.c.SO.TYPE, @ptrCast(&kind), &len) == 0;
+    } else {
+        var len: std.c.socklen_t = @sizeOf(c_int);
+        return std.c.getsockopt(fd, std.c.SOL.SOCKET, std.c.SO.TYPE, &kind, &len) == 0;
+    }
 }
 
 fn takeUvError(status: c_int) ?*py.Object {
@@ -600,7 +609,7 @@ fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!vo
                 return;
             }
             pending[0].base += remaining;
-            pending[0].len -= remaining;
+            pending[0].len -= @intCast(remaining);
         } else if (written < 0 and written != uv.EAGAIN) {
             releaseViews(views);
             forceClose(self, takeUvError(written));
@@ -695,11 +704,23 @@ fn maybeResumeProtocol(self: *Transport) void {
     callProtocol(self, self.cb_resume_writing, null);
 }
 
+fn onShutdown(req: ?*uv.Shutdown, status: c_int) callconv(.c) void {
+    _ = status;
+    alloc.free(@as([*]u8, @ptrCast(req.?))[0..uv.uv_req_size(.shutdown)]);
+}
+
+/// Half-closes through `uv_shutdown`, the spelling that also covers Windows,
+/// where the write side of a stream is not a file descriptor to `shutdown()`.
+/// Only called with an empty write queue, so libuv has nothing to drain first.
 fn shutdownWrite(self: *Transport) void {
-    var fd: uv.OsFd = -1;
-    if (uv.uv_fileno(uv.asHandle(self.stream()), &fd) == 0) {
-        _ = std.c.shutdown(fd, std.c.SHUT.WR);
-    }
+    // Failing to allocate closes the connection outright: skipping the
+    // half-close silently would leave the peer waiting for an EOF forever.
+    const raw = alloc.alignedAlloc(u8, .@"16", uv.uv_req_size(.shutdown)) catch {
+        forceClose(self, null);
+        return;
+    };
+    const req: *uv.Shutdown = @ptrCast(raw.ptr);
+    if (uv.uv_shutdown(req, self.stream(), onShutdown) < 0) alloc.free(raw);
 }
 
 // ---------------------------------------------------------------------------
@@ -905,6 +926,10 @@ fn write(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
     // SAFETY: acquireWriteView initializes the only element or returns an error.
     var views = [_]c.Py_buffer{undefined};
     try acquireWriteView(data, &views[0]);
+    if (@as(usize, @intCast(views[0].len)) > uv.Buf.max_len) {
+        c.PyBuffer_Release(&views[0]);
+        return py.errOverflow("a single buffer above 4 GiB cannot be written on Windows");
+    }
     if (self.flags & EOF_WRITTEN != 0) {
         c.PyBuffer_Release(&views[0]);
         return py.errRuntime("Cannot call write() after write_eof()");
@@ -946,6 +971,10 @@ fn writelines(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
             return py.Error.Python;
         };
         py.decref(item);
+        if (@as(usize, @intCast(views[filled].len)) > uv.Buf.max_len) {
+            releaseViews(views[0 .. filled + 1]);
+            return py.errOverflow("a single buffer above 4 GiB cannot be written on Windows");
+        }
         bufs[filled] = .{ .base = @ptrCast(views[filled].buf), .len = @intCast(views[filled].len) };
     }
     try submitWrite(self, bufs, views);
@@ -1124,7 +1153,7 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
     uv.setData(self.stream(), self);
 
     const open_status = if (kind == KIND_TCP)
-        uv.uv_tcp_open(@ptrCast(self.stream()), fd)
+        uv.uv_tcp_open(@ptrCast(self.stream()), uv.asSock(fd))
     else
         uv.uv_pipe_open(@ptrCast(self.stream()), fd);
     if (open_status < 0) {

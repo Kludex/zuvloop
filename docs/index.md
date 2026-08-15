@@ -25,7 +25,7 @@ type checker, and OpenTelemetry instrumentation built in.
 
 The key features are:
 
-* **Fast**: faster than uvloop on every benchmark in the suite. See
+* **Fast**: faster than uvloop on most benchmarks in the suite. See
   [Performance](reference/performance.md).
 * **Drop-in**: a loop factory. No API of its own to learn, no framework to adopt.
 * **Typed**: a strict-mypy-clean Python surface, shipped with a `py.typed`
@@ -91,4 +91,6 @@ the loop emits OpenTelemetry without you importing an SDK.
 
 ## Requirements
 
-Python 3.14+, on Linux or macOS.
+Python 3.14+, on Linux, macOS or Windows. See
+[Compatibility](reference/compatibility.md#interpreter-and-platform-policy) for
+the Windows platform boundary.

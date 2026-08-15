@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import sys
 
 import pytest
 
 from tests.conftest import running_loop
 
 pytestmark = pytest.mark.anyio
+requires_unix_sockets = pytest.mark.skipif(sys.platform == "win32", reason="Windows has no Unix sockets")
 
 
 async def test_sock_recv_and_sendall() -> None:
@@ -72,6 +74,7 @@ async def test_sock_recv_into() -> None:
         right.close()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows loopback buffering absorbs the payload before the reset")
 async def test_a_retried_operation_reports_errors() -> None:
     """The peer disappears while the send is parked waiting for writability."""
     loop = running_loop()
@@ -132,6 +135,7 @@ async def test_internet_socket_addresses_are_validated(address: str | tuple[int,
         sock.close()
 
 
+@requires_unix_sockets
 async def test_sock_connect_to_a_unix_path_needs_no_resolution() -> None:
     import tempfile
     from pathlib import Path

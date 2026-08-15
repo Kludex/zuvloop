@@ -29,8 +29,8 @@ Creates a loop. This is the callable to hand to `asyncio.run()`,
 ### `zuvloop.EventLoop`
 
 An `asyncio.AbstractEventLoop`. Every method asyncio declares is implemented,
-including `sock_sendfile` and `sendfile`, which use the `sendfile(2)` system
-call and fall back to a read-and-write loop where the syscall cannot serve —
+including `sock_sendfile` and `sendfile`, which use the native `sendfile` system
+call where available and fall back to a read-and-write loop where it cannot serve —
 see [Sending files](../usage/networking.md#sending-files).
 
 Beyond asyncio's surface it carries the usual knobs — `set_debug`,
@@ -45,9 +45,10 @@ async context manager.
 
 ### `zuvloop.Transport`
 
-The native stream transport, an `asyncio.Transport` subclass. Used for TCP, Unix
-sockets and pipes. You get one from `create_connection`, a server's
-`connection_made`, or `connect_read_pipe` / `connect_write_pipe`.
+The native stream transport, an `asyncio.Transport` subclass. Used for TCP and,
+on supported POSIX platforms, Unix sockets and pipes. You get one from
+`create_connection`, a server's `connection_made`, or `connect_read_pipe` /
+`connect_write_pipe`.
 
 ### `zuvloop.DatagramTransport`
 

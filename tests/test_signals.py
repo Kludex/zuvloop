@@ -4,6 +4,7 @@ import asyncio
 import gc
 import os
 import signal
+import sys
 import threading
 import weakref
 from collections.abc import Callable
@@ -16,7 +17,7 @@ from tests.conftest import running_loop
 from zuvloop._base import SignalOwner, _finish_deferred_signal_cleanup, _signal_owners
 from zuvloop._loop import _noop_signal_handler
 
-pytestmark = pytest.mark.anyio
+pytestmark = [pytest.mark.anyio, pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals throughout")]
 
 
 def test_signal_owner_tokens_use_identity() -> None:

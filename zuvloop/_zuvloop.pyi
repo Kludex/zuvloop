@@ -17,6 +17,7 @@ KIND_PIPE_WRITE: Literal[2]
 PROCESS_DETACHED: int
 PROCESS_SETUID: int
 PROCESS_SETGID: int
+PROCESS_WINDOWS_VERBATIM: int
 
 def libuv_version() -> str:
     """Return the version of the libuv build compiled into the extension."""

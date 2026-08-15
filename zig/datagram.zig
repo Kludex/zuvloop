@@ -194,7 +194,7 @@ fn onRecv(
     if (flags & uv.UDP_PARTIAL != 0) {
         // The datagram did not fit and the tail is gone; reporting the prefix
         // would be worse than reporting the loss.
-        const exc = c.PyObject_CallFunction(@ptrCast(c.PyExc_OSError), "s", "datagram truncated") orelse {
+        const exc = c.PyObject_CallFunction(py.exc_os_error, "s", "datagram truncated") orelse {
             c.PyErr_Clear();
             return;
         };
@@ -403,6 +403,9 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
     var view: c.Py_buffer = undefined;
     if (c.PyObject_GetBuffer(args[0].?, &view, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
     defer c.PyBuffer_Release(&view);
+    if (@as(usize, @intCast(view.len)) > uv.Buf.max_len) {
+        return py.errOverflow("a single datagram above 4 GiB cannot be sent on Windows");
+    }
 
     // A closing endpoint drops the datagram, as asyncio does - but the argument
     // errors above still raise there, which is why they all come first.
@@ -617,7 +620,7 @@ pub fn makeDatagram(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*p
     self.flags |= OPEN;
     uv.setData(self.udp(), self);
 
-    const status = uv.uv_udp_open(self.udp(), fd);
+    const status = uv.uv_udp_open(self.udp(), uv.asSock(fd));
     if (status < 0) {
         // libuv never took the descriptor, so the caller still owns it.
         self.flags &= ~OPEN;

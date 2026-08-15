@@ -17,6 +17,7 @@ from tests.conftest import running_loop
 from zuvloop import _connect, _zuvloop
 
 pytestmark = pytest.mark.anyio
+requires_unix_sockets = pytest.mark.skipif(sys.platform == "win32", reason="Windows has no Unix sockets")
 
 Address = tuple[str, int] | str | bytes | None
 
@@ -183,6 +184,7 @@ async def test_abort_closes_immediately() -> None:
 
 
 @pytest.mark.parametrize("abort", [False, True])
+@requires_unix_sockets
 async def test_shutdown_does_not_resume_or_report_cancelled_sends(abort: bool) -> None:
     loop = running_loop()
     with unix_socket_dir() as directory:
@@ -367,13 +369,24 @@ async def test_an_unbound_endpoint_can_be_created_from_a_family() -> None:
         server.close()
 
 
-async def test_broadcast_and_reuse_port_are_applied() -> None:
+async def test_broadcast_is_applied() -> None:
     transport, _protocol = await running_loop().create_datagram_endpoint(
-        Collector, local_addr=("127.0.0.1", 0), allow_broadcast=True, reuse_port=True
+        Collector, local_addr=("127.0.0.1", 0), allow_broadcast=True
     )
     try:
         sock = transport.get_extra_info("socket")
         assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST) != 0
+    finally:
+        transport.close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SO_REUSEPORT")
+async def test_reuse_port_is_applied() -> None:
+    transport, _protocol = await running_loop().create_datagram_endpoint(
+        Collector, local_addr=("127.0.0.1", 0), reuse_port=True
+    )
+    try:
+        sock = transport.get_extra_info("socket")
         assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT) != 0
     finally:
         transport.close()
@@ -541,7 +554,7 @@ async def test_a_transport_that_fails_to_adopt_its_socket_view_is_aborted(
             raise RuntimeError("adoption failed")
 
         def abort(self) -> None:
-            os.close(self.fd)
+            socket.close(self.fd)
             self.aborted = True
 
     refusing: RefusingTransport | None = None
@@ -572,8 +585,8 @@ async def test_a_transport_that_fails_to_adopt_its_socket_view_is_aborted(
     assert created[0].fileno() == -1
     assert refusing is not None
     assert refusing.aborted
-    with pytest.raises(OSError, match="Bad file descriptor"):
-        os.fstat(refusing.fd)
+    with pytest.raises(OSError):
+        real_socket(fileno=refusing.fd)
 
 
 async def test_an_empty_resolution_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -591,6 +604,7 @@ async def test_reuse_port_is_rejected_where_it_does_not_exist(monkeypatch: pytes
         await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0), reuse_port=True)
 
 
+@requires_unix_sockets
 async def test_unix_datagram_endpoints_round_trip() -> None:
     loop = running_loop()
     with unix_socket_dir() as directory:
@@ -643,6 +657,7 @@ async def test_unnamed_unix_datagram_sender_has_no_address() -> None:  # pragma:
         receiver.close()
 
 
+@requires_unix_sockets
 async def test_a_connected_unix_endpoint_accepts_the_path_it_is_connected_to() -> None:
     """For AF_UNIX the path is what identifies the peer."""
     loop = running_loop()
@@ -662,6 +677,7 @@ async def test_a_connected_unix_endpoint_accepts_the_path_it_is_connected_to() -
             server.close()
 
 
+@requires_unix_sockets
 async def test_a_connected_unix_endpoint_rejects_a_different_path() -> None:
     loop = running_loop()
     with unix_socket_dir() as directory:

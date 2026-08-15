@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures
 import gc
 import socket
+import sys
 import threading
 import time
 import weakref
@@ -17,6 +18,10 @@ from zuvloop._base import _shutdown_executor
 from zuvloop._connect import ConnectionOperations
 
 pytestmark = pytest.mark.anyio
+
+# A socketpair is an AF_UNIX socket on POSIX - a pipe to libuv - and an
+# AF_INET socket on Windows, where only the TCP spelling can adopt it.
+PAIR_KIND = 0 if sys.platform == "win32" else 1
 
 
 def test_run_returns_the_coroutine_result() -> None:
@@ -98,7 +103,7 @@ def test_failed_transport_construction_does_not_adopt_the_descriptor() -> None:
     left, right = socket.socketpair()
     try:
         with pytest.raises(AttributeError, match="connection_made"):
-            loop._make_transport(left.fileno(), 1, object(), None, None, None)  # type: ignore[arg-type]
+            loop._make_transport(left.fileno(), PAIR_KIND, object(), None, None, None)  # type: ignore[arg-type]
         loop.close()
         left.sendall(b"still owned")
         assert right.recv(11) == b"still owned"
@@ -137,7 +142,7 @@ async def test_transport_releases_the_inherited_extra_slot(self_cycle: bool) -> 
 
     loop = running_loop()
     left, right = socket.socketpair()
-    transport = loop._make_transport(left.fileno(), 1, asyncio.Protocol(), None, None, None)
+    transport = loop._make_transport(left.fileno(), PAIR_KIND, asyncio.Protocol(), None, None, None)
     left.detach()
     token: object = transport if self_cycle else Token()
     reference = weakref.ref(token)
@@ -157,7 +162,7 @@ def test_loop_close_releases_open_transports() -> None:
     before = sum(type(obj) is zuvloop.Transport for obj in gc.get_objects())
     loop = zuvloop.new_event_loop()
     left, right = socket.socketpair()
-    transport = loop._make_transport(left.fileno(), 1, asyncio.Protocol(), None, None, None)
+    transport = loop._make_transport(left.fileno(), PAIR_KIND, asyncio.Protocol(), None, None, None)
     left.detach()
     right.close()
 
@@ -179,7 +184,7 @@ def test_live_loop_keeps_an_open_transport_alive() -> None:
     loop = zuvloop.new_event_loop()
     left, right = socket.socketpair()
     protocol = Receiver()
-    transport = loop._make_transport(left.fileno(), 1, protocol, None, None, None)
+    transport = loop._make_transport(left.fileno(), PAIR_KIND, protocol, None, None, None)
     left.detach()
     loop.run_until_complete(asyncio.sleep(0))
     transport_ref = weakref.ref(transport)
@@ -209,7 +214,7 @@ def test_loop_close_rejects_writes_from_buffer_finalizers() -> None:
 
     loop = zuvloop.new_event_loop()
     left, right = socket.socketpair()
-    transport = loop._make_transport(left.fileno(), 1, asyncio.Protocol(), None, None, None)
+    transport = loop._make_transport(left.fileno(), PAIR_KIND, asyncio.Protocol(), None, None, None)
     left.detach()
     loop.run_until_complete(asyncio.sleep(0))
     transport_box.append(transport)
@@ -232,7 +237,7 @@ def test_loop_close_rejects_writes_from_buffer_finalizers() -> None:
 def test_pending_flush_does_not_retain_an_abandoned_loop() -> None:
     loop = zuvloop.new_event_loop()
     left, right = socket.socketpair()
-    transport = loop._make_transport(left.fileno(), 1, asyncio.Protocol(), None, None, None)
+    transport = loop._make_transport(left.fileno(), PAIR_KIND, asyncio.Protocol(), None, None, None)
     left.detach()
     loop.run_until_complete(asyncio.sleep(0))
     transport.write(b"pending")
@@ -248,11 +253,12 @@ def test_pending_flush_does_not_retain_an_abandoned_loop() -> None:
     assert transport_ref() is None
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows loopback takes any write whole; none is left in flight")
 def test_in_flight_write_does_not_retain_an_abandoned_loop() -> None:
     loop = zuvloop.new_event_loop()
     left, right = socket.socketpair()
     left.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
-    transport = loop._make_transport(left.fileno(), 1, asyncio.Protocol(), None, None, None)
+    transport = loop._make_transport(left.fileno(), PAIR_KIND, asyncio.Protocol(), None, None, None)
     left.detach()
     loop.run_until_complete(asyncio.sleep(0))
 

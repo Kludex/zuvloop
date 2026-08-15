@@ -16,6 +16,13 @@ if TYPE_CHECKING:
 _DEVNULL = -3
 _NAMES = ("stdin", "stdout", "stderr")
 
+if sys.platform == "win32":
+    # The signal module has no `SIGKILL` there; libuv accepts the number and
+    # turns it into `TerminateProcess`.
+    _SIGKILL = 9
+else:
+    _SIGKILL = signal.SIGKILL
+
 
 class _PolledProcess(Protocol):
     def poll(self) -> int | None: ...
@@ -50,6 +57,7 @@ class Popen:
         stdout: Any = None,
         stderr: Any = None,
         start_new_session: bool = False,
+        windows_verbatim: bool = False,
         startupinfo: None = None,
         creationflags: int = 0,
         pass_fds: Sequence[int] = (),
@@ -114,7 +122,16 @@ class Popen:
             return
 
         self.spawn_libuv(  # pragma: no cover - platform path exercised by macOS CI
-            loop, args, file, env_items, cwd_text, stdin, stdout, stderr, start_new_session
+            loop,
+            args,
+            file,
+            env_items,
+            cwd_text,
+            stdin,
+            stdout,
+            stderr,
+            start_new_session,
+            windows_verbatim,
         )
 
     def spawn_libuv(  # pragma: no cover - platform path exercised by macOS CI
@@ -128,6 +145,7 @@ class Popen:
         stdout: Any,
         stderr: Any,
         start_new_session: bool,
+        windows_verbatim: bool,
     ) -> None:
         child_fds: list[int] = []
         try:
@@ -139,7 +157,9 @@ class Popen:
                     # is what closes it from here.
                     setattr(self, _NAMES[index], open(mine, "wb" if index == 0 else "rb", 0))
 
-            flags = _zuvloop.PROCESS_DETACHED if start_new_session else 0
+            flags = (_zuvloop.PROCESS_DETACHED if start_new_session else 0) | (
+                _zuvloop.PROCESS_WINDOWS_VERBATIM if windows_verbatim else 0
+            )
             self._handle = loop._spawn_process(file, args, env_items, cwd, child_fds, flags, 0, 0, self.exited)
         except BaseException:
             for opened in (self.stdin, self.stdout, self.stderr):
@@ -174,7 +194,7 @@ class Popen:
     def kill(self) -> None:
         # `BaseSubprocessTransport.close()` reaches for this on a child that is
         # still running.
-        self.send_signal(signal.SIGKILL)
+        self.send_signal(_SIGKILL)
 
 
 class ProcessReaper:

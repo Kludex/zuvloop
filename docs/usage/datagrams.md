@@ -43,6 +43,8 @@ delivered truncated. A silent prefix is worse than a reported loss.
 
 ## Unix datagrams
 
+Unix datagrams are available on Linux and macOS, not Windows.
+
 ```python
 transport, protocol = await loop.create_datagram_endpoint(
     Protocol, local_addr="/tmp/server.sock", family=socket.AF_UNIX

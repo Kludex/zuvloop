@@ -6,6 +6,7 @@ import io
 import os
 import socket
 import ssl
+import sys
 import tempfile
 from asyncio.constants import _SendfileMode
 from collections.abc import Iterator
@@ -20,6 +21,14 @@ from zuvloop._sendfile import _SendfileProtocol
 from zuvloop._server import Server
 
 pytestmark = pytest.mark.anyio
+requires_native_sendfile = pytest.mark.skipif(sys.platform == "win32", reason="Windows has no os.sendfile")
+requires_unix_sockets = pytest.mark.skipif(sys.platform == "win32", reason="Windows has no Unix sockets")
+requires_pipe_transports = pytest.mark.skipif(
+    sys.platform == "win32", reason="zuvloop does not expose POSIX pipe transports on Windows"
+)
+requires_loopback_backpressure = pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback accepts the complete write without backpressure"
+)
 
 PAYLOAD = (bytes(range(256)) * (16 * 1024 + 64))[: 4 * 1024 * 1024]
 
@@ -317,6 +326,7 @@ async def test_sock_sendfile_validates_its_arguments(
     [(errno.ENOTCONN, ConnectionError), (errno.EIO, OSError)],
     ids=["ENOTCONN becomes ConnectionError", "other errors pass through"],
 )
+@requires_native_sendfile
 async def test_sock_sendfile_failing_after_a_partial_transfer(
     stream_pair: tuple[socket.socket, socket.socket],
     payload_file: IO[bytes],
@@ -397,6 +407,7 @@ async def test_sendfile_of_an_empty_file_over_a_transport(tmp_path: Path) -> Non
         await server.wait_closed()
 
 
+@requires_loopback_backpressure
 async def test_sendfile_waits_for_buffered_writes_to_drain(payload_file: IO[bytes]) -> None:
     loop = running_loop()
     server, port, sinks = await start_sink(StalledSink)
@@ -458,6 +469,7 @@ async def test_sendfile_falls_back_for_a_filelike_over_a_transport() -> None:
     assert bytes(sinks[0].received) == PAYLOAD[1000:200_000]
 
 
+@requires_unix_sockets
 async def test_sendfile_over_a_unix_connection(payload_file: IO[bytes]) -> None:
     loop = running_loop()
     sinks: list[Sink] = []
@@ -511,6 +523,7 @@ async def test_sendfile_over_tls_uses_the_fallback(
     assert bytes(sinks[0].received) == PAYLOAD[:300_000]
 
 
+@requires_pipe_transports
 async def test_sendfile_writes_through_a_pipe_transport() -> None:
     loop = running_loop()
     read_end, write_end = os.pipe()
@@ -539,6 +552,7 @@ async def test_sendfile_is_unsupported_for_datagram_transports(payload_file: IO[
         transport.close()
 
 
+@requires_loopback_backpressure
 async def test_sendfile_surfaces_a_connection_lost_while_draining(payload_file: IO[bytes]) -> None:
     loop = running_loop()
     server, port, sinks = await start_sink(StalledSink)
@@ -564,6 +578,7 @@ async def test_sendfile_surfaces_a_connection_lost_while_draining(payload_file: 
         await server.wait_closed()
 
 
+@requires_loopback_backpressure
 async def test_sendfile_reports_an_abort_while_draining_as_connection_error(payload_file: IO[bytes]) -> None:
     loop = running_loop()
     server, port, sinks = await start_sink(StalledSink)
@@ -583,6 +598,7 @@ async def test_sendfile_reports_an_abort_while_draining_as_connection_error(payl
         await server.wait_closed()
 
 
+@requires_loopback_backpressure
 async def test_sendfile_cancellation_restores_the_transport(payload_file: IO[bytes]) -> None:
     loop = running_loop()
     server, port, sinks = await start_sink(StalledSink)

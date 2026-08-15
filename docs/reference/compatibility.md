@@ -2,9 +2,9 @@
 
 Compatibility is checked at four levels:
 
-- Every change runs zuvloop's full suite on Linux and macOS. Linux also runs
-  musl runtime tests and a subprocess-isolated selection of CPython's own
-  `test_asyncio` mixins.
+- Every change runs zuvloop's full suite on Linux and macOS and its portable
+  suite on Windows. Linux also runs musl runtime tests and a subprocess-isolated
+  selection of CPython's own `test_asyncio` mixins.
 - Every pull request runs pinned upstream coverage from aiohttp, uvicorn, AnyIO,
   websockets, aioquic, Tornado and HTTPX2 with zuvloop installed as the asyncio
   loop. The upstream suites are used broadly where they test public behavior;
@@ -83,9 +83,9 @@ string as an unspecified host; zuvloop raises `OSError`. This is the whole of it
 
 ## Interpreter and platform policy
 
-GIL-enabled CPython 3.14 and later is supported on Linux and macOS. The minimum
-3.14.0 release and the next CPython prerelease are continuously exercised rather
-than inferred from the newest local interpreter.
+GIL-enabled CPython 3.14 and later is supported on Linux, macOS and Windows. The
+minimum 3.14.0 release and the next CPython prerelease are continuously exercised
+rather than inferred from the newest local interpreter.
 
 Free-threaded CPython is not supported yet. The native loop saves a thread state
 and deliberately releases and reacquires the GIL around `uv_run`; that ownership
@@ -93,6 +93,10 @@ model must be redesigned before a no-GIL build is safe. A free-threaded source
 build fails at compile time with a direct explanation instead of producing a
 wheel that fails later with an unresolved CPython symbol.
 
-Linux glibc, Linux musl and macOS execute the full in-repository suite. Cross
-compilation additionally checks x86-64 and AArch64 for all published platform
-families. Windows is not supported.
+Linux glibc, Linux musl and macOS execute the full in-repository suite. Windows
+builds run the portable suite natively; tests that require
+Unix-domain sockets, POSIX signal semantics, POSIX pipe descriptors or POSIX
+subprocess expectations are explicitly skipped.
+Windows does not provide Unix-domain socket methods or `SO_REUSEPORT` through
+zuvloop. Published wheels cover Linux x86-64/AArch64, macOS x86-64/arm64 and
+Windows AMD64/ARM64.

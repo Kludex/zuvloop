@@ -4,6 +4,7 @@ import asyncio
 import contextvars
 import inspect
 import signal
+import sys
 import threading
 from collections.abc import Callable
 from types import FrameType
@@ -80,7 +81,8 @@ class EventLoop(ConnectionOperations):
             self._restore_wakeup_fd(wakeup_state)
             raise RuntimeError(f"sig {sig} cannot be caught") from exc
 
-        signal.siginterrupt(sig, False)
+        if sys.platform != "win32":
+            signal.siginterrupt(sig, False)
 
     def remove_signal_handler(self, sig: int) -> bool:
         _check_signal(sig)

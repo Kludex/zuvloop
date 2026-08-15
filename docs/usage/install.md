@@ -4,19 +4,23 @@
 $ pip install zuvloop
 ```
 
-zuvloop has one runtime dependency, `opentelemetry-api`. Not the SDK, and nothing
-vendor-specific — see [Instrumentation](instrumentation.md) for why the API
-alone is enough.
+zuvloop has two small runtime dependencies: `opentelemetry-api` for optional
+instrumentation and `typing-extensions` for the shipped type declarations. It
+does not install an OpenTelemetry SDK or anything vendor-specific — see
+[Instrumentation](instrumentation.md) for why the API alone is enough.
 
 ## Requirements
 
 | | |
 | --- | --- |
 | Python | GIL-enabled CPython 3.14 or newer |
-| Platform | Linux, macOS |
+| Platform | Linux, macOS, Windows |
 
-Windows is not supported. The loop is built on libuv's Unix backend, and the
-socket setup is written against POSIX semantics.
+Windows uses libuv's native Windows backend. Unix-domain sockets and
+`SO_REUSEPORT` are unavailable there; the portable TCP, UDP, DNS, TLS,
+scheduling and sendfile-fallback surfaces are exercised by native Windows CI. See
+[Compatibility](../reference/compatibility.md#interpreter-and-platform-policy)
+for the precise platform policy.
 
 libuv is vendored and compiled into the extension. There is nothing to install
 separately, and no system libuv is used even if one is present.
@@ -54,7 +58,8 @@ $ python -c "import zuvloop; print(zuvloop.libuv_version())"
 ## Development
 
 ```console
-$ uv run pytest          # tests, at 100% branch coverage
+$ uv run coverage run -m pytest
+$ uv run coverage report # enforce 100% branch coverage
 $ uv run mypy            # strict, including tests and scripts
 $ uv run python -m mypy.stubtest zuvloop --allowlist stubtest_allowlist.txt
 $ uv run ruff check .
