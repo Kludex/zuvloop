@@ -46,9 +46,9 @@ trove-classifiers==2026.6.1.19 \
     --hash=sha256:ab4c4ec93cc4a4e7815fa759906e05e6bb3f2fbd92ea0f897288c6a43efd15b3 \
     --hash=sha256:c5132b4b61a829d11cfbd2d72e97f20a45ed6edb95e45c5efdeb5e00836b2745
     # via hatchling
-vcs-versioning==2.2.4 \
-    --hash=sha256:48ffea8a6a175c37a718c7ee2e5f508d0e500c2cf3371791f7948bccb2b44628 \
-    --hash=sha256:ed718fdee42170e128a8add6f23f53aa64dc7d9ab2de87d3083a691df881a809
+vcs-versioning==2.3.0 \
+    --hash=sha256:1b8e76156e50961a29fa9a1bd25c38145a2df86bf47611e134ffbff7852bc801 \
+    --hash=sha256:eb7f5aa2ff5d0c9f8c108ec0bb9476e2ddbe708f08a5e41df4c7977062484cf7
     # via setuptools-scm
 ziglang==0.16.0 \
     --hash=sha256:089a16a4eb5a2f45151993342f8fabad24ff1a0723dc146642895c29208a3939 \
