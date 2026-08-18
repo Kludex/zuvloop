@@ -119,6 +119,23 @@ async def test_slow_callbacks_inside_a_task_carry_the_call_graph(telemetry: Tele
     assert any(graph is not None and "slow-step" in str(graph) for graph in graphs)
 
 
+async def test_slow_callback_that_finishes_its_task_carries_the_call_graph(telemetry: Telemetry) -> None:
+    loop = running_loop()
+    loop.slow_callback_duration = 0.01
+
+    async def slow_and_finish() -> None:
+        time.sleep(0.05)
+
+    try:
+        await loop.create_task(slow_and_finish(), name="slow-final-step")
+    finally:
+        loop.slow_callback_duration = 0.1
+
+    spans = telemetry.spans("zuvloop.slow_callback")
+    graphs = [span.attributes.get("asyncio.call_graph") for span in spans if span.attributes]
+    assert any(graph is not None and "slow-final-step" in str(graph) for graph in graphs)
+
+
 async def test_the_call_graph_is_absent_outside_a_task() -> None:
     loop = running_loop()
     captured = loop.create_future()
@@ -670,15 +687,44 @@ async def test_metrics_on_a_closed_loop_are_zero() -> None:
     assert loop._metrics()["loop_count"] == 0
 
 
-async def test_completed_task_recovered_from_a_handle_has_no_call_graph() -> None:
-    task = asyncio.create_task(asyncio.sleep(0))
-    await task
+async def test_completed_task_recovered_from_a_handle_has_a_safe_call_graph() -> None:
+    async def completed_with_secret_result() -> str:
+        return "secret result"
+
+    task = asyncio.create_task(completed_with_secret_result(), name="completed-task")
+    assert await task == "secret result"
     callback = MethodType(lambda _task: None, task)
     handle = running_loop().call_soon(callback)
     try:
-        assert capture_call_graph(handle) is None
+        graph = capture_call_graph(handle)
     finally:
         handle.cancel()
+
+    assert graph is not None
+    assert "completed-task" in graph
+    assert "state=done" in graph
+    assert "completed_with_secret_result" in graph
+    assert __file__ in graph
+    assert "secret result" not in graph
+
+
+async def test_completed_task_call_graph_does_not_render_its_exception() -> None:
+    async def completed_with_secret_exception() -> None:
+        raise RuntimeError("secret exception")
+
+    task = asyncio.create_task(completed_with_secret_exception())
+    with pytest.raises(RuntimeError, match="secret exception"):
+        await task
+    callback = MethodType(lambda _task: None, task)
+    handle = running_loop().call_soon(callback)
+    try:
+        graph = capture_call_graph(handle)
+    finally:
+        handle.cancel()
+
+    assert graph is not None
+    assert "completed_with_secret_exception" in graph
+    assert "secret exception" not in graph
 
 
 async def test_the_stdlib_call_graph_apis_work_on_this_loop() -> None:
