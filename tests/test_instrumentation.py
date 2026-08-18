@@ -704,7 +704,7 @@ async def test_completed_task_recovered_from_a_handle_has_a_safe_call_graph() ->
     assert "completed-task" in graph
     assert "state=done" in graph
     assert "completed_with_secret_result" in graph
-    assert __file__ in graph
+    assert repr(__file__) in graph
     assert "secret result" not in graph
 
 
