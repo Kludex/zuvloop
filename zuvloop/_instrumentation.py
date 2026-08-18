@@ -5,6 +5,7 @@ import functools
 import time
 import traceback
 from collections.abc import Mapping
+from types import CodeType
 
 from opentelemetry import metrics, trace
 from opentelemetry.metrics import NoOpMeterProvider
@@ -137,8 +138,21 @@ def capture_call_graph(handle: object = None) -> str | None:
     task = getattr(getattr(handle, "_callback", None), "__self__", None)
     if not isinstance(task, asyncio.Task):
         task = asyncio.current_task()
-    if task is None or task.done():
+    if task is None:
         return None
+    if task.done():
+        coroutine = task.get_coro()
+        qualname = getattr(coroutine, "__qualname__", type(coroutine).__qualname__)
+        code = getattr(coroutine, "cr_code", None)
+        location = (
+            f"  |   File {code.co_filename!r}, line {code.co_firstlineno}, in {qualname}()"
+            if isinstance(code, CodeType)
+            else f"  |   Coroutine {qualname}()"
+        )
+        return (
+            f"* Task(name={task.get_name()!r}, id={id(task):#x}, state=done)\n"
+            f"  + Call stack (task already finished):\n{location}"
+        )
     return asyncio.format_call_graph(task)
 
 
