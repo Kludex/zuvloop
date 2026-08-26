@@ -682,6 +682,19 @@ async def test_unix_datagram_endpoints_round_trip() -> None:
             server.close()
 
 
+@requires_unix_sockets
+async def test_unix_datagram_destinations_reject_embedded_nuls() -> None:
+    loop = running_loop()
+    with unix_socket_dir() as directory:
+        client_path = str(directory / "client")
+        client, _ = await loop.create_datagram_endpoint(Collector, local_addr=client_path, family=socket.AF_UNIX)
+        try:
+            with pytest.raises(ValueError, match="embedded null byte"):
+                client.sendto(b"unix", f"{directory}/target\0ignored")
+        finally:
+            client.close()
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="abstract AF_UNIX names are a Linux feature")
 async def test_abstract_unix_datagram_sender_address_is_preserved() -> None:  # pragma: no cover - Linux CI
     loop = running_loop()
