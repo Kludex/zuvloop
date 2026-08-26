@@ -33,6 +33,12 @@ async def test_getaddrinfo_resolves_localhost() -> None:
         assert sockaddr[1] == 80
 
 
+@pytest.mark.parametrize("host", ["127.0.0.1\0.allowed.example", b"127.0.0.1\0.allowed.example"])
+async def test_getaddrinfo_rejects_embedded_nuls(host: str | bytes) -> None:
+    with pytest.raises(ValueError, match="embedded null byte"):
+        await running_loop().getaddrinfo(host, 80)
+
+
 async def test_getaddrinfo_accepts_a_service_name() -> None:
     loop = running_loop()
     results = await loop.getaddrinfo("127.0.0.1", "http", family=socket.AF_INET, type=socket.SOCK_STREAM)
