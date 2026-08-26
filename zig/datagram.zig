@@ -615,6 +615,7 @@ pub fn makeDatagram(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*p
 
     bindProtocol(self, args[3].?);
     st.ready.ensureUnusedCapacity(1) catch return py.errNoMemory();
+    try loopmod.checkClosed(st);
 
     try py.errUvIfNeg(uv.uv_udp_init_ex(st.uvloop, self.udp(), 0));
     self.flags |= OPEN;
