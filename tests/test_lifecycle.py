@@ -321,6 +321,55 @@ def test_threadsafe_inbox_does_not_retain_an_abandoned_loop() -> None:
     assert handle_ref() is None
 
 
+def test_close_tracks_a_retained_threadsafe_handle_cycle() -> None:
+    loop = zuvloop.new_event_loop()
+    handles: list[asyncio.Handle] = []
+    handle = loop.call_soon_threadsafe(handles.clear)
+    handles.append(handle)
+    loop_ref = weakref.ref(loop)
+    handle_ref = weakref.ref(handle)
+    loop.close()
+
+    del handle, handles, loop
+    gc.collect()
+
+    assert loop_ref() is None
+    assert handle_ref() is None
+
+
+def test_retained_threadsafe_handle_cycle_does_not_retain_an_abandoned_loop() -> None:
+    loop = zuvloop.new_event_loop()
+    handles: list[asyncio.Handle] = []
+    handle = loop.call_soon_threadsafe(handles.clear)
+    handles.append(handle)
+    loop_ref = weakref.ref(loop)
+    handle_ref = weakref.ref(handle)
+
+    with pytest.warns(ResourceWarning, match="unclosed event loop"):
+        del handle, handles, loop
+        gc.collect()
+
+    assert loop_ref() is None
+    assert handle_ref() is None
+
+
+def test_retained_threadsafe_handle_keeps_its_loop_reachable() -> None:
+    loop = zuvloop.new_event_loop()
+    handles: list[asyncio.Handle] = []
+    handle = loop.call_soon_threadsafe(handles.clear)
+    handles.append(handle)
+    loop_ref = weakref.ref(loop)
+
+    del handles, loop
+    gc.collect()
+
+    retained_loop = loop_ref()
+    assert retained_loop is not None
+    retained_loop.close()
+    del handle, retained_loop
+    gc.collect()
+
+
 def test_asyncio_run_accepts_the_loop_factory() -> None:
     async def main() -> str:
         return type(running_loop()).__name__

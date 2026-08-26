@@ -4,22 +4,24 @@
 //! holds with none of its costs: `isinstance` agrees, and `cancel()` or
 //! `cancelled()` from a foreign thread still blocks while the callback runs,
 //! but through an atomic state machine and a futex instead of a per-handle
-//! `threading.RLock`. The base class's slots are never written; every one is
-//! shadowed by a read-only descriptor over the native payload appended after
-//! the base layout.
+//! `threading.RLock`. The base class's slots hold the native payload and are
+//! shadowed by read-only descriptors.
 
 const std = @import("std");
 const py = @import("py.zig");
 const c = py.c;
 const handlemod = @import("handle.zig");
+const loopmod = @import("loop.zig");
 
-const inline_args = 3;
+const inline_args = 1;
 const arg_alloc = std.heap.c_allocator;
 
 const PENDING: u32 = 0;
 const RUNNING: u32 = 1;
 /// Ran, or cancelled before it could run; either way it never will again.
 const DONE: u32 = 2;
+const cancelled_flag: u32 = 1 << 0;
+const captured_context_flag: u32 = 1 << 1;
 
 /// One blocked `cancel` or `cancelled` call, parked on a lock it acquired
 /// twice; the loop thread releases it when the callback finishes. Lives on the
@@ -42,8 +44,7 @@ const Payload = extern struct {
     waiters: ?*Waiter,
     nargs: c.Py_ssize_t,
     run_state: u32,
-    cancelled_flag: u32,
-    runner: c_ulong,
+    flags: u32,
     args: [inline_args]?*py.Object,
 
     pub inline fn argv(self: *Payload) [*]?*py.Object {
@@ -52,7 +53,16 @@ const Payload = extern struct {
 };
 
 pub var ts_type: ?*c.PyTypeObject = null;
-var payload_offset: usize = 0;
+const payload_offset = @sizeOf(c.PyObject);
+threadlocal var running_payload: ?*Payload = null;
+
+const ContextObject = extern struct {
+    ob_base: c.PyObject,
+    previous: ?*ContextObject,
+    variables: ?*py.Object,
+    weakrefs: ?*py.Object,
+    entered: c_int,
+};
 
 inline fn payload(obj: *py.Object) *Payload {
     return @ptrFromInt(@intFromPtr(obj) + payload_offset);
@@ -62,14 +72,20 @@ pub inline fn owns(obj: *py.Object) bool {
     return py.typeOf(obj) == ts_type.?;
 }
 
+/// Untracks a handle owned only by the ready queue and candidate slot.
+pub fn untrackIfQueueOnly(obj: *py.Object) void {
+    if (c.Py_REFCNT(obj) == 2 and c.PyObject_GC_IsTracked(obj) != 0) c.PyObject_GC_UnTrack(obj);
+}
+
 pub fn create(
     loop: *py.Object,
     callback: *py.Object,
     args: []const ?*py.Object,
     context: ?*py.Object,
 ) py.Error!*py.Object {
-    const obj = c.PyType_GenericAlloc(ts_type.?, 0) orelse return py.Error.Python;
+    const obj = c._PyObject_GC_New(ts_type.?) orelse return py.Error.Python;
     const self = payload(obj);
+    self.* = std.mem.zeroes(Payload);
 
     if (args.len > inline_args) {
         const buf = arg_alloc.alloc(?*py.Object, args.len) catch {
@@ -94,12 +110,26 @@ pub fn create(
         py.incref(ctx);
         self.context = ctx;
     } else {
-        self.context = c.PyContext_CopyCurrent() orelse {
+        self.flags |= captured_context_flag;
+        const thread_state = c.PyThreadState_Get();
+        const current_slot: *?*py.Object = @ptrFromInt(
+            @intFromPtr(thread_state) + c.ZUVLOOP_PYTHREADSTATE_CONTEXT_OFFSET,
+        );
+        const current = current_slot.*;
+        const context_size = if (current) |current_context| c.PyObject_Size(current_context) else 0;
+        if (context_size < 0) {
             py.decref(obj);
             return py.Error.Python;
-        };
+        }
+        if (context_size != 0) {
+            self.context = c.PyContext_CopyCurrent() orelse {
+                py.decref(obj);
+                return py.Error.Python;
+            };
+        }
     }
 
+    c.PyObject_GC_Track(obj);
     return obj;
 }
 
@@ -108,20 +138,31 @@ pub fn create(
 pub fn run(obj: *py.Object) void {
     const self = payload(obj);
     if (@cmpxchgStrong(u32, &self.run_state, PENDING, RUNNING, .acq_rel, .acquire) != null) return;
-    // Only the winner may claim the run: `_run` is a Python method, and a
-    // losing caller writing here would misdirect the waits keyed on it. A
-    // reader that sees RUNNING before this write compares against zero, which
-    // is never a thread id, and waits - the conservative side of the race.
-    self.runner = c.PyThread_get_thread_ident();
-    const callback = self.callback.?;
-    handlemod.invoke(obj, self.loop, callback, self.argv(), self.nargs, self.context.?);
-    @atomicStore(u32, &self.run_state, DONE, .release);
-    var node = self.waiters;
-    self.waiters = null;
-    while (node) |w| {
-        node = w.next;
-        c.PyThread_release_lock(w.lock);
+    const previous_running = running_payload;
+    running_payload = self;
+    defer running_payload = previous_running;
+    defer {
+        @atomicStore(u32, &self.run_state, DONE, .release);
+        var node = self.waiters;
+        self.waiters = null;
+        while (node) |w| {
+            node = w.next;
+            c.PyThread_release_lock(w.lock);
+        }
     }
+    const callback = self.callback.?;
+    const context = materializeContext(self) catch {
+        loopmod.callbackFailed(self.loop, obj);
+        return;
+    };
+    handlemod.invoke(obj, self.loop, callback, self.argv(), self.nargs, context);
+}
+
+fn materializeContext(self: *Payload) py.Error!*py.Object {
+    if (self.context) |context| return context;
+    const context = loopmod.takeEmptyContext(self.loop.?) orelse c.PyContext_New() orelse return py.Error.Python;
+    self.context = context;
+    return context;
 }
 
 /// Parks until the running callback finishes. The GIL is released for the
@@ -153,7 +194,7 @@ fn awaitCompletion(self: *Payload) void {
 /// reentrant `cancel` a callback may issue on its own handle.
 fn mustWait(self: *Payload) bool {
     if (@atomicLoad(u32, &self.run_state, .acquire) != RUNNING) return false;
-    return self.runner != c.PyThread_get_thread_ident();
+    return running_payload != self;
 }
 
 fn clearArgs(self: *Payload) void {
@@ -176,11 +217,11 @@ fn cancel(self_obj: *py.Object) py.Error!*py.Object {
             if (@cmpxchgStrong(u32, &self.run_state, PENDING, DONE, .acq_rel, .acquire) == null) break;
             continue;
         }
-        if (s != DONE and self.runner != c.PyThread_get_thread_ident()) awaitCompletion(self);
+        if (s != DONE and running_payload != self) awaitCompletion(self);
         break;
     }
-    if (self.cancelled_flag == 0) {
-        self.cancelled_flag = 1;
+    if (self.flags & cancelled_flag == 0) {
+        self.flags |= cancelled_flag;
         py.clear(&self.callback);
         clearArgs(self);
     }
@@ -190,7 +231,7 @@ fn cancel(self_obj: *py.Object) py.Error!*py.Object {
 fn cancelled(self_obj: *py.Object) py.Error!*py.Object {
     const self = payload(self_obj);
     if (mustWait(self)) awaitCompletion(self);
-    return py.boolRef(self.cancelled_flag != 0);
+    return py.boolRef(self.flags & cancelled_flag != 0);
 }
 
 fn runMethod(self_obj: *py.Object) py.Error!*py.Object {
@@ -201,7 +242,7 @@ fn runMethod(self_obj: *py.Object) py.Error!*py.Object {
 fn repr(obj: ?*py.Object) callconv(.c) ?*py.Object {
     const self = payload(obj.?);
     const name = py.typeOf(obj.?).tp_name;
-    if (self.cancelled_flag != 0) return c.PyUnicode_FromFormat("<%s cancelled>", name);
+    if (self.flags & cancelled_flag != 0) return c.PyUnicode_FromFormat("<%s cancelled>", name);
     return c.PyUnicode_FromFormat("<%s %R>", name, self.callback orelse py.none());
 }
 
@@ -211,15 +252,32 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     c.PyObject_GC_UnTrack(obj);
     c.PyObject_ClearWeakRefs(obj);
     clearArgs(self);
-    py.clear(&self.loop);
     py.clear(&self.callback);
-    py.clear(&self.context);
+    releaseContext(self);
+    py.clear(&self.loop);
     tp.tp_free.?(obj);
     py.decref(tp);
 }
 
-fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv(.c) c_int {
-    const self = payload(obj.?);
+fn releaseContext(self: *Payload) void {
+    const context = self.context orelse return;
+    self.context = null;
+    if (self.flags & captured_context_flag != 0 and c.Py_REFCNT(context) == 1) {
+        const context_obj: *ContextObject = @ptrCast(@alignCast(context));
+        const size = c.PyObject_Size(context);
+        if (size == 0 and context_obj.weakrefs == null and context_obj.entered == 0) {
+            if (self.loop) |loop| {
+                if (loopmod.recycleEmptyContext(loop, context)) return;
+            }
+        } else if (size < 0) {
+            c.PyErr_Clear();
+        }
+    }
+    py.decref(context);
+}
+
+fn visitReferences(obj: *py.Object, visitproc: c.visitproc, arg: ?*anyopaque) c_int {
+    const self = payload(obj);
     var r = py.visit(self.loop, visitproc, arg);
     if (r != 0) return r;
     r = py.visit(self.callback, visitproc, arg);
@@ -233,7 +291,17 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
         r = py.visit(items[i], visitproc, arg);
         if (r != 0) return r;
     }
-    return py.visit(@ptrCast(py.typeOf(obj.?)), visitproc, arg);
+    return py.visit(@ptrCast(py.typeOf(obj)), visitproc, arg);
+}
+
+/// Visits queued references transparently when the handle is untracked.
+pub fn traverseQueued(obj: *py.Object, visitproc: c.visitproc, arg: ?*anyopaque) c_int {
+    if (c.PyObject_GC_IsTracked(obj) != 0) return py.visit(obj, visitproc, arg);
+    return visitReferences(obj, visitproc, arg);
+}
+
+fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv(.c) c_int {
+    return visitReferences(obj.?, visitproc, arg);
 }
 
 fn clear_(obj: ?*py.Object) callconv(.c) c_int {
@@ -262,7 +330,7 @@ fn getArgs(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 }
 
 fn getCancelledSlot(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
-    return py.boolRef(payload(self_obj.?).cancelled_flag != 0);
+    return py.boolRef(payload(self_obj.?).flags & cancelled_flag != 0);
 }
 
 fn getLoop(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
@@ -270,15 +338,16 @@ fn getLoop(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 }
 
 fn getContext(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
-    return py.newref(payload(self_obj.?).context orelse py.none());
+    const context = materializeContext(payload(self_obj.?)) catch return null;
+    return py.newref(context);
 }
 
 fn getNone(_: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
     return py.newref(py.none());
 }
 
-// Every base slot is shadowed read-only, so their storage stays empty and the
-// payload is the single source of truth for traverse, clear and dealloc.
+// Every base slot is shadowed read-only, so the payload is the single source of
+// truth for traverse, clear and dealloc.
 var getsets = [_]c.PyGetSetDef{
     .{ .name = "_callback", .get = getCallback, .set = null, .doc = "The scheduled callable.", .closure = null },
     .{ .name = "_args", .get = getArgs, .set = null, .doc = "Arguments the callable receives.", .closure = null },
@@ -326,8 +395,9 @@ pub fn register(module: *py.Object) py.Error!void {
     const base = py.importFrom("asyncio.events", "_ThreadSafeHandle") orelse return py.Error.Python;
     defer py.decref(base);
     const base_tp: *c.PyTypeObject = @ptrCast(base);
-    payload_offset = std.mem.alignForward(usize, @intCast(base_tp.tp_basicsize), @alignOf(Payload));
-    spec.basicsize = @intCast(payload_offset + @sizeOf(Payload));
+    if (base_tp.tp_basicsize < payload_offset + @sizeOf(Payload)) {
+        return py.errRuntime("asyncio.events._ThreadSafeHandle has an incompatible layout");
+    }
     ts_type = @ptrCast(c.PyType_FromModuleAndSpec(module, &spec, base) orelse return py.Error.Python);
     if (c.PyModule_AddObjectRef(module, "ThreadSafeHandle", @ptrCast(ts_type)) < 0) return py.Error.Python;
 }

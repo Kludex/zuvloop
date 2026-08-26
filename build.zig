@@ -126,6 +126,7 @@ pub fn build(b: *std.Build) void {
         .pic = true,
     });
     mod.addIncludePath(.{ .cwd_relative = python_include });
+    mod.addIncludePath(b.path("zig"));
     mod.addIncludePath(b.path("vendor/libuv/include"));
     mod.addIncludePath(b.path("vendor/libuv/src"));
 

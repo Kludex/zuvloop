@@ -276,6 +276,58 @@ async def test_call_soon_threadsafe_from_another_thread() -> None:
     assert await done == "from thread"
 
 
+def test_call_soon_threadsafe_captures_the_worker_context() -> None:
+    loop = zuvloop.new_event_loop()
+    variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable", default="default")
+    seen: list[str] = []
+
+    def worker() -> None:
+        variable.set("scheduled")
+        loop.call_soon_threadsafe(lambda: seen.append(variable.get()))
+        variable.set("changed later")
+        loop.call_soon_threadsafe(loop.stop)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+    try:
+        loop.run_forever()
+    finally:
+        loop.close()
+    assert seen == ["scheduled"]
+
+
+def test_call_soon_threadsafe_keeps_empty_contexts_independent() -> None:
+    loop = zuvloop.new_event_loop()
+    variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable", default="default")
+    seen: list[str] = []
+
+    loop.call_soon_threadsafe(variable.set, "first callback")
+    loop.call_soon_threadsafe(lambda: seen.append(variable.get()))
+    loop.call_soon_threadsafe(loop.stop)
+    try:
+        loop.run_forever()
+    finally:
+        loop.close()
+    assert seen == ["default"]
+
+
+def test_call_soon_threadsafe_exposes_its_context_before_running() -> None:
+    loop = zuvloop.new_event_loop()
+    variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable", default="default")
+    seen: list[str] = []
+    handle = loop.call_soon_threadsafe(lambda: seen.append(variable.get()))
+    context = handle.get_context()
+    context.run(variable.set, "modified")
+    loop.call_soon_threadsafe(loop.stop)
+    try:
+        loop.run_forever()
+    finally:
+        loop.close()
+    assert handle.get_context() is context
+    assert seen == ["modified"]
+
+
 async def test_call_soon_threadsafe_validates_its_arguments() -> None:
     loop = running_loop()
     with pytest.raises(TypeError, match="requires a callback"):
