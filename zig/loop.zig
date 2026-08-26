@@ -41,6 +41,7 @@ pub const State = struct {
     scratch: ?[*]u8 = null,
     empty_contexts: [context_pool_capacity]?*py.Object = .{null} ** context_pool_capacity,
     empty_contexts_len: usize = 0,
+    threadsafe_candidate: ?*py.Object = null,
     dns_requests: ?*anyopaque = null,
     transport_head: ?*transportmod.Transport = null,
     flush_head: ?*transportmod.Transport = null,
@@ -295,12 +296,11 @@ fn clearEmptyContexts(st: *State) void {
     }
 }
 
-fn trackRetainedThreadSafeHandles(st: *State) void {
-    var i: usize = 0;
-    while (i < st.ready.len) : (i += 1) {
-        const handle = st.ready.items[(st.ready.head + i) & (st.ready.items.len - 1)].?;
-        if (tshandle.owns(handle)) tshandle.trackIfRetained(handle);
-    }
+fn clearThreadsafeCandidate(st: *State, untrack_queue_only: bool) void {
+    const candidate = st.threadsafe_candidate orelse return;
+    st.threadsafe_candidate = null;
+    if (untrack_queue_only) tshandle.untrackIfQueueOnly(candidate);
+    py.decref(candidate);
 }
 
 /// The ready queue holds both handle types; only the type says which protocol
@@ -325,6 +325,7 @@ fn runReady(self: *LoopObject) void {
     st.callbacks_run += remaining;
     while (remaining != 0) : (remaining -= 1) {
         const obj = st.ready.pop() orelse break;
+        if (st.threadsafe_candidate == obj) clearThreadsafeCandidate(st, true);
         if ((st.debug or st.slow_callback_monitoring) and st.slow_callback_duration < std.math.inf(f64)) {
             const started = uv.uv_hrtime();
             runOne(obj);
@@ -525,6 +526,7 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
     const st = self.state();
     try checkClosed(st);
     const p = try parseCall(args, nargs, kwnames, 1);
+    clearThreadsafeCandidate(st, true);
     const h = try tshandle.create(self_obj, args[0].?, p.positional, p.context);
     py.incref(h);
     // One FIFO for both schedulers, so a `call_soon` issued after a
@@ -535,6 +537,9 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
         py.decref(h);
         return py.errNoMemory();
     };
+    // Keep the return value tracked until a later call proves only the queue retained it.
+    py.incref(h);
+    st.threadsafe_candidate = h;
     // libuv clears its pending bit before `onWake` acquires the GIL. Keep one at
     // this layer so a producer cannot issue another kernel wake in that window.
     if (!st.idle_active and !st.waker_pending) {
@@ -753,7 +758,7 @@ fn closeLoop(self_obj: *py.Object) py.Error!*py.Object {
     if (st.closed) return py.noneRef();
     st.closed = true;
 
-    trackRetainedThreadSafeHandles(st);
+    clearThreadsafeCandidate(st, false);
     st.ready.deinit();
     st.timers.deinit();
     clearEmptyContexts(st);
@@ -965,7 +970,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
         const needs_close = !st.closed;
         st.closed = true;
         if (needs_close) {
-            trackRetainedThreadSafeHandles(st);
+            clearThreadsafeCandidate(st, false);
             st.ready.deinit();
             st.timers.deinit();
             clearEmptyContexts(st);
@@ -993,6 +998,8 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
         var r = py.visit(st.fatal, visitproc, arg);
         if (r != 0) return r;
         r = py.visit(st.metrics_cb, visitproc, arg);
+        if (r != 0) return r;
+        r = py.visit(st.threadsafe_candidate, visitproc, arg);
         if (r != 0) return r;
         var i: usize = 0;
         while (i < st.ready.len) : (i += 1) {
