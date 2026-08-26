@@ -328,7 +328,12 @@ fn collectDueTimers(self: *LoopObject) void {
             if (st.timers.cancelled != 0) st.timers.cancelled -= 1;
             continue;
         }
-        st.ready.push(entry.handle) catch py.decref(entry.handle);
+        st.ready.push(entry.handle) catch {
+            py.errNoMemory() catch {};
+            captureFatal(self);
+            py.decref(entry.handle);
+            return;
+        };
     }
     startIdle(st);
 }
