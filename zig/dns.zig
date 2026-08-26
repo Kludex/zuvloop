@@ -326,7 +326,11 @@ fn onNameInfo(req: ?*uv.GetNameInfo, status: c_int, hostname: ?[*:0]const u8, se
             defer py.decref(pair);
             settle(self.future.?, str_set_result, pair);
         } else {
-            py.writeUnraisable(self.future.?);
+            const exc = c.PyErr_GetRaisedException();
+            if (exc) |err| {
+                defer py.decref(err);
+                settle(self.future.?, str_set_exception, err);
+            }
         }
     }
     freeRequest(self, .getnameinfo);
