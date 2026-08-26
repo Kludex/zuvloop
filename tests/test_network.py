@@ -12,7 +12,7 @@ import tempfile
 from asyncio import constants, trsock
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import NoReturn
+from typing import Literal, NoReturn
 
 import pytest
 
@@ -760,6 +760,56 @@ async def test_buffered_protocol_reads_into_its_own_buffer() -> None:
         assert await done == b"hello"
         transport.close()
         await asyncio.sleep(0.05)
+
+
+@pytest.mark.parametrize("action", ["pause", "close", "abort"])
+async def test_buffered_protocol_can_change_read_state_from_get_buffer(
+    action: Literal["pause", "close", "abort"],
+) -> None:
+    loop = running_loop()
+
+    class ReentrantBuffered(asyncio.BufferedProtocol):
+        def __init__(self) -> None:
+            self.transport: asyncio.Transport | None = None
+            self.buffer = bytearray(4096)
+            self.acted: asyncio.Future[None] = loop.create_future()
+            self.received: asyncio.Future[bytes] = loop.create_future()
+            self.lost: asyncio.Future[BaseException | None] = loop.create_future()
+
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            self.transport = transport  # type: ignore[assignment]
+
+        def get_buffer(self, sizehint: int) -> bytearray:
+            assert self.transport is not None
+            if not self.acted.done():
+                if action == "pause":
+                    self.transport.pause_reading()
+                elif action == "close":
+                    self.transport.close()
+                else:
+                    self.transport.abort()
+                self.acted.set_result(None)
+            return self.buffer
+
+        def buffer_updated(self, nbytes: int) -> None:
+            self.received.set_result(bytes(self.buffer[:nbytes]))
+
+        def connection_lost(self, exc: BaseException | None) -> None:
+            self.lost.set_result(exc)
+
+    server, port, _ = await start_echo()
+    async with server:
+        transport, protocol = await loop.create_connection(ReentrantBuffered, "127.0.0.1", port)
+        transport.write(b"hello")
+        await asyncio.wait_for(protocol.acted, 2)
+        if action == "pause":
+            assert transport.is_reading() is False
+            transport.resume_reading()
+            assert await asyncio.wait_for(protocol.received, 2) == b"hello"
+            transport.close()
+        else:
+            await asyncio.wait_for(protocol.lost, 2)
+            assert transport.is_closing() is True
 
 
 async def test_connection_refused_is_reported(closed_port: int) -> None:

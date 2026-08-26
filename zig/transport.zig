@@ -32,6 +32,8 @@ const PIPE_OWNED: u32 = 1 << 9;
 /// CLOSING, and `repr` has to tell the two apart: asyncio still calls a transport
 /// "open" after `loop.close()`, because that never delivers `connection_lost`.
 const CLOSE_REQUESTED: u32 = 1 << 10;
+const ALLOCATING_READ_BUFFER: u32 = 1 << 11;
+const READ_STATE_PENDING: u32 = 1 << 12;
 
 pub const KIND_TCP: c_int = 0;
 pub const KIND_PIPE: c_int = 1;
@@ -328,6 +330,7 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
     defer st.gilExit();
 
     if (self.flags & BUFFERED != 0) {
+        self.flags |= ALLOCATING_READ_BUFFER;
         const size = py.int(@as(c.Py_ssize_t, 65536)) orelse {
             c.PyErr_Clear();
             buf.* = .{ .base = @ptrFromInt(@alignOf(u8)), .len = 0 };
@@ -348,6 +351,10 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
         if (target) |t| {
             defer py.decref(t);
             if (c.PyObject_GetBuffer(t, &self.view, c.PyBUF_WRITABLE) == 0) {
+                if (self.flags & READ_STATE_PENDING != 0) {
+                    buf.* = .{ .base = @ptrFromInt(@alignOf(u8)), .len = 0 };
+                    return;
+                }
                 // A short read is always allowed, so a buffer wider than the
                 // platform's vector element is simply not filled past it.
                 const avail = @min(@as(usize, @intCast(self.view.len)), uv.Buf.max_len);
@@ -385,8 +392,20 @@ fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) vo
     st.gilEnter();
     defer st.gilExit();
 
+    const allocated_with_python = self.flags & ALLOCATING_READ_BUFFER != 0;
+    self.flags &= ~ALLOCATING_READ_BUFFER;
     const buffered = self.flags & BUFFERED != 0;
     if (buffered and self.view.obj != null) c.PyBuffer_Release(&self.view);
+    if (allocated_with_python and self.flags & READ_STATE_PENDING != 0) {
+        self.flags &= ~READ_STATE_PENDING;
+        py.clear(&self.read_bytes);
+        if (self.flags & READING != 0) {
+            _ = uv.uv_read_stop(self.stream());
+            self.flags &= ~READING;
+        }
+        if (self.flags & CLOSING != 0 and self.write_buffer_size == 0) shutdownAndClose(self);
+        return;
+    }
 
     // A write pipe reads only to learn that the peer went away; asyncio arms the
     // descriptor for the same reason and never delivers what arrives on it.
@@ -808,6 +827,10 @@ fn closeTransport(self: *Transport) void {
     if (self.flags & CLOSING != 0) return;
     flushPending(self);
     self.flags |= CLOSING;
+    if (self.flags & ALLOCATING_READ_BUFFER != 0) {
+        self.flags |= READ_STATE_PENDING;
+        return;
+    }
     if (self.flags & READING != 0) {
         _ = uv.uv_read_stop(self.stream());
         self.flags &= ~READING;
@@ -826,6 +849,10 @@ fn forceClose(self: *Transport, exc: ?*py.Object) void {
     }
     self.flags |= CLOSING;
     self.write_buffer_size = 0;
+    if (self.flags & ALLOCATING_READ_BUFFER != 0) {
+        self.flags |= READ_STATE_PENDING;
+        return;
+    }
     shutdownAndClose(self);
 }
 
@@ -900,6 +927,10 @@ fn isReading(self_obj: *py.Object) py.Error!*py.Object {
 fn pauseReading(self_obj: *py.Object) py.Error!*py.Object {
     const self = asTransport(self_obj);
     if (self.flags & READING != 0) {
+        if (self.flags & ALLOCATING_READ_BUFFER != 0) {
+            self.flags |= READ_STATE_PENDING;
+            return py.noneRef();
+        }
         try py.errUvIfNeg(uv.uv_read_stop(self.stream()));
         self.flags &= ~READING;
     }
