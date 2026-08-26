@@ -257,9 +257,9 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
 fn clear_(obj: ?*py.Object) callconv(.c) c_int {
     const self = payload(obj.?);
     clearArgs(self);
-    py.clear(&self.loop);
     py.clear(&self.callback);
-    py.clear(&self.context);
+    contextmod.release(self.loop, &self.context, self.flags);
+    py.clear(&self.loop);
     return 0;
 }
 
