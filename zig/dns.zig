@@ -457,6 +457,7 @@ pub fn getaddrinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
     hints.socktype = try py.asCInt(args[3].?);
     hints.protocol = try py.asCInt(args[4].?);
     hints.flags = @bitCast(@as(u32, @bitCast(try py.asCInt(args[5].?))));
+    try loopmod.checkClosed(loop.state());
 
     // libuv refuses this pair outright, before any resolver sees it, and reports
     // it as EINVAL. The resolver the standard library reaches would have answered
@@ -496,6 +497,7 @@ pub fn getaddrinfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py
 
     const req = try allocRequest(loop, .getaddrinfo);
     errdefer freeRequest(req, .getaddrinfo);
+    try loopmod.checkClosed(loop.state());
     req.hints = hints;
     @memcpy(req.host[0..host_buf.len], &host_buf);
     @memcpy(req.service[0..service_buf.len], &service_buf);
