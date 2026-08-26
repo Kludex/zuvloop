@@ -21,7 +21,9 @@ trap 'rm -rf "$tmp"' EXIT
 curl -fsSL "$url" -o "$tmp/libuv.tar.gz"
 printf '%s  %s\n' "$checksum" "$tmp/libuv.tar.gz" | shasum -a 256 -c -
 tar xzf "$tmp/libuv.tar.gz" -C "$tmp"
-patch --batch --forward -d "$tmp/libuv-v${version}" -p1 < "$here/patches/libuv/0001-expose-udp-recv-address-length.patch"
+for patch_file in "$here"/patches/libuv/*.patch; do
+    patch --batch --forward -d "$tmp/libuv-v${version}" -p1 < "$patch_file"
+done
 rm -rf "$here/libuv"
 mv "$tmp/libuv-v${version}" "$here/libuv"
 
