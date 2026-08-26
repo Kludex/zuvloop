@@ -321,6 +321,22 @@ def test_threadsafe_inbox_does_not_retain_an_abandoned_loop() -> None:
     assert handle_ref() is None
 
 
+def test_close_tracks_a_retained_threadsafe_handle_cycle() -> None:
+    loop = zuvloop.new_event_loop()
+    handles: list[asyncio.Handle] = []
+    handle = loop.call_soon_threadsafe(handles.clear)
+    handles.append(handle)
+    loop_ref = weakref.ref(loop)
+    handle_ref = weakref.ref(handle)
+    loop.close()
+
+    del handle, handles, loop
+    gc.collect()
+
+    assert loop_ref() is None
+    assert handle_ref() is None
+
+
 def test_asyncio_run_accepts_the_loop_factory() -> None:
     async def main() -> str:
         return type(running_loop()).__name__

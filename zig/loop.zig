@@ -24,6 +24,7 @@ const alloc = std.heap.c_allocator;
 
 /// Timers below this many cancelled entries are never compacted.
 const min_cancelled_timers = 100;
+const context_pool_capacity = 16;
 
 pub const State = struct {
     uvloop: *uv.Loop,
@@ -38,6 +39,8 @@ pub const State = struct {
     timers: collections.Timers = .empty,
     pollers: pollermod.Map = .empty,
     scratch: ?[*]u8 = null,
+    empty_contexts: [context_pool_capacity]?*py.Object = .{null} ** context_pool_capacity,
+    empty_contexts_len: usize = 0,
     dns_requests: ?*anyopaque = null,
     transport_head: ?*transportmod.Transport = null,
     flush_head: ?*transportmod.Transport = null,
@@ -53,6 +56,7 @@ pub const State = struct {
     debug: bool = false,
     slow_callback_monitoring: bool = false,
     idle_active: bool = false,
+    waker_pending: bool = false,
     timer_active: bool = false,
     sampler_active: bool = false,
     flusher_active: bool = false,
@@ -168,6 +172,7 @@ fn onWake(waker: ?*uv.Async) callconv(.c) void {
     const st = self.state();
     st.gilEnter();
     defer st.gilExit();
+    st.waker_pending = false;
     startIdle(st);
 }
 
@@ -263,6 +268,38 @@ pub inline fn startIdle(st: *State) void {
     if (!st.idle_active and st.ready.len != 0) {
         _ = uv.uv_idle_start(st.idle, onIdle);
         st.idle_active = true;
+    }
+}
+
+pub fn takeEmptyContext(loop_obj: *py.Object) ?*py.Object {
+    const st = asLoop(loop_obj).state();
+    if (st.empty_contexts_len == 0) return null;
+    st.empty_contexts_len -= 1;
+    const context = st.empty_contexts[st.empty_contexts_len];
+    st.empty_contexts[st.empty_contexts_len] = null;
+    return context;
+}
+
+pub fn recycleEmptyContext(loop_obj: *py.Object, context: *py.Object) bool {
+    const st = asLoop(loop_obj).state();
+    if (st.closed or st.empty_contexts_len == context_pool_capacity) return false;
+    st.empty_contexts[st.empty_contexts_len] = context;
+    st.empty_contexts_len += 1;
+    return true;
+}
+
+fn clearEmptyContexts(st: *State) void {
+    while (st.empty_contexts_len > 0) {
+        st.empty_contexts_len -= 1;
+        py.clear(&st.empty_contexts[st.empty_contexts_len]);
+    }
+}
+
+fn trackRetainedThreadSafeHandles(st: *State) void {
+    var i: usize = 0;
+    while (i < st.ready.len) : (i += 1) {
+        const handle = st.ready.items[(st.ready.head + i) & (st.ready.items.len - 1)].?;
+        if (tshandle.owns(handle)) tshandle.trackIfRetained(handle);
     }
 }
 
@@ -498,9 +535,12 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
         py.decref(h);
         return py.errNoMemory();
     };
-    // The only libuv call legal from a foreign thread; `uv_idle_start` is not, so
-    // the idle handle is armed by the waker on the loop thread.
-    _ = uv.uv_async_send(st.waker);
+    // libuv clears its pending bit before `onWake` acquires the GIL. Keep one at
+    // this layer so a producer cannot issue another kernel wake in that window.
+    if (!st.idle_active and !st.waker_pending) {
+        st.waker_pending = true;
+        _ = uv.uv_async_send(st.waker);
+    }
     return h;
 }
 
@@ -713,8 +753,10 @@ fn closeLoop(self_obj: *py.Object) py.Error!*py.Object {
     if (st.closed) return py.noneRef();
     st.closed = true;
 
+    trackRetainedThreadSafeHandles(st);
     st.ready.deinit();
     st.timers.deinit();
+    clearEmptyContexts(st);
     dropFlushList(st);
     py.clear(&st.fatal);
     py.clear(&st.metrics_cb);
@@ -923,8 +965,10 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
         const needs_close = !st.closed;
         st.closed = true;
         if (needs_close) {
+            trackRetainedThreadSafeHandles(st);
             st.ready.deinit();
             st.timers.deinit();
+            clearEmptyContexts(st);
         }
         // The flush list owns one Python reference per transport regardless of
         // how the loop reached deallocation, including partially completed
@@ -952,7 +996,11 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
         if (r != 0) return r;
         var i: usize = 0;
         while (i < st.ready.len) : (i += 1) {
-            r = py.visit(st.ready.items[(st.ready.head + i) & (st.ready.items.len - 1)], visitproc, arg);
+            const handle = st.ready.items[(st.ready.head + i) & (st.ready.items.len - 1)].?;
+            r = if (tshandle.owns(handle))
+                tshandle.traverseQueued(handle, visitproc, arg)
+            else
+                py.visit(handle, visitproc, arg);
             if (r != 0) return r;
         }
         i = 0;
