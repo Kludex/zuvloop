@@ -140,9 +140,11 @@ fn copyZ(dst: []u8, value: *py.Object, what: [:0]const u8) py.Error!?[*:0]const 
         _ = c.PyErr_Format(py.exc_type_error, "%s must be str, bytes, int or None", what.ptr);
         return py.Error.Python;
     }
-    if (@as(usize, @intCast(len)) >= dst.len) return py.errValue("value too long");
-    @memcpy(dst[0..@intCast(len)], src[0..@intCast(len)]);
-    dst[@intCast(len)] = 0;
+    const value_len: usize = @intCast(len);
+    if (std.mem.indexOfScalar(u8, src[0..value_len], 0) != null) return py.errValue("embedded null byte");
+    if (value_len >= dst.len) return py.errValue("value too long");
+    @memcpy(dst[0..value_len], src[0..value_len]);
+    dst[value_len] = 0;
     return @ptrCast(dst.ptr);
 }
 
