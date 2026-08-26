@@ -615,8 +615,8 @@ class ConnectionOperations(SendfileOperations):
             # Until libuv adopts the descriptor, the socket is still ours.
             sock.close()
             raise
-        transport._start_receiving()
         self.call_soon(protocol.connection_made, transport)
+        self.call_soon(transport._start_receiving)
         self.call_soon(_set_result_unless_done, waiter)
         try:
             await waiter

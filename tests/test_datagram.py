@@ -105,6 +105,32 @@ async def test_datagram_round_trip() -> None:
         server.close()
 
 
+async def test_connection_made_precedes_buffered_datagrams() -> None:
+    loop = running_loop()
+    receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    receiver.bind(("127.0.0.1", 0))
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sender.sendto(b"queued", receiver.getsockname())
+    seen: list[str] = []
+    received = loop.create_future()
+
+    class OrderedProtocol(asyncio.DatagramProtocol):
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            seen.append("connection_made")
+
+        def datagram_received(self, data: bytes, addr: Address) -> None:
+            seen.append("datagram_received")
+            received.set_result(data)
+
+    transport, _ = await loop.create_datagram_endpoint(OrderedProtocol, sock=receiver)
+    try:
+        assert await asyncio.wait_for(received, 2) == b"queued"
+        assert seen == ["connection_made", "datagram_received"]
+    finally:
+        transport.close()
+        sender.close()
+
+
 async def test_a_connected_endpoint_needs_no_address() -> None:
     server, _echo, address = await start_echo()
     client, protocol = await running_loop().create_datagram_endpoint(Collector, remote_addr=address)
