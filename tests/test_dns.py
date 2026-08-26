@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import socket
 from collections.abc import Sequence
+from typing import Any
 
 import pytest
 
 from tests.conftest import running_loop
-from zuvloop import new_event_loop
+from zuvloop import EventLoop, new_event_loop
 
 pytestmark = pytest.mark.anyio
 
@@ -17,6 +18,30 @@ type AddrInfo = tuple[int, int, int, str, Sockaddr]
 # `Sequence` rather than `list` because the two APIs disagree on how narrowly they
 # type the family and the address, and only a covariant container accepts both.
 type Outcome = Sequence[AddrInfo] | tuple[int, str]
+
+
+def test_getaddrinfo_uses_stdlib_idna_normalization() -> None:
+    class RecordingLoop(EventLoop):
+        def _getaddrinfo(
+            self,
+            host: str | bytes | None,
+            port: str | bytes | int | None,
+            family: int,
+            kind: int,
+            proto: int,
+            flags: int,
+        ) -> asyncio.Future[Sequence[tuple[int, int, int, str, tuple[Any, ...]]]]:
+            self.host = host
+            future: asyncio.Future[Sequence[tuple[int, int, int, str, tuple[Any, ...]]]] = self.create_future()
+            future.set_result([])
+            return future
+
+    loop = RecordingLoop()
+    try:
+        loop.run_until_complete(loop.getaddrinfo("faß.de", 80))
+        assert loop.host == b"fass.de"
+    finally:
+        loop.close()
 
 
 async def test_getaddrinfo_resolves_localhost() -> None:

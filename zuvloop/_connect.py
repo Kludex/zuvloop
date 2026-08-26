@@ -57,6 +57,8 @@ class ConnectionOperations(SendfileOperations):
         proto: int = 0,
         flags: int = 0,
     ) -> Sequence[tuple[int, int, int, str, tuple[Any, ...]]]:
+        if isinstance(host, str) and not host.isascii():
+            host = host.encode("idna")
         return await self._getaddrinfo(host, port, family, type, proto, flags)
 
     async def getnameinfo(self, sockaddr: tuple[Any, ...], flags: int = 0) -> tuple[str, str]:
