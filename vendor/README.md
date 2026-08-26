@@ -15,6 +15,10 @@ caller-supplied destination length through libuv's UDP paths. Linux needs those 
 abstract UNIX names whose bytes differ only by trailing NULs. The updater applies the patch before
 replacing the existing tree and fails if a future libuv release no longer accepts it cleanly.
 
+`0002-preserve-adopted-udp-reuse-options.patch` keeps `uv_udp_open()` from enabling address reuse on
+an existing socket. Asyncio enables port reuse only when you pass `reuse_port=True`; changing the
+option during adoption would let another local process bind the endpoint's address.
+
 A weekly workflow checks for a new signed release, verifies its signer against
 `libuv-maintainer-keys.txt`, tests every supported target, and opens an update pull request. For a
 manual update, verify the checksum through an independent channel, then run

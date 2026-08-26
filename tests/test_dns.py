@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from tests.conftest import running_loop
-from zuvloop import EventLoop
+from zuvloop import EventLoop, new_event_loop
 
 pytestmark = pytest.mark.anyio
 
@@ -140,6 +140,19 @@ async def test_getaddrinfo_without_a_host_or_a_port_reports_no_name() -> None:
     with pytest.raises(socket.gaierror) as stdlib:
         socket.getaddrinfo(None, None)
     assert caught.value.args == stdlib.value.args
+
+
+def test_getaddrinfo_rechecks_the_loop_after_argument_conversion() -> None:
+    loop = new_event_loop()
+
+    class ClosingFamily:
+        def __index__(self) -> int:
+            loop.close()
+            return int(socket.AF_UNSPEC)
+
+    call = loop.getaddrinfo("localhost", 80, family=ClosingFamily())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="Event loop is closed"):
+        call.send(None)
 
 
 @pytest.mark.parametrize(

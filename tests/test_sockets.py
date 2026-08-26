@@ -7,6 +7,7 @@ import sys
 import pytest
 
 from tests.conftest import running_loop
+from zuvloop import new_event_loop
 
 pytestmark = pytest.mark.anyio
 requires_unix_sockets = pytest.mark.skipif(sys.platform == "win32", reason="Windows has no Unix sockets")
@@ -262,6 +263,23 @@ async def test_add_reader_rejects_an_invalid_descriptor() -> None:
         loop.add_reader(-1, print)
     with pytest.raises(OSError):
         loop.add_reader(9999, print)
+
+
+def test_add_reader_rechecks_the_loop_after_descriptor_conversion() -> None:
+    loop = new_event_loop()
+    left, right = socket.socketpair()
+
+    class ClosingFD:
+        def fileno(self) -> int:
+            loop.close()
+            return right.fileno()
+
+    try:
+        with pytest.raises(RuntimeError, match="Event loop is closed"):
+            loop.add_reader(ClosingFD(), lambda: None)
+    finally:
+        left.close()
+        right.close()
 
 
 async def test_remove_reader_for_an_unwatched_descriptor() -> None:

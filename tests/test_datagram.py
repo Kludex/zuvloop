@@ -14,7 +14,7 @@ from typing import NoReturn
 import pytest
 
 from tests.conftest import running_loop
-from zuvloop import _connect, _zuvloop
+from zuvloop import _connect, _zuvloop, new_event_loop
 
 pytestmark = pytest.mark.anyio
 requires_unix_sockets = pytest.mark.skipif(sys.platform == "win32", reason="Windows has no Unix sockets")
@@ -103,6 +103,48 @@ async def test_datagram_round_trip() -> None:
     finally:
         client.close()
         server.close()
+
+
+async def test_connection_made_precedes_buffered_datagrams() -> None:
+    loop = running_loop()
+    receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    receiver.bind(("127.0.0.1", 0))
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sender.sendto(b"queued", receiver.getsockname())
+    seen: list[str] = []
+    received = loop.create_future()
+
+    class OrderedProtocol(asyncio.DatagramProtocol):
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            seen.append("connection_made")
+
+        def datagram_received(self, data: bytes, addr: Address) -> None:
+            seen.append("datagram_received")
+            received.set_result(data)
+
+    transport, _ = await loop.create_datagram_endpoint(OrderedProtocol, sock=receiver)
+    try:
+        assert await asyncio.wait_for(received, 2) == b"queued"
+        assert seen == ["connection_made", "datagram_received"]
+    finally:
+        transport.close()
+        sender.close()
+
+
+def test_datagram_adoption_rechecks_the_loop_after_protocol_binding() -> None:
+    loop = new_event_loop()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    class ClosingProtocol(asyncio.DatagramProtocol):
+        def __getattribute__(self, name: str) -> object:
+            if name == "connection_lost":
+                loop.close()
+            return super().__getattribute__(name)
+
+    call = loop.create_datagram_endpoint(ClosingProtocol, sock=sock)
+    with pytest.raises(RuntimeError, match="Event loop is closed"):
+        call.send(None)
+    assert sock.fileno() == -1
 
 
 async def test_a_connected_endpoint_needs_no_address() -> None:
@@ -388,6 +430,25 @@ async def test_reuse_port_is_applied() -> None:
     try:
         sock = transport.get_extra_info("socket")
         assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT) != 0
+    finally:
+        transport.close()
+
+
+async def test_address_reuse_is_not_enabled_during_adoption() -> None:
+    transport, _ = await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
+    try:
+        sock = transport.get_extra_info("socket")
+        assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR) == 0
+    finally:
+        transport.close()
+
+
+@pytest.mark.skipif(not hasattr(socket, "SO_REUSEPORT"), reason="Platform has no SO_REUSEPORT")
+async def test_port_reuse_is_not_enabled_during_adoption() -> None:
+    transport, _ = await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
+    try:
+        sock = transport.get_extra_info("socket")
+        assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT) == 0
     finally:
         transport.close()
 

@@ -548,6 +548,8 @@ class ConnectionOperations(SendfileOperations):
         ssl_handshake_timeout: float | None = None,
         ssl_shutdown_timeout: float | None = None,
     ) -> asyncio.Transport:
+        if not isinstance(sslcontext, ssl_module.SSLContext):
+            raise TypeError(f"sslcontext is expected to be an instance of ssl.SSLContext, got {sslcontext!r}")
         if not isinstance(transport, asyncio.Transport):
             raise TypeError("transport must support both reading and writing")
         waiter = self.create_future()
@@ -617,8 +619,8 @@ class ConnectionOperations(SendfileOperations):
             # Until libuv adopts the descriptor, the socket is still ours.
             sock.close()
             raise
-        transport._start_receiving()
         self.call_soon(protocol.connection_made, transport)
+        self.call_soon(transport._start_receiving)
         self.call_soon(_set_result_unless_done, waiter)
         try:
             await waiter

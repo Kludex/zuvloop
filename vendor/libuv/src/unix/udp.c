@@ -920,10 +920,6 @@ int uv_udp_open(uv_udp_t* handle, uv_os_sock_t sock) {
   if (err)
     return err;
 
-  err = uv__sock_reuseaddr(sock);
-  if (err)
-    return err;
-
   handle->io_watcher.fd = sock;
   if (uv__udp_is_connected(handle))
     handle->flags |= UV_HANDLE_UDP_CONNECTED;
