@@ -10,6 +10,7 @@
 const std = @import("std");
 const py = @import("py.zig");
 const c = py.c;
+const contextmod = @import("context.zig");
 const handlemod = @import("handle.zig");
 const loopmod = @import("loop.zig");
 
@@ -21,7 +22,6 @@ const RUNNING: u32 = 1;
 /// Ran, or cancelled before it could run; either way it never will again.
 const DONE: u32 = 2;
 const cancelled_flag: u32 = 1 << 0;
-const captured_context_flag: u32 = 1 << 1;
 
 /// One blocked `cancel` or `cancelled` call, parked on a lock it acquired
 /// twice; the loop thread releases it when the callback finishes. Lives on the
@@ -55,14 +55,6 @@ const Payload = extern struct {
 pub var ts_type: ?*c.PyTypeObject = null;
 const payload_offset = @sizeOf(c.PyObject);
 threadlocal var running_payload: ?*Payload = null;
-
-const ContextObject = extern struct {
-    ob_base: c.PyObject,
-    previous: ?*ContextObject,
-    variables: ?*py.Object,
-    weakrefs: ?*py.Object,
-    entered: c_int,
-};
 
 inline fn payload(obj: *py.Object) *Payload {
     return @ptrFromInt(@intFromPtr(obj) + payload_offset);
@@ -105,28 +97,10 @@ pub fn create(
     py.incref(callback);
     self.callback = callback;
 
-    if (context) |ctx| {
-        py.incref(ctx);
-        self.context = ctx;
-    } else {
-        self.flags |= captured_context_flag;
-        const thread_state = c.PyThreadState_Get();
-        const current_slot: *?*py.Object = @ptrFromInt(
-            @intFromPtr(thread_state) + c.ZUVLOOP_PYTHREADSTATE_CONTEXT_OFFSET,
-        );
-        const current = current_slot.*;
-        const context_size = if (current) |current_context| c.PyObject_Size(current_context) else 0;
-        if (context_size < 0) {
-            py.decref(obj);
-            return py.Error.Python;
-        }
-        if (context_size != 0) {
-            self.context = c.PyContext_CopyCurrent() orelse {
-                py.decref(obj);
-                return py.Error.Python;
-            };
-        }
-    }
+    self.context = contextmod.capture(context, &self.flags) catch {
+        py.decref(obj);
+        return py.Error.Python;
+    };
 
     return obj;
 }
@@ -151,18 +125,11 @@ pub fn run(obj: *py.Object) void {
         }
     }
     const callback = self.callback.?;
-    const context = materializeContext(self) catch {
+    const context = contextmod.materialize(self.loop, &self.context) catch {
         loopmod.callbackFailed(self.loop, obj);
         return;
     };
     handlemod.invoke(obj, self.loop, callback, self.argv(), self.nargs, context);
-}
-
-fn materializeContext(self: *Payload) py.Error!*py.Object {
-    if (self.context) |context| return context;
-    const context = loopmod.takeEmptyContext(self.loop.?) orelse c.PyContext_New() orelse return py.Error.Python;
-    self.context = context;
-    return context;
 }
 
 /// Parks until the running callback finishes. The GIL is released for the
@@ -256,27 +223,10 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     c.PyObject_ClearWeakRefs(obj);
     clearArgs(self);
     py.clear(&self.callback);
-    releaseContext(self);
+    contextmod.release(self.loop, &self.context, self.flags);
     py.clear(&self.loop);
     tp.tp_free.?(obj);
     py.decref(tp);
-}
-
-fn releaseContext(self: *Payload) void {
-    const context = self.context orelse return;
-    self.context = null;
-    if (self.flags & captured_context_flag != 0 and c.Py_REFCNT(context) == 1) {
-        const context_obj: *ContextObject = @ptrCast(@alignCast(context));
-        const size = c.PyObject_Size(context);
-        if (size == 0 and context_obj.weakrefs == null and context_obj.entered == 0) {
-            if (self.loop) |loop| {
-                if (loopmod.recycleEmptyContext(loop, context)) return;
-            }
-        } else if (size < 0) {
-            c.PyErr_Clear();
-        }
-    }
-    py.decref(context);
 }
 
 fn visitReferences(obj: *py.Object, visitproc: c.visitproc, arg: ?*anyopaque) c_int {
@@ -342,7 +292,8 @@ fn getLoop(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 
 fn getContext(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
     trackIfRetained(self_obj.?);
-    const context = materializeContext(payload(self_obj.?)) catch return null;
+    const self = payload(self_obj.?);
+    const context = contextmod.materialize(self.loop, &self.context) catch return null;
     return py.newref(context);
 }
 
