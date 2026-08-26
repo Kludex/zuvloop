@@ -48,9 +48,13 @@ pub fn fromPython(family: c_int, address: *py.Object, out: *Storage) py.Error!c_
         }
         const un: *posix.sockaddr.un = @ptrCast(out);
         if (len >= un.path.len) return py.errValue("AF_UNIX path too long");
+        const path_len: usize = @intCast(len);
+        if (path_len != 0 and path[0] != 0 and std.mem.indexOfScalar(u8, path[0..path_len], 0) != null) {
+            return py.errValue("embedded null byte");
+        }
         un.family = @intCast(AF_UNIX);
-        @memcpy(un.path[0..@intCast(len)], path[0..@intCast(len)]);
-        return @intCast(UN_BASE + @as(usize, @intCast(len)));
+        @memcpy(un.path[0..path_len], path[0..path_len]);
+        return @intCast(UN_BASE + path_len);
     }
 
     if (c.PyTuple_Check(address) == 0) return py.errType("address must be a tuple");
