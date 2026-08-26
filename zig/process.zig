@@ -290,6 +290,7 @@ pub fn spawnProcess(self_obj: *py.Object, args_in: []const ?*py.Object) py.Error
     options.stdio = spawn.stdio.items.ptr;
     options.uid = @intCast(try py.asCInt(args_in[6].?));
     options.gid = @intCast(try py.asCInt(args_in[7].?));
+    try loopmod.checkClosed(st);
 
     uv.setData(self.handle(), self);
     const status = uv.uv_spawn(st.uvloop, self.handle(), &options);

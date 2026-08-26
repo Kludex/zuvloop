@@ -135,9 +135,15 @@ fn add(self_obj: *py.Object, args: []const ?*py.Object, comptime writer: bool) p
     const st = loop.state();
     try loopmod.checkClosed(st);
     const fd = try py.asFd(args[0].?);
-
-    const poller = try get(st, loop, fd);
     const h = try handlemod.create(handlemod.handle_type.?, self_obj, args[1].?, args[2..], null);
+    loopmod.checkClosed(st) catch |err| {
+        py.decref(h);
+        return err;
+    };
+    const poller = get(st, loop, fd) catch |err| {
+        py.decref(h);
+        return err;
+    };
     const slot = if (writer) &poller.writer else &poller.reader;
     // The slot has to name the new handle before the old one is released; see
     // `destroy`. The `defer` also covers the error path out of `rearm`.

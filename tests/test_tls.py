@@ -276,3 +276,8 @@ async def test_start_tls_closes_the_transport_when_the_handshake_fails(client_co
 async def test_start_tls_rejects_a_write_only_transport(client_context: ssl.SSLContext) -> None:
     with pytest.raises(TypeError, match="both reading and writing"):
         await running_loop().start_tls(asyncio.WriteTransport(), asyncio.Protocol(), client_context)
+
+
+async def test_start_tls_rejects_an_invalid_ssl_context() -> None:
+    with pytest.raises(TypeError, match="expected to be an instance of ssl.SSLContext"):
+        await running_loop().start_tls(asyncio.Transport(), asyncio.Protocol(), None)  # type: ignore[arg-type]

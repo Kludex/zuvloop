@@ -14,7 +14,7 @@ from typing import NoReturn
 import pytest
 
 from tests.conftest import running_loop
-from zuvloop import _connect, _zuvloop
+from zuvloop import _connect, _zuvloop, new_event_loop
 
 pytestmark = pytest.mark.anyio
 requires_unix_sockets = pytest.mark.skipif(sys.platform == "win32", reason="Windows has no Unix sockets")
@@ -129,6 +129,22 @@ async def test_connection_made_precedes_buffered_datagrams() -> None:
     finally:
         transport.close()
         sender.close()
+
+
+def test_datagram_adoption_rechecks_the_loop_after_protocol_binding() -> None:
+    loop = new_event_loop()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    class ClosingProtocol(asyncio.DatagramProtocol):
+        def __getattribute__(self, name: str) -> object:
+            if name == "connection_lost":
+                loop.close()
+            return super().__getattribute__(name)
+
+    call = loop.create_datagram_endpoint(ClosingProtocol, sock=sock)
+    with pytest.raises(RuntimeError, match="Event loop is closed"):
+        call.send(None)
+    assert sock.fileno() == -1
 
 
 async def test_a_connected_endpoint_needs_no_address() -> None:
