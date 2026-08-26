@@ -392,6 +392,17 @@ async def test_reuse_port_is_applied() -> None:
         transport.close()
 
 
+async def test_address_reuse_is_not_enabled_during_adoption() -> None:
+    transport, _ = await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))
+    try:
+        sock = transport.get_extra_info("socket")
+        assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR) == 0
+        if hasattr(socket, "SO_REUSEPORT"):
+            assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT) == 0
+    finally:
+        transport.close()
+
+
 async def test_an_address_must_be_a_host_port_pair() -> None:
     with pytest.raises(TypeError, match="host, port"):
         await running_loop().create_datagram_endpoint(Collector, local_addr="not-a-pair")
