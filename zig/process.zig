@@ -138,19 +138,26 @@ fn onExit(handle: ?*uv.Process, status: i64, signal: c_int) callconv(.c) void {
     self.flags |= EXITED;
 
     if (self.on_exit) |callback| {
+        const loop = loopmod.asLoop(self.loop.?);
         const code = py.int(@as(c.Py_ssize_t, self.returncode)) orelse {
-            c.PyErr_Clear();
+            loopmod.captureFatal(loop);
             closeHandle(self);
             return;
         };
         defer py.decref(code);
         var argv = [_]?*py.Object{code};
         const h = handlemod.create(handlemod.handle_type.?, self.loop.?, callback, argv[0..1], self.context) catch {
-            c.PyErr_Clear();
+            loopmod.captureFatal(loop);
             closeHandle(self);
             return;
         };
-        st.ready.push(@ptrCast(h)) catch py.decref(h);
+        st.ready.push(@ptrCast(h)) catch {
+            py.decref(h);
+            py.errNoMemory() catch {};
+            loopmod.captureFatal(loop);
+            closeHandle(self);
+            return;
+        };
         loopmod.startIdle(st);
     }
     closeHandle(self);
