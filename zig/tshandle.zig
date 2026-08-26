@@ -72,8 +72,9 @@ pub inline fn owns(obj: *py.Object) bool {
     return py.typeOf(obj) == ts_type.?;
 }
 
-pub fn trackIfRetained(obj: *py.Object) void {
-    if (c.Py_REFCNT(obj) > 1 and c.PyObject_GC_IsTracked(obj) == 0) c.PyObject_GC_Track(obj);
+/// Untracks a handle owned only by the ready queue and candidate slot.
+pub fn untrackIfQueueOnly(obj: *py.Object) void {
+    if (c.Py_REFCNT(obj) == 2 and c.PyObject_GC_IsTracked(obj) != 0) c.PyObject_GC_UnTrack(obj);
 }
 
 pub fn create(
@@ -128,14 +129,13 @@ pub fn create(
         }
     }
 
+    c.PyObject_GC_Track(obj);
     return obj;
 }
 
 /// Runs the callback unless a cancellation already won the state word, then
 /// releases any thread blocked in `cancel` or `cancelled`.
 pub fn run(obj: *py.Object) void {
-    trackIfRetained(obj);
-    defer trackIfRetained(obj);
     const self = payload(obj);
     if (@cmpxchgStrong(u32, &self.run_state, PENDING, RUNNING, .acq_rel, .acquire) != null) return;
     const previous_running = running_payload;
@@ -210,7 +210,6 @@ fn clearArgs(self: *Payload) void {
 }
 
 fn cancel(self_obj: *py.Object) py.Error!*py.Object {
-    trackIfRetained(self_obj);
     const self = payload(self_obj);
     while (true) {
         const s = @atomicLoad(u32, &self.run_state, .acquire);
@@ -230,7 +229,6 @@ fn cancel(self_obj: *py.Object) py.Error!*py.Object {
 }
 
 fn cancelled(self_obj: *py.Object) py.Error!*py.Object {
-    trackIfRetained(self_obj);
     const self = payload(self_obj);
     if (mustWait(self)) awaitCompletion(self);
     return py.boolRef(self.flags & cancelled_flag != 0);
@@ -242,7 +240,6 @@ fn runMethod(self_obj: *py.Object) py.Error!*py.Object {
 }
 
 fn repr(obj: ?*py.Object) callconv(.c) ?*py.Object {
-    trackIfRetained(obj.?);
     const self = payload(obj.?);
     const name = py.typeOf(obj.?).tp_name;
     if (self.flags & cancelled_flag != 0) return c.PyUnicode_FromFormat("<%s cancelled>", name);
@@ -297,9 +294,9 @@ fn visitReferences(obj: *py.Object, visitproc: c.visitproc, arg: ?*anyopaque) c_
     return py.visit(@ptrCast(py.typeOf(obj)), visitproc, arg);
 }
 
+/// Visits queued references transparently when the handle is untracked.
 pub fn traverseQueued(obj: *py.Object, visitproc: c.visitproc, arg: ?*anyopaque) c_int {
     if (c.PyObject_GC_IsTracked(obj) != 0) return py.visit(obj, visitproc, arg);
-    if (c.Py_REFCNT(obj) != 1) return 0;
     return visitReferences(obj, visitproc, arg);
 }
 
@@ -341,7 +338,6 @@ fn getLoop(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 }
 
 fn getContext(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
-    trackIfRetained(self_obj.?);
     const context = materializeContext(payload(self_obj.?)) catch return null;
     return py.newref(context);
 }
