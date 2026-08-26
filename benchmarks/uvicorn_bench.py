@@ -156,12 +156,13 @@ def main() -> int:
     print()
     for body_name in BODY_SIZES:
         print(body_name)
-        best = {name: max(values) for name, values in samples[body_name].items()}
-        for name, value in best.items():
-            spread = statistics.pstdev(samples[body_name][name]) / value if len(samples[body_name][name]) > 1 else 0.0
+        medians = {name: statistics.median(values) for name, values in samples[body_name].items()}
+        for name, value in medians.items():
+            values = samples[body_name][name]
+            spread = statistics.pstdev(values) / statistics.mean(values) if len(values) > 1 else 0.0
             print(f"  {name:<8}{value:>12,.0f} req/s  (+/- {spread:.1%})")
-        if "uvloop" in best:
-            print(f"  {'':<8}{'zuvloop / uvloop':>12}  {best['zuvloop'] / best['uvloop']:.2f}x")
+        if "uvloop" in medians:
+            print(f"  {'':<8}{'zuvloop / uvloop':>12}  {medians['zuvloop'] / medians['uvloop']:.2f}x")
         print()
     return 0
 
