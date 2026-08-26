@@ -296,13 +296,19 @@ fn scheduleCall(self: *Transport, callback: ?*py.Object, arg: ?*py.Object) void 
     const cb = callback orelse return;
     const st = self.loopState();
     if (st.closed) return;
+    const loop = loopmod.asLoop(self.loop.?);
     var argv: [1]?*py.Object = .{arg};
     const n: usize = if (arg == null) 0 else 1;
     const h = handlemod.create(handlemod.handle_type.?, self.loop.?, cb, argv[0..n], self.context) catch {
-        c.PyErr_Clear();
+        loopmod.captureFatal(loop);
         return;
     };
-    st.ready.push(@ptrCast(h)) catch py.decref(h);
+    st.ready.push(@ptrCast(h)) catch {
+        py.decref(h);
+        py.errNoMemory() catch {};
+        loopmod.captureFatal(loop);
+        return;
+    };
     loopmod.startIdle(st);
 }
 
