@@ -404,7 +404,7 @@ fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) vo
     if (nread > 0) {
         if (buffered) {
             const n = py.int(@as(c.Py_ssize_t, @intCast(nread))) orelse {
-                c.PyErr_Clear();
+                forceClose(self, c.PyErr_GetRaisedException());
                 return;
             };
             defer py.decref(n);
@@ -417,13 +417,13 @@ fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) vo
                 self.read_bytes = null;
                 var resized = owned;
                 if (c._PyBytes_Resize(@ptrCast(&resized), @intCast(nread)) < 0) {
-                    c.PyErr_Clear();
+                    forceClose(self, c.PyErr_GetRaisedException());
                     return;
                 }
                 break :blk resized;
             }
             break :blk py.bytes(buf.base[0..@intCast(nread)]) orelse {
-                c.PyErr_Clear();
+                forceClose(self, c.PyErr_GetRaisedException());
                 return;
             };
         };
