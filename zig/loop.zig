@@ -25,6 +25,8 @@ const alloc = std.heap.c_allocator;
 /// Timers below this many cancelled entries are never compacted.
 const min_cancelled_timers = 100;
 const context_pool_capacity = 16;
+const ready_drain_batch_limit = 64;
+const ready_drain_callback_limit = 16 * 1024;
 
 pub const State = struct {
     uvloop: *uv.Loop,
@@ -52,6 +54,7 @@ pub const State = struct {
     critical_section_active: bool = false,
     fatal: ?*py.Object = null,
     metrics_cb: ?*py.Object = null,
+    task_factory: ?*py.Object = null,
 
     running: bool = false,
     closed: bool = false,
@@ -113,12 +116,21 @@ pub const LoopObject = extern struct {
 
 pub var loop_type: ?*c.PyTypeObject = null;
 
+const ReadyActivity = struct {
+    st: *State,
+    external_handles: usize = 0,
+};
+
 var str_call_exception_handler: ?*py.Object = null;
+var str_coro: ?*py.Object = null;
 var str_message: ?*py.Object = null;
 var str_exception: ?*py.Object = null;
 var str_handle: ?*py.Object = null;
 var str_context: ?*py.Object = null;
+var str_loop: ?*py.Object = null;
+var str_name: ?*py.Object = null;
 var str_on_slow_callback: ?*py.Object = null;
+var task_type: ?*py.Object = null;
 
 pub inline fn asLoop(obj: *py.Object) *LoopObject {
     return @ptrCast(@alignCast(obj));
@@ -168,11 +180,44 @@ fn onIdle(idle: ?*uv.Idle) callconv(.c) void {
     const st = self.state();
     st.pythonEnter();
     defer st.pythonExit();
-    runReady(self);
+    var batches: usize = 0;
+    var callbacks: usize = 0;
+    while (st.ready.len != 0) {
+        const batch = st.ready.len;
+        if (batches != 0 and
+            (batches >= ready_drain_batch_limit or
+                callbacks >= ready_drain_callback_limit or
+                batch > ready_drain_callback_limit - callbacks)) break;
+        runReady(self);
+        batches += 1;
+        callbacks += batch;
+        if (st.stopping or st.fatal != null or st.ready.len == 0) break;
+        if (st.timer_active or st.dns_requests != null) break;
+        var activity = ReadyActivity{ .st = st };
+        uv.uv_walk(st.uvloop, countExternalHandles, &activity);
+        // The self-pipe poller is the one external handle every loop owns.
+        if (activity.external_handles > 1) break;
+    }
     if (st.ready.len == 0 and st.idle_active) {
         _ = uv.uv_idle_stop(st.idle);
         st.idle_active = false;
     }
+}
+
+fn countExternalHandles(handle: ?*uv.Handle, arg: ?*anyopaque) callconv(.c) void {
+    const activity: *ReadyActivity = @ptrCast(@alignCast(arg.?));
+    const h = handle.?;
+    const internal = [_]*uv.Handle{
+        @ptrCast(activity.st.idle),
+        @ptrCast(activity.st.timer),
+        @ptrCast(activity.st.sampler),
+        @ptrCast(activity.st.waker),
+        @ptrCast(activity.st.flusher),
+    };
+    for (internal) |owned| {
+        if (h == owned) return;
+    }
+    activity.external_handles += 1;
 }
 
 fn onTimer(timer: ?*uv.Timer) callconv(.c) void {
@@ -662,6 +707,80 @@ fn setDebug(self_obj: *py.Object, value: *py.Object) py.Error!*py.Object {
     return py.noneRef();
 }
 
+fn createTask(
+    self_obj: *py.Object,
+    args: []const ?*py.Object,
+    nargs: usize,
+    kwnames: ?*py.Object,
+) py.Error!*py.Object {
+    if (nargs > 1) return py.errType("create_task() takes exactly one positional argument");
+    const self = asLoop(self_obj);
+    const st = self.state();
+    try checkClosed(st);
+    const keyword_count: usize = if (kwnames) |names| @intCast(c.PyTuple_Size(names)) else 0;
+    if (st.task_factory == null and st.running and nargs == 1 and keyword_count == 0) {
+        return py.call1(task_type.?, args[0].?) orelse py.Error.Python;
+    }
+
+    var coro: ?*py.Object = if (nargs == 1) args[0] else null;
+    const kwargs = c.PyDict_New() orelse return py.Error.Python;
+    defer py.decref(kwargs);
+    if (kwnames) |names| {
+        for (0..keyword_count) |i| {
+            const name = c.PyTuple_GetItem(names, @intCast(i)) orelse return py.Error.Python;
+            const is_coro = c.PyObject_RichCompareBool(name, str_coro.?, c.Py_EQ);
+            if (is_coro < 0) return py.Error.Python;
+            if (is_coro != 0) {
+                if (coro != null) return py.errType("create_task() got multiple values for argument 'coro'");
+                coro = args[nargs + i];
+            } else if (c.PyDict_SetItem(kwargs, name, args[nargs + i].?) < 0) {
+                return py.Error.Python;
+            }
+        }
+    }
+    const coroutine = coro orelse return py.errType("create_task() missing required argument 'coro'");
+
+    const factory = st.task_factory;
+    const positional_count: usize = if (factory == null) 1 else 2;
+    const positional = c.PyTuple_New(@intCast(positional_count)) orelse return py.Error.Python;
+    defer py.decref(positional);
+    if (factory) |_| {
+        py.incref(self_obj);
+        _ = c.PyTuple_SetItem(positional, 0, self_obj);
+        py.incref(coroutine);
+        _ = c.PyTuple_SetItem(positional, 1, coroutine);
+    } else {
+        py.incref(coroutine);
+        _ = c.PyTuple_SetItem(positional, 0, coroutine);
+    }
+    const defaults = .{ str_name.?, str_context.? };
+    inline for (defaults) |name| {
+        const present = c.PyDict_Contains(kwargs, name);
+        if (present < 0) return py.Error.Python;
+        if (present == 0 and c.PyDict_SetItem(kwargs, name, py.none()) < 0) return py.Error.Python;
+    }
+    if (factory == null) {
+        const has_loop = c.PyDict_Contains(kwargs, str_loop.?);
+        if (has_loop < 0) return py.Error.Python;
+        if (has_loop != 0) return py.errType("create_task() got multiple values for keyword argument 'loop'");
+        if (c.PyDict_SetItem(kwargs, str_loop.?, self_obj) < 0) return py.Error.Python;
+    }
+    return c.PyObject_Call(factory orelse task_type.?, positional, kwargs) orelse py.Error.Python;
+}
+
+fn setTaskFactory(self_obj: *py.Object, value: *py.Object) py.Error!*py.Object {
+    const st = asLoop(self_obj).state();
+    const replacement: ?*py.Object = if (py.isNone(value)) null else value;
+    if (replacement) |factory| py.incref(factory);
+    py.clear(&st.task_factory);
+    st.task_factory = replacement;
+    return py.noneRef();
+}
+
+fn getTaskFactory(self_obj: *py.Object) py.Error!*py.Object {
+    return py.newref(asLoop(self_obj).state().task_factory) orelse py.noneRef();
+}
+
 fn setSlowCallbackMonitoring(self_obj: *py.Object, value: *py.Object) py.Error!*py.Object {
     asLoop(self_obj).state().slow_callback_monitoring = try py.isTrue(value);
     return py.noneRef();
@@ -998,6 +1117,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
         // how the loop reached deallocation, including partially completed
         // explicit close paths.
         dropFlushList(st);
+        py.clear(&st.task_factory);
         if (needs_close) {
             py.clear(&st.fatal);
             py.clear(&st.metrics_cb);
@@ -1017,6 +1137,8 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
         var r = py.visit(st.fatal, visitproc, arg);
         if (r != 0) return r;
         r = py.visit(st.metrics_cb, visitproc, arg);
+        if (r != 0) return r;
+        r = py.visit(st.task_factory, visitproc, arg);
         if (r != 0) return r;
         r = py.visit(st.threadsafe_candidate, visitproc, arg);
         if (r != 0) return r;
@@ -1065,6 +1187,7 @@ fn clear_(obj: ?*py.Object) callconv(.c) c_int {
         st.timers.deinit();
         py.clear(&st.fatal);
         py.clear(&st.metrics_cb);
+        py.clear(&st.task_factory);
     }
     return 0;
 }
@@ -1081,6 +1204,9 @@ var methods = [_]c.PyMethodDef{
     py.methodNoArgs("is_closed", isClosed, "Return True once the loop is closed."),
     py.methodNoArgs("get_debug", getDebug, "Return the debug mode flag."),
     py.methodO("set_debug", setDebug, "Set the debug mode flag."),
+    py.methodKw("create_task", createTask, "Schedule a coroutine as a task."),
+    py.methodO("set_task_factory", setTaskFactory, "Set the task factory."),
+    py.methodNoArgs("get_task_factory", getTaskFactory, "Return the task factory."),
     py.methodO("_set_slow_callback_monitoring", setSlowCallbackMonitoring, "Enable slow callback monitoring."),
     py.methodO("_timer_handle_cancelled", timerHandleCancelled, "Compatibility no-op."),
     py.methodNoArgs("_metrics", metrics, "Return a snapshot of loop and libuv counters."),
@@ -1132,11 +1258,15 @@ var spec = c.PyType_Spec{
 
 pub fn register(module: *py.Object) py.Error!void {
     str_call_exception_handler = py.intern("call_exception_handler") orelse return py.Error.Python;
+    str_coro = py.intern("coro") orelse return py.Error.Python;
     str_message = py.intern("message") orelse return py.Error.Python;
     str_exception = py.intern("exception") orelse return py.Error.Python;
     str_handle = py.intern("handle") orelse return py.Error.Python;
     str_context = py.intern("context") orelse return py.Error.Python;
+    str_loop = py.intern("loop") orelse return py.Error.Python;
+    str_name = py.intern("name") orelse return py.Error.Python;
     str_on_slow_callback = py.intern("_on_slow_callback") orelse return py.Error.Python;
+    task_type = py.importFrom("asyncio", "Task") orelse return py.Error.Python;
 
     try dns.register();
     try transportmod.register(module);

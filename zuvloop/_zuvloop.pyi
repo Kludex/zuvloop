@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Coroutine, Iterable, Sequence
 from contextvars import Context
 from typing import IO, TYPE_CHECKING, Any, Literal, Protocol, final
 
@@ -112,6 +112,16 @@ class Loop:
 
     slow_callback_duration: float
 
+    def create_task[T](
+        self,
+        coro: Coroutine[Any, Any, T],
+        *,
+        name: str | None = None,
+        context: Context | None = None,
+        **kwargs: Any,
+    ) -> asyncio.Task[T]: ...
+    def set_task_factory(self, factory: Callable[..., asyncio.Task[Any]] | None, /) -> None: ...
+    def get_task_factory(self) -> Callable[..., asyncio.Task[Any]] | None: ...
     def call_soon(self, callback: Callable[..., object], *args: Any, context: Context | None = None) -> Handle: ...
     def call_soon_threadsafe(
         self, callback: Callable[..., object], *args: Any, context: Context | None = None

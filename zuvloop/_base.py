@@ -12,11 +12,11 @@ import traceback
 import warnings
 import weakref
 from asyncio import events as _events
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable
 from contextvars import Context
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from . import _zuvloop
 from ._instrumentation import (
@@ -26,6 +26,9 @@ from ._instrumentation import (
     metrics_provider_installed,
     publish_metrics,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
 
 _ExceptionHandler = Callable[[asyncio.AbstractEventLoop, dict[str, Any]], object]
 
@@ -78,7 +81,6 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
 
     def __init__(self) -> None:
         self._exception_handler: _ExceptionHandler | None = None
-        self._task_factory: Callable[..., asyncio.Task[Any]] | None = None
         self._default_executor: concurrent.futures.Executor | None = None
         self._executor_shutdown_called = False
         self._asyncgens: weakref.WeakSet[Any] = weakref.WeakSet()
@@ -230,26 +232,22 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
     def create_future(self) -> asyncio.Future[Any]:
         return asyncio.Future(loop=self)
 
-    def create_task[T](
-        self,
-        coro: Coroutine[Any, Any, T],
-        *,
-        name: str | None = None,
-        context: Context | None = None,
-        **kwargs: Any,
-    ) -> asyncio.Task[T]:
-        self._check_closed()
-        if self._task_factory is None:
-            return asyncio.Task(coro, loop=self, name=name, context=context, **kwargs)
-        return self._task_factory(self, coro, name=name, context=context, **kwargs)
+    if TYPE_CHECKING:
 
-    def set_task_factory(  # type: ignore[override]  # typeshed's _TaskFactory is narrower than asyncio accepts
-        self, factory: Callable[..., asyncio.Task[Any]] | None
-    ) -> None:
-        self._task_factory = factory
+        def create_task[T](
+            self,
+            coro: Coroutine[Any, Any, T],
+            *,
+            name: str | None = None,
+            context: Context | None = None,
+            **kwargs: Any,
+        ) -> asyncio.Task[T]: ...
 
-    def get_task_factory(self) -> Callable[..., asyncio.Task[Any]] | None:
-        return self._task_factory
+        def set_task_factory(  # type: ignore[override]  # typeshed's _TaskFactory is narrower than asyncio accepts
+            self, factory: Callable[..., asyncio.Task[Any]] | None, /
+        ) -> None: ...
+
+        def get_task_factory(self) -> Callable[..., asyncio.Task[Any]] | None: ...
 
     # -- executors ---------------------------------------------------------
 
