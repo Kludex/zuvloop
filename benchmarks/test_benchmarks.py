@@ -223,6 +223,41 @@ def test_tasks(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> 
     benchmark(drive(loop, work))
 
 
+@pytest.mark.benchmark
+def test_ready_chain_with_idle_connections(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
+    """One ready callback per turn while idle stream handles remain active."""
+    connection_count = 250
+    accepted: list[asyncio.BaseTransport] = []
+
+    class Hold(asyncio.Protocol):
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            accepted.append(transport)
+
+    async def setup() -> tuple[asyncio.AbstractServer, list[asyncio.BaseTransport]]:
+        server = await loop.create_server(Hold, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        pairs = await asyncio.gather(
+            *(loop.create_connection(asyncio.Protocol, "127.0.0.1", port) for _ in range(connection_count))
+        )
+        while len(accepted) < connection_count:
+            await asyncio.sleep(0)
+        return server, [transport for transport, _protocol in pairs]
+
+    async def work() -> None:
+        for _ in range(1_000):
+            await asyncio.sleep(0)
+
+    server, clients = loop.run_until_complete(setup())
+    try:
+        benchmark(drive(loop, work))
+    finally:
+        for transport in clients + accepted:
+            transport.close()
+        server.close()
+        loop.run_until_complete(server.wait_closed())
+        loop.run_until_complete(asyncio.sleep(0))
+
+
 # ---------------------------------------------------------------------------
 # networking
 

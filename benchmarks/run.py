@@ -145,6 +145,38 @@ async def bench_tasks(total: int = 50_000, batch_size: int = 5_000) -> float:
     return completed / (time.perf_counter() - started)
 
 
+async def bench_ready_with_io(connection_count: int = 250, iterations: int = 20_000) -> float:
+    """Ready-chain throughput while idle stream handles keep I/O active."""
+    loop = asyncio.get_running_loop()
+    accepted: list[asyncio.BaseTransport] = []
+
+    class Hold(asyncio.Protocol):
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            accepted.append(transport)
+
+    server = await loop.create_server(Hold, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    pairs = await asyncio.gather(
+        *(loop.create_connection(asyncio.Protocol, "127.0.0.1", port) for _ in range(connection_count))
+    )
+    clients = [transport for transport, _protocol in pairs]
+    while len(accepted) < connection_count:
+        await asyncio.sleep(0)
+
+    started = time.perf_counter()
+    for _ in range(iterations):
+        await asyncio.sleep(0)
+    elapsed = time.perf_counter() - started
+
+    for transport in clients + accepted:
+        transport.close()
+    server.close()
+    await server.wait_closed()
+    for _ in range(3):
+        await asyncio.sleep(0)
+    return iterations / elapsed
+
+
 async def bench_echo(payload_size: int = 1024, roundtrips: int = 50_000) -> float:
     """Protocol round trips over a loopback TCP connection."""
     loop = asyncio.get_running_loop()
@@ -274,6 +306,7 @@ BENCHMARKS: dict[str, tuple[Benchmark, str]] = {
     "timers": (bench_timers, "timers/s"),
     "sleep_zero": (bench_sleep_zero, "iterations/s"),
     "tasks": (bench_tasks, "tasks/s"),
+    "ready_with_io": (bench_ready_with_io, "iterations/s"),
     "echo_1kb": (bench_echo, "roundtrips/s"),
     "stream": (bench_stream, "bytes/s"),
     "getaddrinfo": (bench_getaddrinfo, "lookups/s"),
