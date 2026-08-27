@@ -210,6 +210,19 @@ def test_loop_iterations(benchmark: BenchmarkFixture, loop: asyncio.AbstractEven
     benchmark(drive(loop, work))
 
 
+@pytest.mark.benchmark
+def test_tasks(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
+    """Create, schedule and finish a batch of tasks that each yield once."""
+
+    async def tiny_task() -> None:
+        await asyncio.sleep(0)
+
+    async def work() -> None:
+        await asyncio.gather(*(tiny_task() for _ in range(5_000)))
+
+    benchmark(drive(loop, work))
+
+
 # ---------------------------------------------------------------------------
 # networking
 

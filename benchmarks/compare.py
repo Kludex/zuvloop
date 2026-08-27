@@ -219,6 +219,28 @@ def timers(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
     return _driver(loop, once)
 
 
+def loop_iterations(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
+    """One callback per turn, so the poll is included in every iteration."""
+
+    async def once() -> None:
+        for _ in range(1_000):
+            await asyncio.sleep(0)
+
+    return _driver(loop, once)
+
+
+def tasks(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
+    """Five thousand tasks that each suspend once before completing."""
+
+    async def tiny_task() -> None:
+        await asyncio.sleep(0)
+
+    async def once() -> None:
+        await asyncio.gather(*(tiny_task() for _ in range(5_000)))
+
+    return _driver(loop, once)
+
+
 def getaddrinfo(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
     """An address literal, which is what create_connection is handed most often."""
 
@@ -252,6 +274,8 @@ WORKLOADS: dict[str, Workload] = {
     "call_soon": call_soon,
     "call_soon_threadsafe": call_soon_threadsafe,
     "timers": timers,
+    "loop_iterations": loop_iterations,
+    "tasks": tasks,
     "getaddrinfo": getaddrinfo,
     "spawn": spawn,
 }
