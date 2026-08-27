@@ -674,6 +674,11 @@ async def test_create_task_names_tasks() -> None:
     await task
 
 
+async def test_create_task_accepts_the_coroutine_by_keyword() -> None:
+    task = running_loop().create_task(coro=asyncio.sleep(0))
+    await task
+
+
 async def test_tasks_are_visible_to_asyncio_introspection() -> None:
     async def worker() -> None:
         await asyncio.sleep(0.05)

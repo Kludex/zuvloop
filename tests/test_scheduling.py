@@ -600,6 +600,23 @@ async def test_task_factory_round_trip() -> None:
     assert made == ["called"]
 
 
+async def test_task_factory_receives_creation_keywords() -> None:
+    loop = running_loop()
+    task_context = contextvars.copy_context()
+    received: dict[str, object] = {}
+
+    def factory(
+        inner_loop: asyncio.AbstractEventLoop, coro: Coroutine[None, None, None], **kwargs: object
+    ) -> asyncio.Task[None]:
+        received.update(kwargs)
+        return asyncio.Task(coro, loop=inner_loop, **kwargs)  # type: ignore[arg-type]
+
+    loop.set_task_factory(factory)
+    await loop.create_task(asyncio.sleep(0), name="named", context=task_context)
+    loop.set_task_factory(None)
+    assert received == {"name": "named", "context": task_context}
+
+
 async def test_eager_task_factory_is_supported() -> None:
     loop = running_loop()
     loop.set_task_factory(asyncio.eager_task_factory)
