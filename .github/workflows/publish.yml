@@ -64,7 +64,7 @@ jobs:
     name: "Wheels for ${{ matrix.archs }} on ${{ matrix.os }}"
     needs: preflight
     runs-on: "${{ matrix.os }}"
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: read
     strategy:

@@ -13,7 +13,7 @@ does not install an OpenTelemetry SDK or anything vendor-specific — see
 
 | | |
 | --- | --- |
-| Python | GIL-enabled CPython 3.14 or newer |
+| Python | CPython 3.14 or newer, including free-threaded builds |
 | Platform | Linux, macOS, Windows |
 
 Windows uses libuv's native Windows backend. Unix-domain sockets and
@@ -41,8 +41,7 @@ The build is driven by a hatchling hook that runs `zig build` with
 module, so they get the same optimization level.
 
 Direct native development commands such as `python scripts/build.py` do require
-Zig 0.16 on `PATH`. Free-threaded CPython builds are rejected explicitly; use a
-standard GIL-enabled interpreter.
+Zig 0.16 on `PATH`.
 
 /// note | Verifying the build
 

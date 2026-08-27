@@ -9,15 +9,6 @@ const handle = @import("handle.zig");
 const tshandle = @import("tshandle.zig");
 const timer = @import("timer.zig");
 
-comptime {
-    if (@hasDecl(c, "Py_GIL_DISABLED")) {
-        @compileError(
-            "zuvloop does not yet support free-threaded CPython builds; " ++
-                "use a standard GIL-enabled CPython interpreter",
-        );
-    }
-}
-
 fn libuvVersion(_: ?*py.Object, _: ?*py.Object) callconv(.c) ?*py.Object {
     return py.strZ(uv.uv_version_string());
 }
@@ -42,7 +33,7 @@ fn exec(module: ?*py.Object) callconv(.c) c_int {
 var slots = [_]c.PyModuleDef_Slot{
     .{ .slot = c.Py_mod_exec, .value = @ptrCast(@constCast(&exec)) },
     .{ .slot = c.Py_mod_multiple_interpreters, .value = c.Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED },
-    .{ .slot = c.Py_mod_gil, .value = c.Py_MOD_GIL_USED },
+    .{ .slot = c.Py_mod_gil, .value = c.Py_MOD_GIL_NOT_USED },
     .{ .slot = 0, .value = null },
 };
 

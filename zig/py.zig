@@ -6,6 +6,15 @@ const uv = @import("uv.zig");
 
 pub const Object = c.PyObject;
 pub const Ref = *Object;
+pub const CriticalSection = c.zuvloop_critical_section;
+
+pub inline fn beginCriticalSection(section: *CriticalSection) void {
+    if (@hasDecl(c, "Py_GIL_DISABLED")) c.zuvloop_critical_section_begin(section);
+}
+
+pub inline fn endCriticalSection(section: *CriticalSection) void {
+    if (@hasDecl(c, "Py_GIL_DISABLED")) c.zuvloop_critical_section_end(section);
+}
 
 /// The interpreter's singletons and exception types, captured through function
 /// calls in `initConstants`. Referencing the DLL's data symbols directly would
@@ -65,25 +74,25 @@ pub fn initConstants() Error!void {
 }
 
 pub inline fn incref(o: anytype) void {
-    c.Py_INCREF(@ptrCast(o));
+    if (@hasDecl(c, "Py_GIL_DISABLED")) c.zuvloop_Py_INCREF(@ptrCast(o)) else c.Py_INCREF(@ptrCast(o));
 }
 
 pub inline fn decref(o: anytype) void {
-    c.Py_DECREF(@ptrCast(o));
+    if (@hasDecl(c, "Py_GIL_DISABLED")) c.zuvloop_Py_DECREF(@ptrCast(o)) else c.Py_DECREF(@ptrCast(o));
 }
 
 pub inline fn xdecref(o: ?*Object) void {
-    if (o) |p| c.Py_DECREF(p);
+    if (o) |p| decref(p);
 }
 
 pub inline fn clear(slot: *?*Object) void {
     const old = slot.*;
     slot.* = null;
-    if (old) |p| c.Py_DECREF(p);
+    if (old) |p| decref(p);
 }
 
 pub inline fn newref(o: ?*Object) ?*Object {
-    if (o) |p| c.Py_INCREF(p);
+    if (o) |p| incref(p);
     return o;
 }
 
@@ -109,6 +118,31 @@ pub inline fn boolRef(v: bool) *Object {
 
 pub inline fn typeOf(o: *Object) *c.PyTypeObject {
     return @ptrCast(o.ob_type);
+}
+
+pub inline fn isBytes(o: *Object) bool {
+    const result = if (@hasDecl(c, "Py_GIL_DISABLED")) c.zuvloop_PyBytes_Check(o) else c.PyBytes_Check(o);
+    return result != 0;
+}
+
+pub inline fn isExactBytes(o: *Object) bool {
+    const result = if (@hasDecl(c, "Py_GIL_DISABLED")) c.zuvloop_PyBytes_CheckExact(o) else c.PyBytes_CheckExact(o);
+    return result != 0;
+}
+
+pub inline fn isLong(o: *Object) bool {
+    const result = if (@hasDecl(c, "Py_GIL_DISABLED")) c.zuvloop_PyLong_Check(o) else c.PyLong_Check(o);
+    return result != 0;
+}
+
+pub inline fn isTuple(o: *Object) bool {
+    const result = if (@hasDecl(c, "Py_GIL_DISABLED")) c.zuvloop_PyTuple_Check(o) else c.PyTuple_Check(o);
+    return result != 0;
+}
+
+pub inline fn isUnicode(o: *Object) bool {
+    const result = if (@hasDecl(c, "Py_GIL_DISABLED")) c.zuvloop_PyUnicode_Check(o) else c.PyUnicode_Check(o);
+    return result != 0;
 }
 
 pub fn attr(o: *Object, name: [*:0]const u8) ?*Object {
@@ -224,6 +258,9 @@ pub fn errUvIfNeg(status: c_int) Error!void {
 pub fn wrap(comptime f: anytype) fn (?*Object, [*c]?*Object, c.Py_ssize_t) callconv(.c) ?*Object {
     const Inner = struct {
         fn call(self: ?*Object, args: [*c]?*Object, nargs: c.Py_ssize_t) callconv(.c) ?*Object {
+            var critical_section: CriticalSection = undefined;
+            beginCriticalSection(&critical_section);
+            defer endCriticalSection(&critical_section);
             return f(self.?, args[0..@intCast(nargs)]) catch |e| switch (e) {
                 Error.Python => null,
             };
@@ -237,6 +274,9 @@ pub fn wrap(comptime f: anytype) fn (?*Object, [*c]?*Object, c.Py_ssize_t) callc
 pub fn wrapKw(comptime f: anytype) fn (?*Object, [*c]?*Object, c.Py_ssize_t, ?*Object) callconv(.c) ?*Object {
     const Inner = struct {
         fn call(self: ?*Object, args: [*c]?*Object, nargs: c.Py_ssize_t, kwnames: ?*Object) callconv(.c) ?*Object {
+            var critical_section: CriticalSection = undefined;
+            beginCriticalSection(&critical_section);
+            defer endCriticalSection(&critical_section);
             const nkw: usize = if (kwnames) |names| @intCast(c.PyTuple_Size(names)) else 0;
             const total: usize = @as(usize, @intCast(nargs)) + nkw;
             return f(self.?, args[0..total], @intCast(nargs), kwnames) catch |e| switch (e) {
@@ -250,6 +290,9 @@ pub fn wrapKw(comptime f: anytype) fn (?*Object, [*c]?*Object, c.Py_ssize_t, ?*O
 pub fn wrapNoArgs(comptime f: anytype) fn (?*Object, ?*Object) callconv(.c) ?*Object {
     const Inner = struct {
         fn call(self: ?*Object, _: ?*Object) callconv(.c) ?*Object {
+            var critical_section: CriticalSection = undefined;
+            beginCriticalSection(&critical_section);
+            defer endCriticalSection(&critical_section);
             return f(self.?) catch |e| switch (e) {
                 Error.Python => null,
             };
@@ -261,9 +304,84 @@ pub fn wrapNoArgs(comptime f: anytype) fn (?*Object, ?*Object) callconv(.c) ?*Ob
 pub fn wrapO(comptime f: anytype) fn (?*Object, ?*Object) callconv(.c) ?*Object {
     const Inner = struct {
         fn call(self: ?*Object, arg: ?*Object) callconv(.c) ?*Object {
+            var critical_section: CriticalSection = undefined;
+            beginCriticalSection(&critical_section);
+            defer endCriticalSection(&critical_section);
             return f(self.?, arg.?) catch |e| switch (e) {
                 Error.Python => null,
             };
+        }
+    };
+    return Inner.call;
+}
+
+pub fn wrapDealloc(comptime f: anytype) fn (?*Object) callconv(.c) void {
+    const Inner = struct {
+        fn call(self: ?*Object) callconv(.c) void {
+            var critical_section: CriticalSection = undefined;
+            beginCriticalSection(&critical_section);
+            defer endCriticalSection(&critical_section);
+            f(self);
+        }
+    };
+    return Inner.call;
+}
+
+pub fn wrapTraverse(comptime f: anytype) fn (?*Object, c.visitproc, ?*anyopaque) callconv(.c) c_int {
+    const Inner = struct {
+        fn call(self: ?*Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv(.c) c_int {
+            var critical_section: CriticalSection = undefined;
+            beginCriticalSection(&critical_section);
+            defer endCriticalSection(&critical_section);
+            return f(self, visitproc, arg);
+        }
+    };
+    return Inner.call;
+}
+
+pub fn wrapClear(comptime f: anytype) fn (?*Object) callconv(.c) c_int {
+    const Inner = struct {
+        fn call(self: ?*Object) callconv(.c) c_int {
+            var critical_section: CriticalSection = undefined;
+            beginCriticalSection(&critical_section);
+            defer endCriticalSection(&critical_section);
+            return f(self);
+        }
+    };
+    return Inner.call;
+}
+
+pub fn wrapRepr(comptime f: anytype) fn (?*Object) callconv(.c) ?*Object {
+    const Inner = struct {
+        fn call(self: ?*Object) callconv(.c) ?*Object {
+            var critical_section: CriticalSection = undefined;
+            beginCriticalSection(&critical_section);
+            defer endCriticalSection(&critical_section);
+            return f(self);
+        }
+    };
+    return Inner.call;
+}
+
+pub fn wrapGet(comptime f: anytype) fn (?*Object, ?*anyopaque) callconv(.c) ?*Object {
+    const Inner = struct {
+        fn call(self: ?*Object, closure: ?*anyopaque) callconv(.c) ?*Object {
+            var critical_section: CriticalSection = undefined;
+            beginCriticalSection(&critical_section);
+            defer endCriticalSection(&critical_section);
+            return f(self, closure);
+        }
+    };
+    return Inner.call;
+}
+
+pub fn wrapSet(comptime f: anytype) fn (?*Object, ?*Object, ?*anyopaque) callconv(.c) c_int {
+    const Inner = struct {
+        fn call(self: ?*Object, value: ?*Object, closure: ?*anyopaque) callconv(.c) c_int {
+            var critical_section: CriticalSection = undefined;
+            beginCriticalSection(&critical_section);
+            defer endCriticalSection(&critical_section);
+            return f(self, value, closure);
         }
     };
     return Inner.call;

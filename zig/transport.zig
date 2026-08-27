@@ -183,7 +183,7 @@ fn releaseViews(views: []c.Py_buffer) void {
 /// Hold immutable bytes directly; snapshot every other exporter before write()
 /// returns so queued I/O cannot observe later mutations by the caller.
 fn acquireWriteView(data: *py.Object, view: *c.Py_buffer) py.Error!void {
-    if (c.PyBytes_CheckExact(data) != 0) {
+    if (py.isExactBytes(data)) {
         if (c.PyObject_GetBuffer(data, view, c.PyBUF_SIMPLE) < 0) return py.Error.Python;
         return;
     }
@@ -323,8 +323,8 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
     const st = self.loopState();
 
     // Handing back the loop's shared buffer touches no Python object, and libuv
-    // asks for one on every readable event, so the GIL round trip the rest of
-    // this needs would be paid per read for nothing.
+    // asks for one on every readable event, so entering Python for the rest of
+    // this callback would be paid per read for nothing.
     if (self.flags & BUFFERED == 0 and self.read_bytes == null and self.read_size <= copy_threshold) {
         if (loopmod.scratchBuffer(st)) |scratch| {
             buf.* = uv.Buf.init(scratch, self.read_size);
@@ -332,8 +332,8 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
         }
     }
 
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
 
     if (self.flags & BUFFERED != 0) {
         self.flags |= ALLOCATING_READ_BUFFER;
@@ -395,8 +395,8 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
 fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) void {
     const self: *Transport = @ptrCast(@alignCast(uv.getData(stream.?)));
     const st = self.loopState();
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
 
     const allocated_with_python = self.flags & ALLOCATING_READ_BUFFER != 0;
     self.flags &= ~ALLOCATING_READ_BUFFER;
@@ -540,8 +540,8 @@ fn onWritten(req: ?*uv.Write, status: c_int) callconv(.c) void {
     const wr: *WriteReq = @ptrCast(@alignCast(uv.getData(req.?)));
     const self = wr.transport;
     const st = self.loopState();
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
 
     // abort() zeroes the queue while requests are still in flight.
     self.write_buffer_size -= @min(wr.size, self.write_buffer_size);
@@ -767,8 +767,8 @@ fn releaseSocketView(self: *Transport) void {
 fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     const self: *Transport = @ptrCast(@alignCast(uv.getData(handle.?)));
     const st = self.loopState();
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
 
     self.flags |= CONN_LOST;
     scheduleCall(self, self.cb_connection_lost, self.conn_lost_exc orelse py.none());
@@ -793,8 +793,8 @@ fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
 fn onOpenFailed(handle: ?*uv.Handle) callconv(.c) void {
     const self: *Transport = @ptrCast(@alignCast(uv.getData(handle.?)));
     const st = self.loopState();
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
     py.decref(self);
 }
 
@@ -1335,15 +1335,21 @@ var methods = [_]c.PyMethodDef{
 
 // asyncio's name for this state; its sendfile machinery reads it off transports.
 var getsets = [_]c.PyGetSetDef{
-    .{ .name = "_protocol_paused", .get = getProtocolPaused, .set = null, .doc = "Whether flow control has paused the protocol.", .closure = null },
+    .{
+        .name = "_protocol_paused",
+        .get = py.wrapGet(getProtocolPaused),
+        .set = null,
+        .doc = "Whether flow control has paused the protocol.",
+        .closure = null,
+    },
     .{ .name = null, .get = null, .set = null, .doc = null, .closure = null },
 };
 
 var slots = [_]c.PyType_Slot{
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
-    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&clear_)) },
-    .{ .slot = c.Py_tp_repr, .pfunc = @ptrCast(@constCast(&repr)) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&py.wrapDealloc(dealloc))) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&py.wrapTraverse(traverse))) },
+    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&py.wrapClear(clear_))) },
+    .{ .slot = c.Py_tp_repr, .pfunc = @ptrCast(@constCast(&py.wrapRepr(repr))) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
     .{ .slot = c.Py_tp_getset, .pfunc = @ptrCast(&getsets) },
     .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("A libuv-backed stream transport.")) },

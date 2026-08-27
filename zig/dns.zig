@@ -126,12 +126,12 @@ fn copyZ(dst: []u8, value: *py.Object, what: [:0]const u8) py.Error!?[*:0]const 
     var len: c.Py_ssize_t = 0;
     // SAFETY: each accepted Python type assigns src, and every other type returns.
     var src: [*c]const u8 = undefined;
-    if (c.PyUnicode_Check(value) != 0) {
+    if (py.isUnicode(value)) {
         src = c.PyUnicode_AsUTF8AndSize(value, &len) orelse return py.Error.Python;
-    } else if (c.PyBytes_Check(value) != 0) {
+    } else if (py.isBytes(value)) {
         src = c.PyBytes_AsString(value);
         len = c.PyBytes_Size(value);
-    } else if (c.PyLong_Check(value) != 0) {
+    } else if (py.isLong(value)) {
         const n = try py.asCInt(value);
         const rendered = std.fmt.bufPrint(dst[0 .. dst.len - 1], "{d}", .{n}) catch return py.errValue("value out of range");
         dst[rendered.len] = 0;
@@ -290,8 +290,8 @@ fn onAddrInfo(req: ?*uv.GetAddrInfo, status: c_int, res: ?*netdb.addrinfo) callc
         freeRequest(self, .getaddrinfo);
         return;
     }
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
 
     if (!st.closed) {
         if (status < 0) {
@@ -318,8 +318,8 @@ fn onNameInfo(req: ?*uv.GetNameInfo, status: c_int, hostname: ?[*:0]const u8, se
         freeRequest(self, .getnameinfo);
         return;
     }
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
 
     if (!st.closed) {
         if (status < 0) {

@@ -17,11 +17,13 @@ packet, Python if it runs per connection or per loop.**
 | Lifecycle, executors, error reporting | `zuvloop/_base.py` | Once per loop |
 | OpenTelemetry emission | `zuvloop/_instrumentation.py` | The only file that imports OTel |
 
-## The GIL
+## Thread safety
 
-The GIL is released for the whole `uv_run` call. Callbacks reacquire it through a
-thread state saved once by the loop, rather than `PyGILState_Ensure`, and a
-nested callback within the same batch pays nothing.
+The interpreter thread state is detached for the whole `uv_run` call and
+reattached for each libuv callback. On a standard build, this releases and
+reacquires the GIL. On a free-threaded build, an extension-wide critical section
+protects the native object graph and the ready queue from concurrent producers.
+Blocking Python calls suspend the critical section, as CPython requires.
 
 ## Scheduling
 

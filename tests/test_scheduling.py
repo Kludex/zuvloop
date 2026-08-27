@@ -276,6 +276,35 @@ async def test_call_soon_threadsafe_from_another_thread() -> None:
     assert await done == "from thread"
 
 
+def test_call_soon_threadsafe_accepts_concurrent_producers() -> None:
+    loop = zuvloop.new_event_loop()
+    worker_count = 8
+    callbacks_per_worker = 2_000
+    expected = worker_count * callbacks_per_worker
+    seen = 0
+
+    def callback() -> None:
+        nonlocal seen
+        seen += 1
+        if seen == expected:
+            loop.stop()
+
+    def producer() -> None:
+        for _ in range(callbacks_per_worker):
+            loop.call_soon_threadsafe(callback)
+
+    threads = [threading.Thread(target=producer) for _ in range(worker_count)]
+    for thread in threads:
+        thread.start()
+    try:
+        loop.run_forever()
+    finally:
+        for thread in threads:
+            thread.join()
+        loop.close()
+    assert seen == expected
+
+
 def test_call_soon_threadsafe_captures_the_worker_context() -> None:
     loop = zuvloop.new_event_loop()
     variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable", default="default")

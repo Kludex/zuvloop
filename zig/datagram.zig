@@ -193,8 +193,8 @@ fn onRecv(
 ) callconv(.c) void {
     const self: *Datagram = @ptrCast(@alignCast(uv.getData(handle.?)));
     const st = self.loopState();
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
 
     if (nread == 0 and from == null) return;
     if (flags & uv.UDP_PARTIAL != 0) {
@@ -245,8 +245,8 @@ fn onSent(req: ?*uv.UdpSend, status: c_int) callconv(.c) void {
     const wr: *SendReq = @ptrCast(@alignCast(uv.getData(req.?)));
     const self = wr.transport;
     const st = self.loopState();
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
 
     self.write_buffer_size -= @min(wr.size, self.write_buffer_size);
     const total = wr.total;
@@ -323,8 +323,8 @@ fn releaseSocketView(self: *Datagram) void {
 fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     const self: *Datagram = @ptrCast(@alignCast(uv.getData(handle.?)));
     const st = self.loopState();
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
 
     self.flags |= CONN_LOST;
     scheduleCall(self, self.cb_connection_lost, self.conn_lost_exc orelse py.none());
@@ -647,8 +647,8 @@ pub fn makeDatagram(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*p
 fn onOpenFailed(handle: ?*uv.Handle) callconv(.c) void {
     const self: *Datagram = @ptrCast(@alignCast(uv.getData(handle.?)));
     const st = self.loopState();
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
     py.decref(self);
 }
 
@@ -736,9 +736,9 @@ var methods = [_]c.PyMethodDef{
 };
 
 var slots = [_]c.PyType_Slot{
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
-    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&clear_)) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&py.wrapDealloc(dealloc))) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&py.wrapTraverse(traverse))) },
+    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&py.wrapClear(clear_))) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
     .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("A libuv-backed datagram transport.")) },
     .{ .slot = 0, .pfunc = null },

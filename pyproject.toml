@@ -102,12 +102,10 @@ xfail_strict = true
 filterwarnings = ["error"]
 
 [tool.cibuildwheel]
-# Only what the project supports: CPython 3.14 on Linux, macOS and Windows. The
-# free-threaded build is excluded until the loop's GIL handling is tested
-# against one - it saves a thread state and counts nesting, and assumes there is
-# a GIL to save.
-build = "cp314-*"
-skip = "*-musllinux_i686 *t-*"
+# Build both standard and free-threaded CPython 3.14 wheels. The same suite runs
+# against each interpreter before a wheel is published.
+build = "cp314-* cp314t-*"
+skip = "*-musllinux_i686"
 # Pass hash and constraint enforcement directly to the project build. Global uv
 # environment variables also affect cibuildwheel's bootstrap and test tools;
 # on Windows ARM64, for example, httptools must build with an older setuptools

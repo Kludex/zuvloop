@@ -220,8 +220,20 @@ fn getArgs(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 }
 
 var getsets = [_]c.PyGetSetDef{
-    .{ .name = "_callback", .get = getCallback, .set = null, .doc = "The scheduled callable.", .closure = null },
-    .{ .name = "_args", .get = getArgs, .set = null, .doc = "Arguments the callable receives.", .closure = null },
+    .{
+        .name = "_callback",
+        .get = py.wrapGet(getCallback),
+        .set = null,
+        .doc = "The scheduled callable.",
+        .closure = null,
+    },
+    .{
+        .name = "_args",
+        .get = py.wrapGet(getArgs),
+        .set = null,
+        .doc = "Arguments the callable receives.",
+        .closure = null,
+    },
     .{ .name = null, .get = null, .set = null, .doc = null, .closure = null },
 };
 
@@ -241,10 +253,10 @@ var handle_methods = [_]c.PyMethodDef{
 
 fn slots(methods: [*]c.PyMethodDef) [8]c.PyType_Slot {
     return .{
-        .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
-        .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
-        .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&clear_)) },
-        .{ .slot = c.Py_tp_repr, .pfunc = @ptrCast(@constCast(&repr)) },
+        .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&py.wrapDealloc(dealloc))) },
+        .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&py.wrapTraverse(traverse))) },
+        .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&py.wrapClear(clear_))) },
+        .{ .slot = c.Py_tp_repr, .pfunc = @ptrCast(@constCast(&py.wrapRepr(repr))) },
         .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(methods) },
         .{ .slot = c.Py_tp_getset, .pfunc = @ptrCast(&getsets) },
         .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("A scheduled callback.")) },

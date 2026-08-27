@@ -129,6 +129,7 @@ pub fn build(b: *std.Build) void {
     mod.addIncludePath(b.path("zig"));
     mod.addIncludePath(b.path("vendor/libuv/include"));
     mod.addIncludePath(b.path("vendor/libuv/src"));
+    mod.addCSourceFile(.{ .file = b.path("zig/python_shim.c"), .flags = &.{"-std=c11"} });
 
     var uv_flags: std.ArrayList([]const u8) = .empty;
     uv_flags.appendSlice(b.allocator, &.{
