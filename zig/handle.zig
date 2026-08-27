@@ -11,13 +11,14 @@
 const std = @import("std");
 const py = @import("py.zig");
 const c = py.c;
+const contextmod = @import("context.zig");
 const loopmod = @import("loop.zig");
 
 const inline_args = 3;
 const arg_alloc = std.heap.c_allocator;
 
 pub const CANCELLED: u32 = 1 << 0;
-const RUNNING: u32 = 1 << 1;
+const RUNNING: u32 = 1 << 2;
 
 pub const Handle = extern struct {
     ob_base: c.PyObject,
@@ -70,15 +71,10 @@ pub fn create(
     py.incref(callback);
     self.callback = callback;
 
-    if (context) |ctx| {
-        py.incref(ctx);
-        self.context = ctx;
-    } else {
-        self.context = c.PyContext_CopyCurrent() orelse {
-            py.decref(obj);
-            return py.Error.Python;
-        };
-    }
+    self.context = contextmod.capture(context, &self.flags) catch {
+        py.decref(obj);
+        return py.Error.Python;
+    };
 
     return self;
 }
@@ -95,7 +91,11 @@ pub fn run(self: *Handle) void {
             py.clear(&self.callback);
         }
     }
-    invoke(@ptrCast(self), self.loop, callback, self.argv(), self.nargs, self.context.?);
+    const context = contextmod.materialize(self.loop, &self.context) catch {
+        loopmod.callbackFailed(self.loop, @ptrCast(self));
+        return;
+    };
+    invoke(@ptrCast(self), self.loop, callback, self.argv(), self.nargs, context);
 }
 
 /// Calls `callback(*argv)` inside `ctx`, routing failures to `loop` with
@@ -144,9 +144,9 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     c.PyObject_GC_UnTrack(obj);
     c.PyObject_ClearWeakRefs(obj);
     clearArgs(self);
-    py.clear(&self.loop);
     py.clear(&self.callback);
-    py.clear(&self.context);
+    contextmod.release(self.loop, &self.context, self.flags);
+    py.clear(&self.loop);
     tp.tp_free.?(obj);
     py.decref(tp);
 }
@@ -172,9 +172,9 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
 fn clear_(obj: ?*py.Object) callconv(.c) c_int {
     const self: *Handle = @ptrCast(@alignCast(obj.?));
     clearArgs(self);
-    py.clear(&self.loop);
     py.clear(&self.callback);
-    py.clear(&self.context);
+    contextmod.release(self.loop, &self.context, self.flags);
+    py.clear(&self.loop);
     return 0;
 }
 
@@ -199,7 +199,8 @@ fn cancelled(self_obj: *py.Object) py.Error!*py.Object {
 
 fn getContext(self_obj: *py.Object) py.Error!*py.Object {
     const self: *Handle = @ptrCast(@alignCast(self_obj));
-    return py.newref(self.context orelse py.none()).?;
+    const context = try contextmod.materialize(self.loop, &self.context);
+    return py.newref(context).?;
 }
 
 fn getCallback(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {

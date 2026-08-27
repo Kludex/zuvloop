@@ -271,7 +271,7 @@ def humanise(value: float, unit: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Compare zuvloop against asyncio and uvloop.")
-    parser.add_argument("--repeat", type=int, default=3, help="runs per benchmark; the best is reported")
+    parser.add_argument("--repeat", type=int, default=3, help="runs per benchmark; the median is reported")
     parser.add_argument("--only", nargs="*", choices=sorted(BENCHMARKS), help="benchmarks to run")
     args = parser.parse_args()
     if args.repeat < 1:
@@ -291,9 +291,10 @@ def main() -> int:
             for label, factory in factories.items():
                 samples[label].append(run_on(factory, benchmark))
 
-        results = {label: max(values) for label, values in samples.items()}
+        results = {label: statistics.median(values) for label, values in samples.items()}
         for label, value in results.items():
-            spread = statistics.pstdev(samples[label]) / value if len(samples[label]) > 1 else 0.0
+            values = samples[label]
+            spread = statistics.pstdev(values) / statistics.mean(values) if len(values) > 1 else 0.0
             print(f"  {label:<8}{humanise(value, unit)}  (+/- {spread:.1%})")
         print(f"  {'':<8}{'zuvloop / ' + baseline:>15}  {results['zuvloop'] / results[baseline]:.2f}x\n")
     return 0
