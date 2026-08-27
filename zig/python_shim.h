@@ -1,6 +1,15 @@
 #ifndef ZUVLOOP_PYTHON_SHIM_H
 #define ZUVLOOP_PYTHON_SHIM_H
 
+#if defined(__MINGW32__) && defined(__aarch64__)
+// MinGW omits the ARM64 intrinsic that CPython uses to read its x18 thread pointer.
+static inline unsigned long long zuvloop_read_x18(void) {
+    unsigned long long value;
+    __asm__("mov %0, x18" : "=r"(value));
+    return value;
+}
+#define __getReg(reg) zuvloop_read_x18()
+#endif
 #include <Python.h>
 
 typedef struct {
