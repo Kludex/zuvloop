@@ -47,5 +47,5 @@ var moddef = c.PyModuleDef{
 };
 
 export fn PyInit__zuvloop() ?*py.Object {
-    return c.PyModuleDef_Init(&moddef);
+    return c.zuvloop_PyModuleDef_Init(&moddef);
 }

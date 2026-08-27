@@ -156,8 +156,8 @@ pinned upstream suites from aiohttp, uvicorn, AnyIO, websockets, aioquic, Tornad
 zuvloop swapped underneath. The third runs the native sanitizer build and a 500-cycle
 resource-ownership soak.
 
-The weekly compatibility run also tests CPython 3.14.0, the newest 3.14 patch and the 3.15
-prerelease, then exercises gRPC AsyncIO, asyncpg, Psycopg and redis-py against real local services.
+The compatibility run also tests CPython 3.14.0, the newest 3.14 patch, and standard and free-threaded
+3.15 builds, then exercises gRPC AsyncIO, asyncpg, Psycopg and redis-py against real local services.
 The immutable commits and exact commands in `.github/workflows/compatibility.yml` are the source
 of truth.
 

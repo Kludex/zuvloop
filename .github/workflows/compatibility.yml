@@ -57,9 +57,13 @@ jobs:
           uv run --no-sync python scripts/conformance.py
 
   free-threaded:
-    name: CPython 3.14 free-threaded
+    name: CPython ${{ matrix.python-version }} free-threaded
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.14t", "3.15t"]
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -73,11 +77,13 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           enable-cache: true
-          python-version: 3.14t
+          python-version: ${{ matrix.python-version }}
           version: 0.12.3
 
       - name: Install
-        run: uv sync --locked --python 3.14t --group dev --group bench
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
+        run: uv sync --locked --python "$PYTHON_VERSION" --group dev --group bench
 
       - name: Test with the GIL disabled
         run: |
