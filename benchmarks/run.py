@@ -133,10 +133,16 @@ async def bench_tasks(total: int = 50_000, batch_size: int = 5_000) -> float:
     async def tiny_task() -> None:
         await asyncio.sleep(0)
 
+    if total < 0 or batch_size <= 0:
+        raise ValueError("total must be non-negative and batch_size must be positive")
+
     started = time.perf_counter()
-    for _ in range(total // batch_size):
-        await asyncio.gather(*(tiny_task() for _ in range(batch_size)))
-    return total / (time.perf_counter() - started)
+    completed = 0
+    while completed < total:
+        current_batch = min(batch_size, total - completed)
+        await asyncio.gather(*(tiny_task() for _ in range(current_batch)))
+        completed += current_batch
+    return completed / (time.perf_counter() - started)
 
 
 async def bench_echo(payload_size: int = 1024, roundtrips: int = 50_000) -> float:
