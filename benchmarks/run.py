@@ -127,6 +127,24 @@ async def bench_sleep_zero(iterations: int = 30_000) -> float:
     return iterations / (time.perf_counter() - started)
 
 
+async def bench_tasks(total: int = 50_000, batch_size: int = 5_000) -> float:
+    """Task throughput in bounded batches, with one suspension per task."""
+
+    async def tiny_task() -> None:
+        await asyncio.sleep(0)
+
+    if total < 0 or batch_size <= 0:
+        raise ValueError("total must be non-negative and batch_size must be positive")
+
+    started = time.perf_counter()
+    completed = 0
+    while completed < total:
+        current_batch = min(batch_size, total - completed)
+        await asyncio.gather(*(tiny_task() for _ in range(current_batch)))
+        completed += current_batch
+    return completed / (time.perf_counter() - started)
+
+
 async def bench_echo(payload_size: int = 1024, roundtrips: int = 50_000) -> float:
     """Protocol round trips over a loopback TCP connection."""
     loop = asyncio.get_running_loop()
@@ -255,6 +273,7 @@ BENCHMARKS: dict[str, tuple[Benchmark, str]] = {
     "call_soon_threadsafe": (bench_call_soon_threadsafe, "callbacks/s"),
     "timers": (bench_timers, "timers/s"),
     "sleep_zero": (bench_sleep_zero, "iterations/s"),
+    "tasks": (bench_tasks, "tasks/s"),
     "echo_1kb": (bench_echo, "roundtrips/s"),
     "stream": (bench_stream, "bytes/s"),
     "getaddrinfo": (bench_getaddrinfo, "lookups/s"),
