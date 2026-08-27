@@ -404,11 +404,12 @@ def test_worker_thread_finalization_restores_signal_state_on_main_thread() -> No
         gc.collect()
 
     try:
-        with pytest.warns(ResourceWarning, match="unclosed event loop"):
+        with pytest.warns(ResourceWarning, match="unclosed event loop") as caught:
             thread = threading.Thread(target=finalize)
             thread.start()
             thread.join()
 
+        caught.clear()
         gc.collect()
         assert loop_ref() is None
         assert signal.set_wakeup_fd(-1) == -1

@@ -21,6 +21,14 @@ void zuvloop_critical_section_end(zuvloop_critical_section *section) {
 #endif
 }
 
+PyObject *zuvloop_PyModuleDef_Init(PyModuleDef *definition) {
+    if (Py_TYPE((PyObject *)&definition->m_base) == NULL) {
+        PyModuleDef_Base initial = PyModuleDef_HEAD_INIT;
+        definition->m_base = initial;
+    }
+    return PyModuleDef_Init(definition);
+}
+
 void zuvloop_Py_INCREF(PyObject *object) {
     Py_INCREF(object);
 }

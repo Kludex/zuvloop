@@ -25,6 +25,7 @@ classifiers = [
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Programming Language :: Zig",
     "Typing :: Typed",
 ]
@@ -102,9 +103,9 @@ xfail_strict = true
 filterwarnings = ["error"]
 
 [tool.cibuildwheel]
-# Build both standard and free-threaded CPython 3.14 wheels. The same suite runs
-# against each interpreter before a wheel is published.
-build = "cp314-* cp314t-*"
+# Build standard and free-threaded CPython 3.14 and 3.15 wheels. The same suite
+# runs against each interpreter before a wheel is published.
+build = "cp314-* cp314t-* cp315-* cp315t-*"
 skip = "*-musllinux_i686"
 # Pass hash and constraint enforcement directly to the project build. Global uv
 # environment variables also affect cibuildwheel's bootstrap and test tools;

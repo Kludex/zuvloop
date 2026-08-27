@@ -12,9 +12,10 @@ Compatibility is checked at four levels:
   inspect CPython's private server attributes.
 - Every pull request builds with native safety checks and the C sanitizer, then
   repeats the loop lifecycle and resource-ownership scenario 500 times.
-- A weekly job builds and tests the declared floor (CPython 3.14.0), the newest
-  CPython 3.14 patch and CPython 3.15 prereleases, and adds service-backed smoke
-  tests for gRPC AsyncIO, asyncpg, Psycopg and redis-py.
+- The compatibility job builds and tests the declared floor (CPython 3.14.0),
+  the newest CPython 3.14 patch, and standard and free-threaded CPython 3.15.
+  It also adds service-backed smoke tests for gRPC AsyncIO, asyncpg, Psycopg
+  and redis-py.
 
 The pinned commits and exact commands live in
 `.github/workflows/compatibility.yml`. Pinning makes a new upstream release an
@@ -83,10 +84,9 @@ string as an unspecified host; zuvloop raises `OSError`. This is the whole of it
 
 ## Interpreter and platform policy
 
-Standard and free-threaded CPython 3.14 and later are supported on Linux, macOS
-and Windows. The minimum 3.14.0 release, a free-threaded 3.14 build and the next
-CPython prerelease are continuously exercised rather than inferred from the
-newest local interpreter.
+Standard and free-threaded CPython 3.14 and 3.15 are supported on Linux, macOS
+and Windows. The minimum 3.14.0 release and both variants of 3.15 are
+continuously exercised rather than inferred from the newest local interpreter.
 
 Linux glibc, Linux musl and macOS execute the full in-repository suite. Windows
 builds run the portable suite natively; tests that require

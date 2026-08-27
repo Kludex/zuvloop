@@ -10,6 +10,11 @@ static inline unsigned long long zuvloop_read_x18(void) {
 }
 #define __getReg(reg) zuvloop_read_x18()
 #endif
+
+#if defined(__GNUC__) || defined(__clang__)
+// Zig rejects C11 alignments below the type's natural alignment; this equivalent form never reduces it.
+#define _Py_ALIGNED_DEF(N, T) __attribute__((aligned(N))) T
+#endif
 #include <Python.h>
 
 typedef struct {
@@ -18,6 +23,7 @@ typedef struct {
 
 void zuvloop_critical_section_begin(zuvloop_critical_section *section);
 void zuvloop_critical_section_end(zuvloop_critical_section *section);
+PyObject *zuvloop_PyModuleDef_Init(PyModuleDef *definition);
 void zuvloop_Py_INCREF(PyObject *object);
 void zuvloop_Py_DECREF(PyObject *object);
 int zuvloop_PyBytes_Check(PyObject *object);
