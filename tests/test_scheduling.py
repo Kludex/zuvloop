@@ -313,26 +313,28 @@ def test_call_soon_threadsafe_accepts_concurrent_producers() -> None:
     callbacks_per_worker = 2_000
     expected = worker_count * callbacks_per_worker
     seen = 0
+    completed_producers = 0
 
     def callback() -> None:
         nonlocal seen
         seen += 1
-        if seen == expected:
+
+    def producer_done() -> None:
+        nonlocal completed_producers
+        completed_producers += 1
+        if completed_producers == worker_count:
             loop.stop()
 
     def producer() -> None:
-        for _ in range(callbacks_per_worker):
-            loop.call_soon_threadsafe(callback)
-
-    def stop_on_error(future: concurrent.futures.Future[None]) -> None:
-        if future.exception() is not None:
-            loop.call_soon_threadsafe(loop.stop)
+        try:
+            for _ in range(callbacks_per_worker):
+                loop.call_soon_threadsafe(callback)
+        finally:
+            loop.call_soon_threadsafe(producer_done)
 
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = [executor.submit(producer) for _ in range(worker_count)]
-            for future in futures:
-                future.add_done_callback(stop_on_error)
             loop.run_forever()
             for future in futures:
                 future.result()

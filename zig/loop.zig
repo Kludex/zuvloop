@@ -48,7 +48,7 @@ pub const State = struct {
 
     tstate: ?*c.PyThreadState = null,
     python_depth: c_int = 1,
-    critical_section: py.CriticalSection = undefined,
+    critical_section: py.CriticalSection,
     critical_section_active: bool = false,
     fatal: ?*py.Object = null,
     metrics_cb: ?*py.Object = null,
@@ -946,6 +946,8 @@ fn newLoop(tp: ?*c.PyTypeObject, _: ?*py.Object, _: ?*py.Object) callconv(.c) ?*
         .waker = @ptrCast(block.ptr + loop_size + idle_size + 2 * timer_size),
         .flusher = @ptrCast(block.ptr + loop_size + idle_size + 2 * timer_size + async_size),
         .block = block,
+        // SAFETY: PyCriticalSection_BeginMutex initializes this storage before reading it.
+        .critical_section = undefined,
     };
 
     if (uv.uv_loop_init(st.uvloop) < 0) {
