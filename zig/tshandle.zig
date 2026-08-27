@@ -26,8 +26,8 @@ const cancelled_flag: u32 = 1 << 0;
 /// One blocked `cancel` or `cancelled` call, parked on a lock it acquired
 /// twice; the loop thread releases it when the callback finishes. Lives on the
 /// blocked thread's stack, which the block itself keeps alive. The list is
-/// only touched under the GIL, which is what serialises linking against the
-/// loop thread's drain.
+/// only touched inside the extension critical section, which serialises linking
+/// against the loop thread's drain.
 const Waiter = struct {
     lock: c.PyThread_type_lock,
     next: ?*Waiter,
@@ -132,9 +132,8 @@ pub fn run(obj: *py.Object) void {
     handlemod.invoke(obj, self.loop, callback, self.argv(), self.nargs, context);
 }
 
-/// Parks until the running callback finishes. The GIL is released for the
-/// whole wait: the loop thread needs it to finish the callback, and a foreign
-/// `threading.RLock.acquire` would release it here for the same reason.
+/// Parks until the running callback finishes. The thread state is detached for
+/// the whole wait so the loop thread can finish the callback.
 ///
 /// The parking lock is allocated per wait because waiting is the rare case;
 /// the common cancel never gets here. Should even that allocation fail, fall
@@ -300,14 +299,44 @@ fn getNone(_: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 // Every base slot is shadowed read-only, so the payload is the single source of
 // truth for traverse, clear and dealloc.
 var getsets = [_]c.PyGetSetDef{
-    .{ .name = "_callback", .get = getCallback, .set = null, .doc = "The scheduled callable.", .closure = null },
-    .{ .name = "_args", .get = getArgs, .set = null, .doc = "Arguments the callable receives.", .closure = null },
-    .{ .name = "_cancelled", .get = getCancelledSlot, .set = null, .doc = "Whether cancel() was called.", .closure = null },
-    .{ .name = "_loop", .get = getLoop, .set = null, .doc = "The loop that scheduled the callback.", .closure = null },
-    .{ .name = "_context", .get = getContext, .set = null, .doc = "The context the callback runs in.", .closure = null },
-    .{ .name = "_source_traceback", .get = getNone, .set = null, .doc = null, .closure = null },
-    .{ .name = "_repr", .get = getNone, .set = null, .doc = null, .closure = null },
-    .{ .name = "_lock", .get = getNone, .set = null, .doc = null, .closure = null },
+    .{
+        .name = "_callback",
+        .get = py.wrapGet(getCallback),
+        .set = null,
+        .doc = "The scheduled callable.",
+        .closure = null,
+    },
+    .{
+        .name = "_args",
+        .get = py.wrapGet(getArgs),
+        .set = null,
+        .doc = "Arguments the callable receives.",
+        .closure = null,
+    },
+    .{
+        .name = "_cancelled",
+        .get = py.wrapGet(getCancelledSlot),
+        .set = null,
+        .doc = "Whether cancel() was called.",
+        .closure = null,
+    },
+    .{
+        .name = "_loop",
+        .get = py.wrapGet(getLoop),
+        .set = null,
+        .doc = "The loop that scheduled the callback.",
+        .closure = null,
+    },
+    .{
+        .name = "_context",
+        .get = py.wrapGet(getContext),
+        .set = null,
+        .doc = "The context the callback runs in.",
+        .closure = null,
+    },
+    .{ .name = "_source_traceback", .get = py.wrapGet(getNone), .set = null, .doc = null, .closure = null },
+    .{ .name = "_repr", .get = py.wrapGet(getNone), .set = null, .doc = null, .closure = null },
+    .{ .name = "_lock", .get = py.wrapGet(getNone), .set = null, .doc = null, .closure = null },
     .{ .name = null, .get = null, .set = null, .doc = null, .closure = null },
 };
 
@@ -319,10 +348,10 @@ var methods = [_]c.PyMethodDef{
 };
 
 var slots = [_]c.PyType_Slot{
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
-    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&clear_)) },
-    .{ .slot = c.Py_tp_repr, .pfunc = @ptrCast(@constCast(&repr)) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&py.wrapDealloc(dealloc))) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&py.wrapTraverse(traverse))) },
+    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&py.wrapClear(clear_))) },
+    .{ .slot = c.Py_tp_repr, .pfunc = @ptrCast(@constCast(&py.wrapRepr(repr))) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
     .{ .slot = c.Py_tp_getset, .pfunc = @ptrCast(&getsets) },
     .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("A callback scheduled from another thread.")) },

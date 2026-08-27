@@ -116,6 +116,18 @@ pub fn build(b: *std.Build) void {
     const ext_suffix = b.option([]const u8, "ext-suffix", "Extension module suffix") orelse
         (b.graph.environ_map.get("HATCH_ZIG_EXT_SUFFIX") orelse ".so");
     const os = target.result.os.tag;
+    const python_libdir = if (os == .windows)
+        b.option([]const u8, "python-libdir", "CPython import library directory") orelse
+            (b.graph.environ_map.get("HATCH_ZIG_PYTHON_LIBDIR") orelse
+                @panic("python-libdir is required on Windows: pass -Dpython-libdir or set HATCH_ZIG_PYTHON_LIBDIR"))
+    else
+        "";
+    const python_lib = if (os == .windows)
+        b.option([]const u8, "python-lib", "CPython import library name") orelse
+            (b.graph.environ_map.get("HATCH_ZIG_PYTHON_LIB") orelse
+                @panic("python-lib is required on Windows: pass -Dpython-lib or set HATCH_ZIG_PYTHON_LIB"))
+    else
+        "";
 
     const mod = b.createModule(.{
         .root_source_file = b.path("zig/module.zig"),
@@ -129,6 +141,8 @@ pub fn build(b: *std.Build) void {
     mod.addIncludePath(b.path("zig"));
     mod.addIncludePath(b.path("vendor/libuv/include"));
     mod.addIncludePath(b.path("vendor/libuv/src"));
+    if (os == .windows and std.mem.endsWith(u8, python_lib, "t")) mod.addCMacro("Py_GIL_DISABLED", "1");
+    mod.addCSourceFile(.{ .file = b.path("zig/python_shim.c"), .flags = &.{"-std=c11"} });
 
     var uv_flags: std.ArrayList([]const u8) = .empty;
     uv_flags.appendSlice(b.allocator, &.{
@@ -188,14 +202,8 @@ pub fn build(b: *std.Build) void {
         // A `.pyd` resolves every symbol at link time, so the interpreter's
         // import library is required - unlike ELF and Mach-O, where the
         // dynamic loader binds the Python symbols at import.
-        const libdir = b.option([]const u8, "python-libdir", "CPython import library directory") orelse
-            (b.graph.environ_map.get("HATCH_ZIG_PYTHON_LIBDIR") orelse
-                @panic("python-libdir is required on Windows: pass -Dpython-libdir or set HATCH_ZIG_PYTHON_LIBDIR"));
-        const libname = b.option([]const u8, "python-lib", "CPython import library name") orelse
-            (b.graph.environ_map.get("HATCH_ZIG_PYTHON_LIB") orelse
-                @panic("python-lib is required on Windows: pass -Dpython-lib or set HATCH_ZIG_PYTHON_LIB"));
-        mod.addLibraryPath(.{ .cwd_relative = libdir });
-        mod.linkSystemLibrary(libname, .{});
+        mod.addLibraryPath(.{ .cwd_relative = python_libdir });
+        mod.linkSystemLibrary(python_lib, .{});
     }
 
     // Relative to the install prefix, so with the default `zig-out` the module

@@ -253,15 +253,51 @@ fn getNone(_: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 // `_when` above all: the base's ordering and equality read it, and that ordering
 // is the reason this type is worth its extra bytes.
 var getsets = [_]c.PyGetSetDef{
-    .{ .name = "_callback", .get = getCallback, .set = null, .doc = "The scheduled callable.", .closure = null },
-    .{ .name = "_args", .get = getArgs, .set = null, .doc = "Arguments the callable receives.", .closure = null },
-    .{ .name = "_cancelled", .get = getCancelledSlot, .set = null, .doc = "Whether cancel() was called.", .closure = null },
-    .{ .name = "_loop", .get = getLoop, .set = null, .doc = "The loop that scheduled the callback.", .closure = null },
-    .{ .name = "_context", .get = getContext, .set = null, .doc = "The context the callback runs in.", .closure = null },
-    .{ .name = "_when", .get = getWhen, .set = null, .doc = "The deadline, on the loop's clock.", .closure = null },
-    .{ .name = "_scheduled", .get = getScheduled, .set = null, .doc = null, .closure = null },
-    .{ .name = "_source_traceback", .get = getNone, .set = null, .doc = null, .closure = null },
-    .{ .name = "_repr", .get = getNone, .set = null, .doc = null, .closure = null },
+    .{
+        .name = "_callback",
+        .get = py.wrapGet(getCallback),
+        .set = null,
+        .doc = "The scheduled callable.",
+        .closure = null,
+    },
+    .{
+        .name = "_args",
+        .get = py.wrapGet(getArgs),
+        .set = null,
+        .doc = "Arguments the callable receives.",
+        .closure = null,
+    },
+    .{
+        .name = "_cancelled",
+        .get = py.wrapGet(getCancelledSlot),
+        .set = null,
+        .doc = "Whether cancel() was called.",
+        .closure = null,
+    },
+    .{
+        .name = "_loop",
+        .get = py.wrapGet(getLoop),
+        .set = null,
+        .doc = "The loop that scheduled the callback.",
+        .closure = null,
+    },
+    .{
+        .name = "_context",
+        .get = py.wrapGet(getContext),
+        .set = null,
+        .doc = "The context the callback runs in.",
+        .closure = null,
+    },
+    .{
+        .name = "_when",
+        .get = py.wrapGet(getWhen),
+        .set = null,
+        .doc = "The deadline, on the loop's clock.",
+        .closure = null,
+    },
+    .{ .name = "_scheduled", .get = py.wrapGet(getScheduled), .set = null, .doc = null, .closure = null },
+    .{ .name = "_source_traceback", .get = py.wrapGet(getNone), .set = null, .doc = null, .closure = null },
+    .{ .name = "_repr", .get = py.wrapGet(getNone), .set = null, .doc = null, .closure = null },
     .{ .name = null, .get = null, .set = null, .doc = null, .closure = null },
 };
 
@@ -273,10 +309,10 @@ var methods = [_]c.PyMethodDef{
 };
 
 var slots = [_]c.PyType_Slot{
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
-    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&clear_)) },
-    .{ .slot = c.Py_tp_repr, .pfunc = @ptrCast(@constCast(&repr)) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&py.wrapDealloc(dealloc))) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&py.wrapTraverse(traverse))) },
+    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&py.wrapClear(clear_))) },
+    .{ .slot = c.Py_tp_repr, .pfunc = @ptrCast(@constCast(&py.wrapRepr(repr))) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
     .{ .slot = c.Py_tp_getset, .pfunc = @ptrCast(&getsets) },
     .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("A callback scheduled for a deadline.")) },

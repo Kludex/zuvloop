@@ -1,9 +1,9 @@
 //! The native event loop: scheduling, timers, and the libuv run loop.
 //!
-//! GIL discipline: `_run` releases the GIL for the whole `uv_run` call and each
-//! libuv callback reacquires it through `gilEnter`/`gilExit`. `gil_depth` starts
-//! at 1 because the object is created while the caller holds the GIL, so nested
-//! runs (as in `close`) see a non-zero depth and skip the save/restore.
+//! `_run` detaches the thread state for the whole `uv_run` call. Each libuv
+//! callback reattaches it and enters the extension critical section. The depth
+//! starts at 1 because object methods enter with an attached thread state, so
+//! nested runs such as `close` skip the detach/attach pair.
 
 const std = @import("std");
 const py = @import("py.zig");
@@ -47,7 +47,9 @@ pub const State = struct {
     flush_head: ?*transportmod.Transport = null,
 
     tstate: ?*c.PyThreadState = null,
-    gil_depth: c_int = 1,
+    python_depth: c_int = 1,
+    critical_section: py.CriticalSection,
+    critical_section_active: bool = false,
     fatal: ?*py.Object = null,
     metrics_cb: ?*py.Object = null,
 
@@ -71,17 +73,32 @@ pub const State = struct {
     callbacks_run: u64 = 0,
     iterations: u64 = 0,
 
-    pub inline fn gilEnter(self: *State) void {
-        if (self.gil_depth == 0) {
+    pub inline fn pythonEnter(self: *State) void {
+        if (self.python_depth == 0) {
             c.PyEval_RestoreThread(self.tstate);
             self.tstate = null;
+            py.beginCriticalSection(&self.critical_section);
+            self.critical_section_active = true;
         }
-        self.gil_depth += 1;
+        self.python_depth += 1;
     }
 
-    pub inline fn gilExit(self: *State) void {
-        self.gil_depth -= 1;
-        if (self.gil_depth == 0) self.tstate = c.PyEval_SaveThread();
+    pub inline fn pythonExit(self: *State) void {
+        self.python_depth -= 1;
+        if (self.python_depth == 0) {
+            if (self.critical_section_active) {
+                py.endCriticalSection(&self.critical_section);
+                self.critical_section_active = false;
+            }
+            self.tstate = c.PyEval_SaveThread();
+        }
+    }
+
+    pub inline fn pythonResume(self: *State) void {
+        std.debug.assert(self.python_depth == 0 and !self.critical_section_active);
+        c.PyEval_RestoreThread(self.tstate);
+        self.tstate = null;
+        self.python_depth = 1;
     }
 };
 
@@ -149,8 +166,8 @@ fn retireIfCancelled(obj: *py.Object) bool {
 fn onIdle(idle: ?*uv.Idle) callconv(.c) void {
     const self: *LoopObject = @ptrCast(@alignCast(uv.getData(idle.?)));
     const st = self.state();
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
     runReady(self);
     if (st.ready.len == 0 and st.idle_active) {
         _ = uv.uv_idle_stop(st.idle);
@@ -161,8 +178,8 @@ fn onIdle(idle: ?*uv.Idle) callconv(.c) void {
 fn onTimer(timer: ?*uv.Timer) callconv(.c) void {
     const self: *LoopObject = @ptrCast(@alignCast(uv.getData(timer.?)));
     const st = self.state();
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
     st.timer_active = false;
     collectDueTimers(self);
     armTimer(self);
@@ -171,8 +188,8 @@ fn onTimer(timer: ?*uv.Timer) callconv(.c) void {
 fn onWake(waker: ?*uv.Async) callconv(.c) void {
     const self: *LoopObject = @ptrCast(@alignCast(uv.getData(waker.?)));
     const st = self.state();
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
     st.waker_pending = false;
     startIdle(st);
 }
@@ -188,8 +205,8 @@ fn onWake(waker: ?*uv.Async) callconv(.c) void {
 fn onFlush(prepare: ?*uv.Prepare) callconv(.c) void {
     const self: *LoopObject = @ptrCast(@alignCast(uv.getData(prepare.?)));
     const st = self.state();
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
     drainFlushList(st);
     // Flushing runs protocol code - `pause_writing` above all - which is free to
     // write again, so the list can refill while it is being drained. Stopping
@@ -530,8 +547,8 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
     const h = try tshandle.create(self_obj, args[0].?, p.positional, p.context);
     py.incref(h);
     // One FIFO for both schedulers, so a `call_soon` issued after a
-    // `call_soon_threadsafe` still runs after it. The caller holds the GIL and the
-    // loop touches `ready` only while holding it, so the push is atomic against it.
+    // `call_soon_threadsafe` still runs after it. Producers and the loop touch
+    // `ready` only inside the extension critical section.
     st.ready.push(h) catch {
         py.decref(h);
         py.decref(h);
@@ -540,7 +557,7 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
     // Keep the return value tracked until a later call proves only the queue retained it.
     py.incref(h);
     st.threadsafe_candidate = h;
-    // libuv clears its pending bit before `onWake` acquires the GIL. Keep one at
+    // libuv clears its pending bit before `onWake` enters Python. Keep one at
     // this layer so a producer cannot issue another kernel wake in that window.
     if (!st.idle_active and !st.waker_pending) {
         st.waker_pending = true;
@@ -601,9 +618,9 @@ fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
     startIdle(st);
     armTimer(self);
 
-    st.gilExit();
+    st.pythonExit();
     _ = uv.uv_run(st.uvloop, .default);
-    st.gilEnter();
+    st.pythonResume();
 
     st.running = false;
     st.stopping = false;
@@ -696,8 +713,8 @@ fn buildMetrics(st: *State) ?*py.Object {
 fn onSampler(timer: ?*uv.Timer) callconv(.c) void {
     const self: *LoopObject = @ptrCast(@alignCast(uv.getData(timer.?)));
     const st = self.state();
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
     const callback = st.metrics_cb orelse return;
     const snapshot = buildMetrics(st) orelse {
         py.writeUnraisable(@ptrCast(self));
@@ -853,7 +870,7 @@ fn startDnsReaper(st: *State) bool {
     return true;
 }
 
-/// Closes every handle and drains Python-facing callbacks with the GIL held.
+/// Closes every handle and drains Python-facing callbacks with Python attached.
 /// Resolver work that libuv cannot cancel is handed to a native-only reaper so
 /// a slow system resolver cannot hold up EventLoop.close().
 fn closeAllHandles(st: *State) void {
@@ -929,6 +946,8 @@ fn newLoop(tp: ?*c.PyTypeObject, _: ?*py.Object, _: ?*py.Object) callconv(.c) ?*
         .waker = @ptrCast(block.ptr + loop_size + idle_size + 2 * timer_size),
         .flusher = @ptrCast(block.ptr + loop_size + idle_size + 2 * timer_size + async_size),
         .block = block,
+        // SAFETY: PyCriticalSection_BeginMutex initializes this storage before reading it.
+        .critical_section = undefined,
     };
 
     if (uv.uv_loop_init(st.uvloop) < 0) {
@@ -1028,7 +1047,7 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
             transport = owned.owner_next;
         }
         // Once close hands resolver requests to the native reaper, their
-        // futures are gone and the request list mutates without the GIL.
+        // futures are gone and the request list mutates without Python attached.
         if (!isReaping(st)) {
             r = dns.traverse(st, visitproc, arg);
             if (r != 0) return r;
@@ -1084,8 +1103,8 @@ var methods = [_]c.PyMethodDef{
 var getsets = [_]c.PyGetSetDef{
     .{
         .name = "slow_callback_duration",
-        .get = getSlowCallbackDuration,
-        .set = setSlowCallbackDuration,
+        .get = py.wrapGet(getSlowCallbackDuration),
+        .set = py.wrapSet(setSlowCallbackDuration),
         .doc = "Seconds a callback may run before it is reported as slow.",
         .closure = null,
     },
@@ -1094,9 +1113,9 @@ var getsets = [_]c.PyGetSetDef{
 
 var slots = [_]c.PyType_Slot{
     .{ .slot = c.Py_tp_new, .pfunc = @ptrCast(@constCast(&newLoop)) },
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
-    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&clear_)) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&py.wrapDealloc(dealloc))) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&py.wrapTraverse(traverse))) },
+    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&py.wrapClear(clear_))) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
     .{ .slot = c.Py_tp_getset, .pfunc = @ptrCast(&getsets) },
     .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("libuv-backed event loop core.")) },

@@ -56,6 +56,7 @@ for address literals.
 ## Requirements
 
 - Python 3.14+
+- Standard and free-threaded CPython builds
 - Linux, macOS or Windows
 - Prebuilt wheels for Linux x86-64/AArch64, macOS x86-64/arm64 and Windows AMD64/ARM64
 
@@ -67,7 +68,6 @@ $ pip install zuvloop
 
 Source distributions install a pinned Zig 0.16 toolchain in their isolated build
 environment. Direct native development commands require Zig 0.16 on `PATH`.
-Free-threaded CPython builds are not supported and fail explicitly at build time.
 
 ## Example
 

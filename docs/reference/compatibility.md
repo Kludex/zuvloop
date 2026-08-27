@@ -83,15 +83,10 @@ string as an unspecified host; zuvloop raises `OSError`. This is the whole of it
 
 ## Interpreter and platform policy
 
-GIL-enabled CPython 3.14 and later is supported on Linux, macOS and Windows. The
-minimum 3.14.0 release and the next CPython prerelease are continuously exercised
-rather than inferred from the newest local interpreter.
-
-Free-threaded CPython is not supported yet. The native loop saves a thread state
-and deliberately releases and reacquires the GIL around `uv_run`; that ownership
-model must be redesigned before a no-GIL build is safe. A free-threaded source
-build fails at compile time with a direct explanation instead of producing a
-wheel that fails later with an unresolved CPython symbol.
+Standard and free-threaded CPython 3.14 and later are supported on Linux, macOS
+and Windows. The minimum 3.14.0 release, a free-threaded 3.14 build and the next
+CPython prerelease are continuously exercised rather than inferred from the
+newest local interpreter.
 
 Linux glibc, Linux musl and macOS execute the full in-repository suite. Windows
 builds run the portable suite natively; tests that require

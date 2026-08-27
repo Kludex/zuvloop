@@ -18,10 +18,10 @@ def main() -> int:
         f"-Doptimize={'Debug' if '--debug' in sys.argv else 'ReleaseFast'}",
     ]
     if sys.platform == "win32":
-        abiflags = sysconfig.get_config_var("abiflags") or ""
+        abi_thread = sysconfig.get_config_var("abi_thread") or ""
         command += [
             f"-Dpython-libdir={Path(sys.base_prefix) / 'libs'}",
-            f"-Dpython-lib=python{sys.version_info.major}{sys.version_info.minor}{abiflags}",
+            f"-Dpython-lib=python{sys.version_info.major}{sys.version_info.minor}{abi_thread}",
         ]
     return subprocess.run(command, cwd=ROOT).returncode
 

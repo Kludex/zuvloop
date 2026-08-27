@@ -31,8 +31,8 @@ pub const Map = std.AutoHashMapUnmanaged(c_int, *Poller);
 fn onPoll(handle: ?*uv.Poll, status: c_int, events: c_int) callconv(.c) void {
     const self: *Poller = @ptrCast(@alignCast(uv.getData(handle.?)));
     const st = self.loop.state();
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
     // A polling error has no direction, so both sides are woken to let their
     // next syscall surface it.
     const fire_read = status < 0 or events & uv.READABLE != 0;

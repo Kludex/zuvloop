@@ -93,9 +93,9 @@ fn reserve(sequence: *py.Object, what: [:0]const u8) py.Error!usize {
         const item = c.PySequence_GetItem(sequence, @intCast(i)) orelse return py.Error.Python;
         defer py.decref(item);
         var len: c.Py_ssize_t = 0;
-        if (c.PyUnicode_Check(item) != 0) {
+        if (py.isUnicode(item)) {
             _ = c.PyUnicode_AsUTF8AndSize(item, &len) orelse return py.Error.Python;
-        } else if (c.PyBytes_Check(item) != 0) {
+        } else if (py.isBytes(item)) {
             len = c.PyBytes_Size(item);
         } else {
             _ = c.PyErr_Format(py.exc_type_error, "%s must contain str or bytes", what.ptr);
@@ -114,11 +114,11 @@ fn appendAll(args: *SpawnArgs, list: *std.ArrayListUnmanaged(usize), sequence: *
         const item = c.PySequence_GetItem(sequence, @intCast(i)) orelse return py.Error.Python;
         defer py.decref(item);
         var len: c.Py_ssize_t = 0;
-        const text: [*c]const u8 = if (c.PyUnicode_Check(item) != 0)
+        const text: [*c]const u8 = if (py.isUnicode(item))
             c.PyUnicode_AsUTF8AndSize(item, &len) orelse return py.Error.Python
         else
             c.PyBytes_AsString(item);
-        if (c.PyBytes_Check(item) != 0) len = c.PyBytes_Size(item);
+        if (py.isBytes(item)) len = c.PyBytes_Size(item);
         list.appendAssumeCapacity(try args.dup(text[0..@intCast(len)]));
     }
 }
@@ -129,8 +129,8 @@ fn appendAll(args: *SpawnArgs, list: *std.ArrayListUnmanaged(usize), sequence: *
 fn onExit(handle: ?*uv.Process, status: i64, signal: c_int) callconv(.c) void {
     const self: *Process = @ptrCast(@alignCast(uv.getData(handle.?)));
     const st = self.loopState();
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
 
     // asyncio reports a signalled child as a negative signal number, the same
     // convention `subprocess` uses.
@@ -166,8 +166,8 @@ fn onExit(handle: ?*uv.Process, status: i64, signal: c_int) callconv(.c) void {
 fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     const self: *Process = @ptrCast(@alignCast(uv.getData(handle.?)));
     const st = self.loopState();
-    st.gilEnter();
-    defer st.gilExit();
+    st.pythonEnter();
+    defer st.pythonExit();
     py.decref(self);
 }
 
@@ -355,9 +355,9 @@ var methods = [_]c.PyMethodDef{
 };
 
 var slots = [_]c.PyType_Slot{
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
-    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&clear_)) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&py.wrapDealloc(dealloc))) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&py.wrapTraverse(traverse))) },
+    .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&py.wrapClear(clear_))) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
     .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("A libuv-backed child process.")) },
     .{ .slot = 0, .pfunc = null },
