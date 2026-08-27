@@ -25,6 +25,8 @@ const alloc = std.heap.c_allocator;
 /// Timers below this many cancelled entries are never compacted.
 const min_cancelled_timers = 100;
 const context_pool_capacity = 16;
+const ready_drain_batch_limit = 64;
+const ready_drain_callback_limit = 16 * 1024;
 
 pub const State = struct {
     uvloop: *uv.Loop,
@@ -114,6 +116,11 @@ pub const LoopObject = extern struct {
 
 pub var loop_type: ?*c.PyTypeObject = null;
 
+const ReadyActivity = struct {
+    st: *State,
+    external_handles: usize = 0,
+};
+
 var str_call_exception_handler: ?*py.Object = null;
 var str_coro: ?*py.Object = null;
 var str_message: ?*py.Object = null;
@@ -173,11 +180,44 @@ fn onIdle(idle: ?*uv.Idle) callconv(.c) void {
     const st = self.state();
     st.pythonEnter();
     defer st.pythonExit();
-    runReady(self);
+    var batches: usize = 0;
+    var callbacks: usize = 0;
+    while (st.ready.len != 0) {
+        const batch = st.ready.len;
+        if (batches != 0 and
+            (batches >= ready_drain_batch_limit or
+                callbacks >= ready_drain_callback_limit or
+                batch > ready_drain_callback_limit - callbacks)) break;
+        runReady(self);
+        batches += 1;
+        callbacks += batch;
+        if (st.stopping or st.fatal != null or st.ready.len == 0) break;
+        if (st.timer_active or st.dns_requests != null) break;
+        var activity = ReadyActivity{ .st = st };
+        uv.uv_walk(st.uvloop, countExternalHandles, &activity);
+        // The self-pipe poller is the one external handle every loop owns.
+        if (activity.external_handles > 1) break;
+    }
     if (st.ready.len == 0 and st.idle_active) {
         _ = uv.uv_idle_stop(st.idle);
         st.idle_active = false;
     }
+}
+
+fn countExternalHandles(handle: ?*uv.Handle, arg: ?*anyopaque) callconv(.c) void {
+    const activity: *ReadyActivity = @ptrCast(@alignCast(arg.?));
+    const h = handle.?;
+    const internal = [_]*uv.Handle{
+        @ptrCast(activity.st.idle),
+        @ptrCast(activity.st.timer),
+        @ptrCast(activity.st.sampler),
+        @ptrCast(activity.st.waker),
+        @ptrCast(activity.st.flusher),
+    };
+    for (internal) |owned| {
+        if (h == owned) return;
+    }
+    activity.external_handles += 1;
 }
 
 fn onTimer(timer: ?*uv.Timer) callconv(.c) void {

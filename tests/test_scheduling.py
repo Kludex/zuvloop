@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextvars
+import socket
 import threading
 import time
 from collections.abc import Coroutine
@@ -23,6 +24,56 @@ async def test_call_soon_runs_in_order() -> None:
     await asyncio.sleep(0)
     await asyncio.sleep(0)
     assert seen == [0, 1, 2, 3, 4]
+
+
+async def test_call_soon_chain_yields_to_timers() -> None:
+    loop = running_loop()
+    fired: asyncio.Future[int] = loop.create_future()
+    iterations = 10_000
+    seen = 0
+
+    def timer_fired() -> None:
+        fired.set_result(seen)
+
+    def step() -> None:
+        nonlocal seen
+        seen += 1
+        if seen == 1:
+            loop.call_later(0, timer_fired)
+        if seen < iterations and not fired.done():
+            loop.call_soon(step)
+
+    loop.call_soon(step)
+    assert 0 < await fired < iterations
+
+
+async def test_call_soon_chain_yields_to_io() -> None:
+    loop = running_loop()
+    sender, receiver = socket.socketpair()
+    observed: asyncio.Future[int] = loop.create_future()
+    iterations = 10_000
+    seen = 0
+
+    def readable() -> None:
+        receiver.recv(1)
+        observed.set_result(seen)
+
+    def step() -> None:
+        nonlocal seen
+        seen += 1
+        if seen == 1:
+            sender.send(b"x")
+        if seen < iterations and not observed.done():
+            loop.call_soon(step)
+
+    try:
+        loop.add_reader(receiver, readable)
+        loop.call_soon(step)
+        assert 0 < await observed < iterations
+    finally:
+        loop.remove_reader(receiver)
+        sender.close()
+        receiver.close()
 
 
 async def test_call_soon_passes_many_arguments() -> None:
