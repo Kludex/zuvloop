@@ -18,7 +18,7 @@ Your code stays the same. The loop underneath gets faster. 🚀
 
 The key features are:
 
-- **Fast**: Scheduling, timers, sockets, and DNS run in native code, driven by [libuv](https://libuv.org) — the same engine behind Node.js. Over **20x faster than asyncio** at thread-safe scheduling and faster than [uvloop](https://github.com/MagicStack/uvloop) on 10 of the 11 benchmarks below.
+- **Fast**: Scheduling, timers, sockets, and DNS run in native code, driven by [libuv](https://libuv.org) — the same engine behind Node.js. Over **25x faster than asyncio** at thread-safe scheduling and faster than [uvloop](https://github.com/MagicStack/uvloop) on 10 of the 11 benchmarks below.
 - **Drop-in**: One line to switch. Everything is standard `asyncio` — same `Task` objects, same protocols, same APIs.
 - **Fully typed**: Ships type hints for everything and passes **strict mypy**. Your editor will love it. ✨
 - **Observable**: Built-in [OpenTelemetry](https://opentelemetry.io) instrumentation — slow-callback spans, unhandled-exception spans, loop metrics. Zero cost until you turn it on.
@@ -31,21 +31,22 @@ The key features are:
 </p>
 
 Throughput relative to stock asyncio (higher is better), measured with the suite in
-`benchmarks/` on an M3 Max, macOS 26, CPython 3.14.3, and libuv 1.51.0. The labels show the absolute numbers.
+`benchmarks/` on an M3 Max, macOS 26, CPython 3.14.3, and libuv 1.51.0. Each result is the median of seven
+interleaved in-process runs or five interleaved HTTP runs. The labels show the absolute numbers.
 
 | Benchmark | asyncio | uvloop | zuvloop |
 | --- | ---: | ---: | ---: |
-| `call_soon` | 2.35M/s | 5.05M/s | **6.54M/s** |
-| `call_soon` with arguments | 2.27M/s | 3.53M/s | **6.07M/s** |
-| `call_soon_threadsafe` | 0.38M/s | 5.15M/s | **8.48M/s** |
-| timer schedule + cancel | 1.46M/s | 2.37M/s | **8.95M/s** |
-| bulk stream | 6.6 GiB/s | 6.9 GiB/s | **9.4 GiB/s** |
-| echo round trips, 1 KiB | 37.2k/s | 42.3k/s | **51.9k/s** |
-| uvicorn, plaintext | 47.0k req/s | 63.6k req/s | **67.3k req/s** |
-| uvicorn, 10 KiB body | 44.5k req/s | 59.9k req/s | **64.3k req/s** |
-| aiohttp server | 42.5k req/s | 51.7k req/s | **52.9k req/s** |
-| aiohttp client | 9.49k req/s | **11.5k req/s** | 11.1k req/s |
-| `getaddrinfo`, numeric host | 20.7k/s | 1.47M/s | **1.77M/s** |
+| `call_soon` | 2.34M/s | 4.51M/s | **8.80M/s** |
+| `call_soon` with arguments | 2.13M/s | 3.39M/s | **9.39M/s** |
+| `call_soon_threadsafe` | 0.46M/s | 4.81M/s | **12.4M/s** |
+| timer schedule + cancel | 1.32M/s | 2.50M/s | **9.21M/s** |
+| bulk stream | 7.2 GiB/s | 8.0 GiB/s | **9.2 GiB/s** |
+| echo round trips, 1 KiB | 39.0k/s | 54.2k/s | **59.7k/s** |
+| uvicorn, plaintext | 48.0k req/s | 64.9k req/s | **69.5k req/s** |
+| uvicorn, 10 KiB body | 43.8k req/s | 55.6k req/s | **64.7k req/s** |
+| aiohttp server | 31.8k req/s | 42.0k req/s | **42.5k req/s** |
+| aiohttp client | 10.2k req/s | **12.2k req/s** | **12.2k req/s** |
+| `getaddrinfo`, numeric host | 28.0k/s | 1.42M/s | **1.73M/s** |
 
 Curious how? The [architecture docs](https://zuvloop.marcelotryle.com) explain the design:
 argument storage inside handles (no tuple per callback), a native timer heap behind a single

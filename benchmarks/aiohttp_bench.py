@@ -124,12 +124,13 @@ def loop_factories() -> dict[str, Factory]:
 
 def report(title: str, samples: dict[str, list[float]], unit: str) -> None:
     print(title)
-    best = {name: max(values) for name, values in samples.items()}
-    for name, value in best.items():
-        spread = statistics.pstdev(samples[name]) / value if len(samples[name]) > 1 else 0.0
+    medians = {name: statistics.median(values) for name, values in samples.items()}
+    for name, value in medians.items():
+        values = samples[name]
+        spread = statistics.pstdev(values) / statistics.mean(values) if len(values) > 1 else 0.0
         print(f"  {name:<8}{value:>12,.0f} {unit}  (+/- {spread:.1%})")
-    if "uvloop" in best:
-        print(f"  {'':<8}{'zuvloop / uvloop':>12}  {best['zuvloop'] / best['uvloop']:.2f}x")
+    if "uvloop" in medians:
+        print(f"  {'':<8}{'zuvloop / uvloop':>12}  {medians['zuvloop'] / medians['uvloop']:.2f}x")
     print()
 
 
