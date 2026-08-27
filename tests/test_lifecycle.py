@@ -341,6 +341,7 @@ def test_retained_threadsafe_handle_cycle_does_not_retain_an_abandoned_loop() ->
     loop = zuvloop.new_event_loop()
     handles: list[asyncio.Handle] = []
     handle = loop.call_soon_threadsafe(handles.clear)
+    handle.get_context()
     handles.append(handle)
     loop_ref = weakref.ref(loop)
     handle_ref = weakref.ref(handle)

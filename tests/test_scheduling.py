@@ -57,6 +57,37 @@ async def test_call_soon_accepts_an_explicit_context() -> None:
     assert seen == ["explicit"]
 
 
+def test_call_soon_keeps_empty_contexts_independent() -> None:
+    loop = zuvloop.new_event_loop()
+    variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable", default="default")
+    seen: list[str] = []
+
+    loop.call_soon(variable.set, "first callback")
+    loop.call_soon(lambda: seen.append(variable.get()))
+    loop.call_soon(loop.stop)
+    try:
+        loop.run_forever()
+    finally:
+        loop.close()
+    assert seen == ["default"]
+
+
+def test_call_soon_exposes_its_context_before_running() -> None:
+    loop = zuvloop.new_event_loop()
+    variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable", default="default")
+    seen: list[str] = []
+    handle = loop.call_soon(lambda: seen.append(variable.get()))
+    context = handle.get_context()
+    context.run(variable.set, "modified")
+    loop.call_soon(loop.stop)
+    try:
+        loop.run_forever()
+    finally:
+        loop.close()
+    assert handle.get_context() is context
+    assert seen == ["modified"]
+
+
 async def test_call_soon_rejects_unknown_keywords() -> None:
     loop = running_loop()
     with pytest.raises(TypeError, match="context"):
