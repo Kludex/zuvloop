@@ -232,7 +232,7 @@ def test_parallel_event_loops(
 ) -> None:
     """Four independent loops run CPU-bound callbacks in parallel."""
     workers = 4
-    iterations = 250_000
+    iterations = 1_000_000
 
     def setup() -> tuple[tuple[list[asyncio.AbstractEventLoop], threading.Barrier, list[int]], dict[str, int]]:
         loops = [(factory or asyncio.new_event_loop)() for _ in range(workers)]
@@ -259,8 +259,7 @@ def test_parallel_event_loops(
             barrier.wait()
             loop.run_forever()
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            list(executor.map(run, loops))
+        list(executor.map(run, loops))
         assert len(set(results)) == 1
 
     def teardown(
@@ -272,7 +271,13 @@ def test_parallel_event_loops(
         for loop in loops:
             loop.close()
 
-    benchmark.pedantic(measure, setup=setup, teardown=teardown, rounds=5)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        barrier = threading.Barrier(workers + 1)
+        started = [executor.submit(barrier.wait) for _ in range(workers)]
+        barrier.wait()
+        for future in started:
+            future.result()
+        benchmark.pedantic(measure, setup=setup, teardown=teardown, rounds=5)
 
 
 @pytest.mark.benchmark
