@@ -69,7 +69,7 @@ async def test_call_soon_chain_yields_to_io() -> None:
     try:
         loop.add_reader(receiver, readable)
         loop.call_soon(step)
-        assert 0 < await observed < iterations
+        assert 0 < await observed <= 9
     finally:
         loop.remove_reader(receiver)
         sender.close()

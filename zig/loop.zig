@@ -26,6 +26,7 @@ const alloc = std.heap.c_allocator;
 const min_cancelled_timers = 100;
 const context_pool_capacity = 16;
 const ready_drain_batch_limit = 64;
+const ready_drain_io_batch_limit = 8;
 const ready_drain_callback_limit = 16 * 1024;
 
 pub const State = struct {
@@ -119,6 +120,7 @@ pub var loop_type: ?*c.PyTypeObject = null;
 const ReadyActivity = struct {
     st: *State,
     external_handles: usize = 0,
+    closing: bool = false,
 };
 
 var str_call_exception_handler: ?*py.Object = null;
@@ -182,21 +184,29 @@ fn onIdle(idle: ?*uv.Idle) callconv(.c) void {
     defer st.pythonExit();
     var batches: usize = 0;
     var callbacks: usize = 0;
+    var batch_limit: usize = ready_drain_batch_limit;
     while (st.ready.len != 0) {
         const batch = st.ready.len;
         if (batches != 0 and
-            (batches >= ready_drain_batch_limit or
+            (batches >= batch_limit or
                 callbacks >= ready_drain_callback_limit or
-                batch > ready_drain_callback_limit - callbacks)) break;
+                batch > ready_drain_callback_limit - callbacks or
+                (batch_limit == ready_drain_io_batch_limit and batch != 1))) break;
         runReady(self);
         batches += 1;
         callbacks += batch;
         if (st.stopping or st.fatal != null or st.ready.len == 0) break;
-        if (st.timer_active or st.dns_requests != null) break;
-        var activity = ReadyActivity{ .st = st };
-        uv.uv_walk(st.uvloop, countExternalHandles, &activity);
-        // The self-pipe poller is the one external handle every loop owns.
-        if (activity.external_handles > 1) break;
+        if (st.timer_active or st.dns_requests != null or st.flush_head != null) break;
+        if (batch_limit == ready_drain_batch_limit) {
+            var activity = ReadyActivity{ .st = st };
+            uv.uv_walk(st.uvloop, countExternalHandles, &activity);
+            // The self-pipe poller is the one external handle every loop owns.
+            if (activity.closing) break;
+            if (activity.external_handles > 1) {
+                if (batch != 1) break;
+                batch_limit = ready_drain_io_batch_limit;
+            }
+        }
     }
     if (st.ready.len == 0 and st.idle_active) {
         _ = uv.uv_idle_stop(st.idle);
@@ -218,6 +228,7 @@ fn countExternalHandles(handle: ?*uv.Handle, arg: ?*anyopaque) callconv(.c) void
         if (h == owned) return;
     }
     activity.external_handles += 1;
+    if (uv.uv_is_closing(h) != 0) activity.closing = true;
 }
 
 fn onTimer(timer: ?*uv.Timer) callconv(.c) void {
