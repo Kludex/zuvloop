@@ -348,10 +348,6 @@ pub fn wrapO(comptime f: anytype) fn (?*Object, ?*Object) callconv(.c) ?*Object 
 pub fn wrapDealloc(comptime f: anytype) fn (?*Object) callconv(.c) void {
     const Inner = struct {
         fn call(self: ?*Object) callconv(.c) void {
-            // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
-            var critical_section: CriticalSection = undefined;
-            beginCriticalSection(&critical_section, self.?);
-            defer endCriticalSection(&critical_section);
             f(self);
         }
     };
