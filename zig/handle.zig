@@ -1,40 +1,37 @@
 //! `Handle`: the callback record `call_soon` returns.
 //!
-//! Arguments up to `inline_args` live inside the object, so the common
-//! `call_soon(cb, a, b)` never allocates a tuple and the callback is invoked
-//! straight through the vectorcall protocol. Deliberately not a subtype of
-//! `asyncio.Handle`, which would take the object from 88 bytes to 144: its
-//! `__slots__` are storage this never writes, and measured 2% of `call_soon`
-//! on the object the loop allocates more often than any other. `timer.zig`
-//! pays that price, where the ordering the base defines earns it.
+//! Arguments live in the object's variable tail, so a zero-argument callback
+//! reserves no argument slots and no call needs a secondary allocation. Calls
+//! still avoid a tuple and invoke the callback through vectorcall. Deliberately
+//! not a subtype of `asyncio.Handle`, whose slots are storage this never writes.
+//! `timer.zig` pays that price, where the ordering the base defines earns it.
 
-const std = @import("std");
 const py = @import("py.zig");
 const c = py.c;
 const contextmod = @import("context.zig");
 const loopmod = @import("loop.zig");
 
-const inline_args = 3;
-const arg_alloc = std.heap.c_allocator;
-
 pub const CANCELLED: u32 = 1 << 0;
 const RUNNING: u32 = 1 << 2;
+const args_cleared: u32 = 1 << 3;
 
 pub const Handle = extern struct {
-    ob_base: c.PyObject,
+    ob_base: c.PyVarObject,
     loop: ?*py.Object,
     callback: ?*py.Object,
     context: ?*py.Object,
-    heap_args: ?[*]?*py.Object,
-    nargs: c.Py_ssize_t,
     flags: u32,
-    args: [inline_args]?*py.Object,
 
-    pub inline fn argv(self: *Handle) [*]?*py.Object {
-        return self.heap_args orelse @ptrCast(&self.args);
+    fn argv(self: *Handle) [*]?*py.Object {
+        return @ptrCast(@alignCast(c.PyObject_GetItemData(@ptrCast(self))));
     }
 
-    pub inline fn isCancelled(self: *const Handle) bool {
+    fn nargs(self: *const Handle) c.Py_ssize_t {
+        return if (self.flags & args_cleared != 0) 0 else self.ob_base.ob_size;
+    }
+
+    /// Reports whether cancellation prevents this handle from running.
+    pub fn isCancelled(self: *const Handle) bool {
         return self.flags & CANCELLED != 0;
     }
 };
@@ -49,22 +46,14 @@ pub fn create(
     args: []const ?*py.Object,
     context: ?*py.Object,
 ) py.Error!*Handle {
-    const obj = c.PyType_GenericAlloc(tp, 0) orelse return py.Error.Python;
+    const obj = c.PyType_GenericAlloc(tp, @intCast(args.len)) orelse return py.Error.Python;
     const self: *Handle = @ptrCast(@alignCast(obj));
 
-    if (args.len > inline_args) {
-        const buf = arg_alloc.alloc(?*py.Object, args.len) catch {
-            py.decref(obj);
-            return py.errNoMemory();
-        };
-        self.heap_args = buf.ptr;
-    }
     const dst = self.argv();
     for (args, 0..) |a, i| {
         py.incref(a.?);
         dst[i] = a;
     }
-    self.nargs = @intCast(args.len);
 
     py.incref(loop);
     self.loop = loop;
@@ -95,7 +84,7 @@ pub fn run(self: *Handle) void {
         loopmod.callbackFailed(self.loop, @ptrCast(self));
         return;
     };
-    invoke(@ptrCast(self), self.loop, callback, self.argv(), self.nargs, context);
+    invoke(@ptrCast(self), self.loop, callback, self.argv(), self.nargs(), context);
 }
 
 /// Calls `callback(*argv)` inside `ctx`, routing failures to `loop` with
@@ -127,15 +116,12 @@ pub fn invoke(
 }
 
 fn clearArgs(self: *Handle) void {
-    const n: usize = @intCast(self.nargs);
+    if (self.flags & args_cleared != 0) return;
+    const n: usize = @intCast(self.ob_base.ob_size);
     const dst = self.argv();
     var i: usize = 0;
     while (i < n) : (i += 1) py.clear(&dst[i]);
-    self.nargs = 0;
-    if (self.heap_args) |buf| {
-        arg_alloc.free(buf[0..n]);
-        self.heap_args = null;
-    }
+    self.flags |= args_cleared;
 }
 
 fn dealloc(obj: ?*py.Object) callconv(.c) void {
@@ -159,7 +145,7 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
     if (r != 0) return r;
     r = py.visit(self.context, visitproc, arg);
     if (r != 0) return r;
-    const n: usize = @intCast(self.nargs);
+    const n: usize = @intCast(self.nargs());
     const items = self.argv();
     var i: usize = 0;
     while (i < n) : (i += 1) {
@@ -210,9 +196,9 @@ fn getCallback(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 
 fn getArgs(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
     const self: *Handle = @ptrCast(@alignCast(self_obj.?));
-    const n: usize = @intCast(self.nargs);
+    const n: usize = @intCast(self.nargs());
     const items = self.argv();
-    const tuple = c.PyTuple_New(self.nargs) orelse return null;
+    const tuple = c.PyTuple_New(@intCast(n)) orelse return null;
     var i: usize = 0;
     while (i < n) : (i += 1) {
         _ = c.PyTuple_SetItem(tuple, @intCast(i), py.newref(items[i]));
@@ -268,13 +254,13 @@ fn slots(methods: [*]c.PyMethodDef) [8]c.PyType_Slot {
 var handle_slots = slots(&handle_methods);
 
 // asyncio's handles are weak-referenceable, so these must be too.
-const flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | c.Py_TPFLAGS_MANAGED_WEAKREF |
+const flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | c.Py_TPFLAGS_MANAGED_WEAKREF | c.Py_TPFLAGS_ITEMS_AT_END |
     c.Py_TPFLAGS_IMMUTABLETYPE | c.Py_TPFLAGS_DISALLOW_INSTANTIATION;
 
 var handle_spec = c.PyType_Spec{
     .name = "zuvloop._zuvloop.Handle",
     .basicsize = @sizeOf(Handle),
-    .itemsize = 0,
+    .itemsize = @sizeOf(?*py.Object),
     .flags = flags,
     .slots = &handle_slots,
 };
