@@ -377,15 +377,19 @@ jobs:
       - uses: CodSpeedHQ/action@4296e51e7041e24dadb86d1d6e8b9320d223dbe8 # v5.0.3
         with:
           mode: walltime
-          run: uv run --no-sync pytest benchmarks/ --codspeed -k "not parallel_event_loops"
+          run: >-
+            uv run --no-sync pytest benchmarks/ --codspeed
+            -k "not parallel_event_loops and not ready_chain_with_idle_connections"
 
-      - name: Run the parallel benchmark without profiling
+      - name: Run profiler-incompatible benchmarks
         uses: CodSpeedHQ/action@4296e51e7041e24dadb86d1d6e8b9320d223dbe8 # v5.0.3
         env:
           CODSPEED_PERF_ENABLED: "false"
         with:
           mode: walltime
-          run: uv run --no-sync pytest benchmarks/test_benchmarks.py::test_parallel_event_loops --codspeed
+          run: >-
+            uv run --no-sync pytest benchmarks/ --codspeed
+            -k "parallel_event_loops or ready_chain_with_idle_connections"
 
   docs:
     runs-on: ubuntu-latest
