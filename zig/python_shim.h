@@ -21,7 +21,7 @@ typedef struct {
     uintptr_t storage[2];
 } zuvloop_critical_section;
 
-void zuvloop_critical_section_begin(zuvloop_critical_section *section);
+void zuvloop_critical_section_begin(zuvloop_critical_section *section, PyObject *object);
 void zuvloop_critical_section_end(zuvloop_critical_section *section);
 PyObject *zuvloop_PyModuleDef_Init(PyModuleDef *definition);
 void zuvloop_Py_INCREF(PyObject *object);

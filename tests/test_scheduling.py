@@ -394,6 +394,19 @@ def test_call_soon_threadsafe_accepts_concurrent_producers() -> None:
     assert seen == expected
 
 
+def test_call_soon_preserves_order_after_threadsafe_scheduling() -> None:
+    loop = zuvloop.new_event_loop()
+    seen: list[str] = []
+    loop.call_soon_threadsafe(seen.append, "threadsafe")
+    loop.call_soon(seen.append, "local")
+    loop.call_soon(loop.stop)
+    try:
+        loop.run_forever()
+    finally:
+        loop.close()
+    assert seen == ["threadsafe", "local"]
+
+
 def test_call_soon_threadsafe_captures_the_worker_context() -> None:
     loop = zuvloop.new_event_loop()
     variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable", default="default")

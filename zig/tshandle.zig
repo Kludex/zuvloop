@@ -26,7 +26,7 @@ const cancelled_flag: u32 = 1 << 0;
 /// One blocked `cancel` or `cancelled` call, parked on a lock it acquired
 /// twice; the loop thread releases it when the callback finishes. Lives on the
 /// blocked thread's stack, which the block itself keeps alive. The list is
-/// only touched inside the extension critical section, which serialises linking
+/// only touched inside the handle's critical section, which serialises linking
 /// against the loop thread's drain.
 const Waiter = struct {
     lock: c.PyThread_type_lock,
@@ -66,6 +66,10 @@ pub inline fn owns(obj: *py.Object) bool {
 
 /// Untracks a handle owned only by the ready queue and candidate slot.
 pub fn untrackIfQueueOnly(obj: *py.Object) void {
+    // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
+    var critical_section: py.CriticalSection = undefined;
+    py.beginCriticalSection(&critical_section, obj);
+    defer py.endCriticalSection(&critical_section);
     if (c.Py_REFCNT(obj) == 2 and c.PyObject_GC_IsTracked(obj) != 0) c.PyObject_GC_UnTrack(obj);
 }
 
@@ -110,6 +114,10 @@ pub fn create(
 /// Runs the callback unless a cancellation already won the state word, then
 /// releases any thread blocked in `cancel` or `cancelled`.
 pub fn run(obj: *py.Object) void {
+    // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
+    var critical_section: py.CriticalSection = undefined;
+    py.beginCriticalSection(&critical_section, obj);
+    defer py.endCriticalSection(&critical_section);
     const self = payload(obj);
     if (@cmpxchgStrong(u32, &self.run_state, PENDING, RUNNING, .acq_rel, .acquire) != null) return;
     const previous_running = running_payload;
@@ -245,6 +253,10 @@ fn visitReferences(obj: *py.Object, visitproc: c.visitproc, arg: ?*anyopaque) c_
 
 /// Visits queued references transparently when the handle is untracked.
 pub fn traverseQueued(obj: *py.Object, visitproc: c.visitproc, arg: ?*anyopaque) c_int {
+    // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
+    var critical_section: py.CriticalSection = undefined;
+    py.beginCriticalSection(&critical_section, obj);
+    defer py.endCriticalSection(&critical_section);
     if (c.PyObject_GC_IsTracked(obj) != 0) return py.visit(obj, visitproc, arg);
     return visitReferences(obj, visitproc, arg);
 }

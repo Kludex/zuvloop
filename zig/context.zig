@@ -39,7 +39,10 @@ pub fn capture(explicit: ?*py.Object, flags: *u32) py.Error!?*py.Object {
 /// Returns the context in `context`, allocating or borrowing an empty one.
 pub fn materialize(loop: ?*py.Object, context: *?*py.Object) py.Error!*py.Object {
     if (context.*) |existing| return existing;
-    const created = if (loop) |loop_obj| loopmod.takeEmptyContext(loop_obj) else null;
+    const created = if (loop) |loop_obj|
+        if (loopmod.isRunningThread(loop_obj)) loopmod.takeEmptyContext(loop_obj) else null
+    else
+        null;
     context.* = created orelse c.PyContext_New() orelse return py.Error.Python;
     return context.*.?;
 }
@@ -53,7 +56,7 @@ pub fn release(loop: ?*py.Object, context: *?*py.Object, flags: u32) void {
         const size = c.PyObject_Size(current);
         if (size == 0 and context_obj.weakrefs == null and context_obj.entered == 0) {
             if (loop) |loop_obj| {
-                if (loopmod.recycleEmptyContext(loop_obj, current)) return;
+                if (loopmod.isRunningThread(loop_obj) and loopmod.recycleEmptyContext(loop_obj, current)) return;
             }
         } else if (size < 0) {
             c.PyErr_Clear();

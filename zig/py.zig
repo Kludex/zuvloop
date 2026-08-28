@@ -8,8 +8,8 @@ pub const Object = c.PyObject;
 pub const Ref = *Object;
 pub const CriticalSection = c.zuvloop_critical_section;
 
-pub inline fn beginCriticalSection(section: *CriticalSection) void {
-    if (@hasDecl(c, "Py_GIL_DISABLED")) c.zuvloop_critical_section_begin(section);
+pub inline fn beginCriticalSection(section: *CriticalSection, object: *Object) void {
+    if (@hasDecl(c, "Py_GIL_DISABLED")) c.zuvloop_critical_section_begin(section, object);
 }
 
 pub inline fn endCriticalSection(section: *CriticalSection) void {
@@ -258,9 +258,9 @@ pub fn errUvIfNeg(status: c_int) Error!void {
 pub fn wrap(comptime f: anytype) fn (?*Object, [*c]?*Object, c.Py_ssize_t) callconv(.c) ?*Object {
     const Inner = struct {
         fn call(self: ?*Object, args: [*c]?*Object, nargs: c.Py_ssize_t) callconv(.c) ?*Object {
-            // SAFETY: PyCriticalSection_BeginMutex initializes this storage before reading it.
+            // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
             var critical_section: CriticalSection = undefined;
-            beginCriticalSection(&critical_section);
+            beginCriticalSection(&critical_section, self.?);
             defer endCriticalSection(&critical_section);
             return f(self.?, args[0..@intCast(nargs)]) catch |e| switch (e) {
                 Error.Python => null,
@@ -275,10 +275,24 @@ pub fn wrap(comptime f: anytype) fn (?*Object, [*c]?*Object, c.Py_ssize_t) callc
 pub fn wrapKw(comptime f: anytype) fn (?*Object, [*c]?*Object, c.Py_ssize_t, ?*Object) callconv(.c) ?*Object {
     const Inner = struct {
         fn call(self: ?*Object, args: [*c]?*Object, nargs: c.Py_ssize_t, kwnames: ?*Object) callconv(.c) ?*Object {
-            // SAFETY: PyCriticalSection_BeginMutex initializes this storage before reading it.
+            // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
             var critical_section: CriticalSection = undefined;
-            beginCriticalSection(&critical_section);
+            beginCriticalSection(&critical_section, self.?);
             defer endCriticalSection(&critical_section);
+            const nkw: usize = if (kwnames) |names| @intCast(c.PyTuple_Size(names)) else 0;
+            const total: usize = @as(usize, @intCast(nargs)) + nkw;
+            return f(self.?, args[0..total], @intCast(nargs), kwnames) catch |e| switch (e) {
+                Error.Python => null,
+            };
+        }
+    };
+    return Inner.call;
+}
+
+/// Wraps a keyword method that does not require wrapper-level synchronization.
+pub fn wrapKwUnlocked(comptime f: anytype) fn (?*Object, [*c]?*Object, c.Py_ssize_t, ?*Object) callconv(.c) ?*Object {
+    const Inner = struct {
+        fn call(self: ?*Object, args: [*c]?*Object, nargs: c.Py_ssize_t, kwnames: ?*Object) callconv(.c) ?*Object {
             const nkw: usize = if (kwnames) |names| @intCast(c.PyTuple_Size(names)) else 0;
             const total: usize = @as(usize, @intCast(nargs)) + nkw;
             return f(self.?, args[0..total], @intCast(nargs), kwnames) catch |e| switch (e) {
@@ -292,10 +306,22 @@ pub fn wrapKw(comptime f: anytype) fn (?*Object, [*c]?*Object, c.Py_ssize_t, ?*O
 pub fn wrapNoArgs(comptime f: anytype) fn (?*Object, ?*Object) callconv(.c) ?*Object {
     const Inner = struct {
         fn call(self: ?*Object, _: ?*Object) callconv(.c) ?*Object {
-            // SAFETY: PyCriticalSection_BeginMutex initializes this storage before reading it.
+            // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
             var critical_section: CriticalSection = undefined;
-            beginCriticalSection(&critical_section);
+            beginCriticalSection(&critical_section, self.?);
             defer endCriticalSection(&critical_section);
+            return f(self.?) catch |e| switch (e) {
+                Error.Python => null,
+            };
+        }
+    };
+    return Inner.call;
+}
+
+/// Wraps a no-argument method that does not require wrapper-level synchronization.
+pub fn wrapNoArgsUnlocked(comptime f: anytype) fn (?*Object, ?*Object) callconv(.c) ?*Object {
+    const Inner = struct {
+        fn call(self: ?*Object, _: ?*Object) callconv(.c) ?*Object {
             return f(self.?) catch |e| switch (e) {
                 Error.Python => null,
             };
@@ -307,9 +333,9 @@ pub fn wrapNoArgs(comptime f: anytype) fn (?*Object, ?*Object) callconv(.c) ?*Ob
 pub fn wrapO(comptime f: anytype) fn (?*Object, ?*Object) callconv(.c) ?*Object {
     const Inner = struct {
         fn call(self: ?*Object, arg: ?*Object) callconv(.c) ?*Object {
-            // SAFETY: PyCriticalSection_BeginMutex initializes this storage before reading it.
+            // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
             var critical_section: CriticalSection = undefined;
-            beginCriticalSection(&critical_section);
+            beginCriticalSection(&critical_section, self.?);
             defer endCriticalSection(&critical_section);
             return f(self.?, arg.?) catch |e| switch (e) {
                 Error.Python => null,
@@ -322,9 +348,9 @@ pub fn wrapO(comptime f: anytype) fn (?*Object, ?*Object) callconv(.c) ?*Object 
 pub fn wrapDealloc(comptime f: anytype) fn (?*Object) callconv(.c) void {
     const Inner = struct {
         fn call(self: ?*Object) callconv(.c) void {
-            // SAFETY: PyCriticalSection_BeginMutex initializes this storage before reading it.
+            // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
             var critical_section: CriticalSection = undefined;
-            beginCriticalSection(&critical_section);
+            beginCriticalSection(&critical_section, self.?);
             defer endCriticalSection(&critical_section);
             f(self);
         }
@@ -335,9 +361,9 @@ pub fn wrapDealloc(comptime f: anytype) fn (?*Object) callconv(.c) void {
 pub fn wrapTraverse(comptime f: anytype) fn (?*Object, c.visitproc, ?*anyopaque) callconv(.c) c_int {
     const Inner = struct {
         fn call(self: ?*Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv(.c) c_int {
-            // SAFETY: PyCriticalSection_BeginMutex initializes this storage before reading it.
+            // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
             var critical_section: CriticalSection = undefined;
-            beginCriticalSection(&critical_section);
+            beginCriticalSection(&critical_section, self.?);
             defer endCriticalSection(&critical_section);
             return f(self, visitproc, arg);
         }
@@ -348,9 +374,9 @@ pub fn wrapTraverse(comptime f: anytype) fn (?*Object, c.visitproc, ?*anyopaque)
 pub fn wrapClear(comptime f: anytype) fn (?*Object) callconv(.c) c_int {
     const Inner = struct {
         fn call(self: ?*Object) callconv(.c) c_int {
-            // SAFETY: PyCriticalSection_BeginMutex initializes this storage before reading it.
+            // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
             var critical_section: CriticalSection = undefined;
-            beginCriticalSection(&critical_section);
+            beginCriticalSection(&critical_section, self.?);
             defer endCriticalSection(&critical_section);
             return f(self);
         }
@@ -361,9 +387,9 @@ pub fn wrapClear(comptime f: anytype) fn (?*Object) callconv(.c) c_int {
 pub fn wrapRepr(comptime f: anytype) fn (?*Object) callconv(.c) ?*Object {
     const Inner = struct {
         fn call(self: ?*Object) callconv(.c) ?*Object {
-            // SAFETY: PyCriticalSection_BeginMutex initializes this storage before reading it.
+            // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
             var critical_section: CriticalSection = undefined;
-            beginCriticalSection(&critical_section);
+            beginCriticalSection(&critical_section, self.?);
             defer endCriticalSection(&critical_section);
             return f(self);
         }
@@ -374,9 +400,9 @@ pub fn wrapRepr(comptime f: anytype) fn (?*Object) callconv(.c) ?*Object {
 pub fn wrapGet(comptime f: anytype) fn (?*Object, ?*anyopaque) callconv(.c) ?*Object {
     const Inner = struct {
         fn call(self: ?*Object, closure: ?*anyopaque) callconv(.c) ?*Object {
-            // SAFETY: PyCriticalSection_BeginMutex initializes this storage before reading it.
+            // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
             var critical_section: CriticalSection = undefined;
-            beginCriticalSection(&critical_section);
+            beginCriticalSection(&critical_section, self.?);
             defer endCriticalSection(&critical_section);
             return f(self, closure);
         }
@@ -387,9 +413,9 @@ pub fn wrapGet(comptime f: anytype) fn (?*Object, ?*anyopaque) callconv(.c) ?*Ob
 pub fn wrapSet(comptime f: anytype) fn (?*Object, ?*Object, ?*anyopaque) callconv(.c) c_int {
     const Inner = struct {
         fn call(self: ?*Object, value: ?*Object, closure: ?*anyopaque) callconv(.c) c_int {
-            // SAFETY: PyCriticalSection_BeginMutex initializes this storage before reading it.
+            // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
             var critical_section: CriticalSection = undefined;
-            beginCriticalSection(&critical_section);
+            beginCriticalSection(&critical_section, self.?);
             defer endCriticalSection(&critical_section);
             return f(self, value, closure);
         }
@@ -415,10 +441,34 @@ pub fn methodKw(comptime name: [:0]const u8, comptime f: anytype, comptime doc: 
     };
 }
 
+/// Defines a keyword method that does not require wrapper-level synchronization.
+pub fn methodKwUnlocked(comptime name: [:0]const u8, comptime f: anytype, comptime doc: ?[*:0]const u8) c.PyMethodDef {
+    return .{
+        .ml_name = name.ptr,
+        .ml_meth = @ptrCast(&wrapKwUnlocked(f)),
+        .ml_flags = c.METH_FASTCALL | c.METH_KEYWORDS,
+        .ml_doc = doc,
+    };
+}
+
 pub fn methodNoArgs(comptime name: [:0]const u8, comptime f: anytype, comptime doc: ?[*:0]const u8) c.PyMethodDef {
     return .{
         .ml_name = name.ptr,
         .ml_meth = @ptrCast(&wrapNoArgs(f)),
+        .ml_flags = c.METH_NOARGS,
+        .ml_doc = doc,
+    };
+}
+
+/// Defines a no-argument method that does not require wrapper-level synchronization.
+pub fn methodNoArgsUnlocked(
+    comptime name: [:0]const u8,
+    comptime f: anytype,
+    comptime doc: ?[*:0]const u8,
+) c.PyMethodDef {
+    return .{
+        .ml_name = name.ptr,
+        .ml_meth = @ptrCast(&wrapNoArgsUnlocked(f)),
         .ml_flags = c.METH_NOARGS,
         .ml_doc = doc,
     };

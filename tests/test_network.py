@@ -674,7 +674,7 @@ async def test_pause_writing_cannot_overfill_a_reentrant_batch() -> None:
                 self.transport.write(b"r")
 
     async def until_markers_arrive() -> None:
-        while b"rrrr" not in sinks[0].received:
+        while not sinks or b"rrrr" not in sinks[0].received:
             await asyncio.sleep(0.01)
 
     transport, client = await loop.create_connection(RefillsBatch, "127.0.0.1", port)
