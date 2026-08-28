@@ -20,6 +20,7 @@ see `uvicorn_bench.py`, `aiohttp_bench.py` and `write_batching.py`.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import os
 import socket
 import threading
@@ -221,6 +222,57 @@ def test_tasks(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> 
         await asyncio.gather(*(tiny_task() for _ in range(5_000)))
 
     benchmark(drive(loop, work))
+
+
+@pytest.mark.benchmark
+@pytest.mark.parametrize("factory", LOOPS.values(), ids=LOOPS)
+def test_parallel_event_loops(
+    benchmark: BenchmarkFixture,
+    factory: Factory | None,
+) -> None:
+    """Four independent loops run CPU-bound callbacks in parallel."""
+    workers = 4
+    iterations = 1_000_000
+
+    def setup() -> tuple[tuple[list[asyncio.AbstractEventLoop], threading.Barrier, list[int]], dict[str, int]]:
+        loops = [(factory or asyncio.new_event_loop)() for _ in range(workers)]
+        barrier = threading.Barrier(workers)
+        results: list[int] = []
+        for loop in loops:
+
+            def compute(loop: asyncio.AbstractEventLoop = loop) -> None:
+                result = 0
+                for value in range(iterations):
+                    result = (result + value) & 0xFFFFFFFF
+                results.append(result)
+                loop.stop()
+
+            loop.call_soon(compute)
+        return (loops, barrier, results), {}
+
+    def measure(
+        loops: list[asyncio.AbstractEventLoop],
+        barrier: threading.Barrier,
+        results: list[int],
+    ) -> None:
+        def run(loop: asyncio.AbstractEventLoop) -> None:
+            barrier.wait()
+            loop.run_forever()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            list(executor.map(run, loops))
+        assert len(set(results)) == 1
+
+    def teardown(
+        loops: list[asyncio.AbstractEventLoop],
+        barrier: threading.Barrier,
+        results: list[int],
+    ) -> None:
+        del barrier, results
+        for loop in loops:
+            loop.close()
+
+    benchmark.pedantic(measure, setup=setup, teardown=teardown, rounds=5)
 
 
 @pytest.mark.benchmark
