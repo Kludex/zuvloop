@@ -32,9 +32,13 @@ def test_run_returns_the_coroutine_result() -> None:
     assert zuvloop.run(main()) == "done"
 
 
-def test_self_pipe_drain_stops_watching_at_eof() -> None:
+def test_self_pipe_drain_stops_watching_at_eof(monkeypatch: pytest.MonkeyPatch) -> None:
     loop = zuvloop.new_event_loop()
     errors: list[BaseException] = []
+    self_pipe_removed = threading.Event()
+    removal_results: list[bool] = []
+    self_pipe_fd = loop._ssock.fileno()
+    original_remove_reader = loop.remove_reader
 
     def run() -> None:
         try:
@@ -42,16 +46,26 @@ def test_self_pipe_drain_stops_watching_at_eof() -> None:
         except BaseException as exc:  # pragma: no cover - assertion diagnostic
             errors.append(exc)
 
+    def remove_self_pipe_reader(fd: int) -> bool:
+        assert fd == self_pipe_fd
+        removed = original_remove_reader(fd)
+        removal_results.append(removed)
+        self_pipe_removed.set()
+        return removed
+
+    monkeypatch.setattr(loop, "remove_reader", remove_self_pipe_reader)
     loop._csock.close()
-    loop.call_later(0.02, loop.stop)
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
-    thread.join(1)
     try:
+        assert self_pipe_removed.wait(1), "event loop did not stop watching the self-pipe at EOF"
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(1)
         assert not thread.is_alive(), "event loop kept polling the self-pipe at EOF"
         assert errors == []
-        assert loop.remove_reader(loop._ssock.fileno()) is False
+        assert removal_results == [True]
     finally:
+        monkeypatch.setattr(loop, "remove_reader", original_remove_reader)
         loop.call_soon_threadsafe(loop.stop)
         thread.join(1)
         if not loop.is_running():  # pragma: no branch - watchdog failure may leave a daemon spinning
