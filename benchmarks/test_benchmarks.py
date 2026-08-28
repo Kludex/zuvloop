@@ -80,6 +80,32 @@ def test_call_soon(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop)
 
 
 @pytest.mark.benchmark
+@pytest.mark.parametrize("iterations", [100_000, 1_000_000], ids=["100k", "1m"])
+def test_call_soon_large_queue(
+    benchmark: BenchmarkFixture,
+    loop: asyncio.AbstractEventLoop,
+    iterations: int,
+) -> None:
+    """Schedule the full queue before draining it, exposing handle allocation cost."""
+
+    async def work() -> None:
+        done = loop.create_future()
+        seen = 0
+
+        def step() -> None:
+            nonlocal seen
+            seen += 1
+            if seen == iterations:
+                done.set_result(None)
+
+        for _ in range(iterations):
+            loop.call_soon(step)
+        await done
+
+    benchmark(drive(loop, work))
+
+
+@pytest.mark.benchmark
 def test_call_soon_threadsafe(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
     """Cross-thread scheduling, where the 3.14 handle contract sets the price."""
     iterations = 10_000
