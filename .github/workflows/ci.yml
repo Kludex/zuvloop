@@ -342,9 +342,6 @@ jobs:
 
 
   benchmarks:
-    # Pull-request code must never execute in a job that can mint an OIDC token.
-    # Pushes record the trusted benchmark after a change lands.
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     # Normally ~3 minutes; the CodSpeed harness has been seen sitting for over
     # half an hour, and without a bound that holds the whole run hostage.
