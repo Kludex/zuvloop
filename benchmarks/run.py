@@ -23,11 +23,20 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Coroutine
+from dataclasses import dataclass
 
 import zuvloop
 
 Factory = Callable[[], asyncio.AbstractEventLoop]
-Benchmark = Callable[[], Coroutine[None, None, float]]
+AsyncBenchmark = Callable[[], Coroutine[None, None, float]]
+StoppedLoopBenchmark = Callable[[asyncio.AbstractEventLoop], float]
+
+
+@dataclass(frozen=True)
+class Benchmark:
+    unit: str
+    async_work: AsyncBenchmark | None = None
+    stopped_loop_work: StoppedLoopBenchmark | None = None
 
 
 def loop_factories() -> dict[str, Factory]:
@@ -43,7 +52,11 @@ def loop_factories() -> dict[str, Factory]:
 def run_on(factory: Factory, benchmark: Benchmark) -> float:
     loop = factory()
     try:
-        return loop.run_until_complete(benchmark())
+        if benchmark.stopped_loop_work is not None:
+            return benchmark.stopped_loop_work(loop)
+        if benchmark.async_work is None:
+            raise RuntimeError("benchmark has no workload")
+        return loop.run_until_complete(benchmark.async_work())
     finally:
         loop.close()
 
@@ -140,15 +153,18 @@ async def bench_timer_rounds(iterations: int = 10_000) -> float:
     return iterations / (time.perf_counter() - started)
 
 
-async def bench_timer_due_batch(iterations: int = 200_000) -> float:
+def bench_timer_due_batch(loop: asyncio.AbstractEventLoop, iterations: int = 100_000) -> float:
     """Drain a prebuilt batch of due timers without timing allocation or deallocation."""
-    loop = asyncio.get_running_loop()
     done = loop.create_future()
-    deadline = loop.time()
+    deadline = loop.time() + 0.5
     handles = [loop.call_at(deadline, _noop) for _ in range(iterations)]
-    handles.append(loop.call_at(math.nextafter(deadline, math.inf), done.set_result, None))
+    sentinel_deadline = deadline + 0.01
+    handles.append(loop.call_at(sentinel_deadline, done.set_result, None))
+    if not all(math.isfinite(handle.when()) for handle in handles):
+        raise RuntimeError("timer returned a non-finite deadline")
+    time.sleep(max(0.0, sentinel_deadline - loop.time()) + 0.001)
     started = time.perf_counter()
-    await done
+    loop.run_until_complete(done)
     elapsed = time.perf_counter() - started
     handles.clear()
     return iterations / elapsed
@@ -334,21 +350,21 @@ async def bench_process_pipe(repetitions: int = 12, payload_size: int = 4 << 20)
     return repetitions * payload_size / (time.perf_counter() - started)
 
 
-BENCHMARKS: dict[str, tuple[Benchmark, str]] = {
-    "call_soon": (bench_call_soon, "callbacks/s"),
-    "call_soon_args": (bench_call_soon_args, "callbacks/s"),
-    "call_soon_threadsafe": (bench_call_soon_threadsafe, "callbacks/s"),
-    "timer_schedule_cancel": (bench_timer_schedule_cancel, "timers/s"),
-    "timer_rounds": (bench_timer_rounds, "timers/s"),
-    "timer_due_batch": (bench_timer_due_batch, "timers/s"),
-    "sleep_zero": (bench_sleep_zero, "iterations/s"),
-    "tasks": (bench_tasks, "tasks/s"),
-    "ready_with_io": (bench_ready_with_io, "iterations/s"),
-    "echo_1kb": (bench_echo, "roundtrips/s"),
-    "stream": (bench_stream, "bytes/s"),
-    "getaddrinfo": (bench_getaddrinfo, "lookups/s"),
-    "process_spawn": (bench_process_spawn, "processes/s"),
-    "process_pipe": (bench_process_pipe, "bytes/s"),
+BENCHMARKS: dict[str, Benchmark] = {
+    "call_soon": Benchmark("callbacks/s", async_work=bench_call_soon),
+    "call_soon_args": Benchmark("callbacks/s", async_work=bench_call_soon_args),
+    "call_soon_threadsafe": Benchmark("callbacks/s", async_work=bench_call_soon_threadsafe),
+    "timer_schedule_cancel": Benchmark("timers/s", async_work=bench_timer_schedule_cancel),
+    "timer_rounds": Benchmark("timers/s", async_work=bench_timer_rounds),
+    "timer_due_batch": Benchmark("timers/s", stopped_loop_work=bench_timer_due_batch),
+    "sleep_zero": Benchmark("iterations/s", async_work=bench_sleep_zero),
+    "tasks": Benchmark("tasks/s", async_work=bench_tasks),
+    "ready_with_io": Benchmark("iterations/s", async_work=bench_ready_with_io),
+    "echo_1kb": Benchmark("roundtrips/s", async_work=bench_echo),
+    "stream": Benchmark("bytes/s", async_work=bench_stream),
+    "getaddrinfo": Benchmark("lookups/s", async_work=bench_getaddrinfo),
+    "process_spawn": Benchmark("processes/s", async_work=bench_process_spawn),
+    "process_pipe": Benchmark("bytes/s", async_work=bench_process_pipe),
 }
 
 
@@ -371,7 +387,7 @@ def main() -> int:
     print(f"python {sys.version.split()[0]}   libuv {zuvloop.libuv_version()}\n")
 
     for name in args.only or list(BENCHMARKS):
-        benchmark, unit = BENCHMARKS[name]
+        benchmark = BENCHMARKS[name]
         print(name)
         # Interleave the rounds. Running every sample for one loop back to back
         # lets thermal drift and background load bias whichever went first.
@@ -384,7 +400,7 @@ def main() -> int:
         for label, value in results.items():
             values = samples[label]
             spread = statistics.pstdev(values) / statistics.mean(values) if len(values) > 1 else 0.0
-            print(f"  {label:<8}{humanise(value, unit)}  (+/- {spread:.1%})")
+            print(f"  {label:<8}{humanise(value, benchmark.unit)}  (+/- {spread:.1%})")
         print(f"  {'':<8}{'zuvloop / ' + baseline:>15}  {results['zuvloop'] / results[baseline]:.2f}x\n")
     return 0
 
