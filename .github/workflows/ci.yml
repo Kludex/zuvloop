@@ -38,6 +38,7 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         if: matrix.os != 'windows-11-arm'
         with:
+          use-cache: false
           version: 0.16.0
 
       # Zig 0.16's native ARM64 Windows compiler exits with an access violation
@@ -47,6 +48,13 @@ jobs:
         if: matrix.os == 'windows-11-arm'
         shell: pwsh
         run: ./scripts/setup-zig-x86_64-windows.ps1
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .zig-cache
+          key: >-
+            zig-test-0.16.0-${{ matrix.os }}-${{ matrix.python-version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: zig-test-0.16.0-${{ matrix.os }}-${{ matrix.python-version }}-
 
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
