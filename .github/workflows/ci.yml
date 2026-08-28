@@ -39,8 +39,6 @@ jobs:
         if: matrix.os != 'windows-11-arm'
         with:
           version: 0.16.0
-          # Interrupted Windows builds can leave cached runners pointing at deleted executables.
-          use-cache: ${{ runner.os != 'Windows' }}
 
       # Zig 0.16's native ARM64 Windows compiler exits with an access violation
       # on `zig build`. Windows 11 runs the pinned x86-64 compiler under
@@ -56,10 +54,24 @@ jobs:
           version: 0.12.3
 
       - name: Install
+        id: install
+        continue-on-error: ${{ runner.os == 'Windows' }}
         env:
           HATCH_ZIG_TARGET: ${{ matrix.os == 'windows-11-arm' && 'aarch64-windows' || '' }}
           PYTHON_VERSION: ${{ matrix.python-version }}
         run: uv sync --locked --python "$PYTHON_VERSION" --group dev --group bench
+
+      - name: Retry the Windows install without the Zig cache
+        if: runner.os == 'Windows' && steps.install.outcome == 'failure'
+        env:
+          HATCH_ZIG_TARGET: ${{ matrix.os == 'windows-11-arm' && 'aarch64-windows' || '' }}
+          PYTHON_VERSION: ${{ matrix.python-version }}
+        shell: pwsh
+        run: |
+          if (Test-Path .zig-cache) {
+            Remove-Item -Recurse -Force .zig-cache
+          }
+          uv sync --locked --python "$env:PYTHON_VERSION" --group dev --group bench
 
       - name: Verify the hashed build constraints
         if: runner.os == 'Linux'
