@@ -1,7 +1,7 @@
 """Absolute throughput per loop - the numbers behind the README table.
 
     uv run --group bench python benchmarks/run.py
-    uv run --group bench python benchmarks/run.py --only call_soon timers
+    uv run --group bench python benchmarks/run.py --only call_soon timer_rounds
 
 `compare.py` answers "how does this compare to uvloop" with interleaved wall
 times, and CodSpeed tracks what changed between commits. Neither reports the
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import math
 import os
 import socket
 import statistics
@@ -110,13 +111,47 @@ async def bench_call_soon_threadsafe(iterations: int = 200_000) -> float:
     return iterations / elapsed
 
 
-async def bench_timers(iterations: int = 200_000) -> float:
+async def bench_timer_schedule_cancel(iterations: int = 200_000) -> float:
     """Timer churn: schedule then cancel, never firing."""
     loop = asyncio.get_running_loop()
     started = time.perf_counter()
     for _ in range(iterations):
         loop.call_later(30, _noop).cancel()
     return iterations / (time.perf_counter() - started)
+
+
+async def bench_timer_rounds(iterations: int = 10_000) -> float:
+    """Run one zero-delay timer per loop turn until the chain completes."""
+    loop = asyncio.get_running_loop()
+    done = loop.create_future()
+    remaining = iterations
+
+    def step() -> None:
+        nonlocal remaining
+        remaining -= 1
+        if remaining == 0:
+            done.set_result(None)
+        else:
+            loop.call_later(0, step)
+
+    started = time.perf_counter()
+    loop.call_later(0, step)
+    await done
+    return iterations / (time.perf_counter() - started)
+
+
+async def bench_timer_due_batch(iterations: int = 200_000) -> float:
+    """Drain a prebuilt batch of due timers without timing allocation or deallocation."""
+    loop = asyncio.get_running_loop()
+    done = loop.create_future()
+    deadline = loop.time()
+    handles = [loop.call_at(deadline, _noop) for _ in range(iterations)]
+    handles.append(loop.call_at(math.nextafter(deadline, math.inf), done.set_result, None))
+    started = time.perf_counter()
+    await done
+    elapsed = time.perf_counter() - started
+    handles.clear()
+    return iterations / elapsed
 
 
 async def bench_sleep_zero(iterations: int = 30_000) -> float:
@@ -303,7 +338,9 @@ BENCHMARKS: dict[str, tuple[Benchmark, str]] = {
     "call_soon": (bench_call_soon, "callbacks/s"),
     "call_soon_args": (bench_call_soon_args, "callbacks/s"),
     "call_soon_threadsafe": (bench_call_soon_threadsafe, "callbacks/s"),
-    "timers": (bench_timers, "timers/s"),
+    "timer_schedule_cancel": (bench_timer_schedule_cancel, "timers/s"),
+    "timer_rounds": (bench_timer_rounds, "timers/s"),
+    "timer_due_batch": (bench_timer_due_batch, "timers/s"),
     "sleep_zero": (bench_sleep_zero, "iterations/s"),
     "tasks": (bench_tasks, "tasks/s"),
     "ready_with_io": (bench_ready_with_io, "iterations/s"),

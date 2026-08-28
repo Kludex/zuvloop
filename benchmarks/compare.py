@@ -1,7 +1,7 @@
 """Compare zuvloop against uvloop, honestly.
 
     uv run --group bench python benchmarks/compare.py
-    uv run --group bench python benchmarks/compare.py echo timers
+    uv run --group bench python benchmarks/compare.py echo timer_rounds
 
 `test_benchmarks.py` records what changed between commits, which is what CodSpeed
 is for, but its table cannot answer "how does this compare to uvloop" - see the
@@ -208,13 +208,35 @@ def call_soon_threadsafe(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
     return _driver(loop, once)
 
 
-def timers(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
+def timer_schedule_cancel(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
     """Timer bookkeeping: schedule and cancel, never firing."""
     iterations = 10_000
 
     async def once() -> None:
         for _ in range(iterations):
             loop.call_later(30, _noop).cancel()
+
+    return _driver(loop, once)
+
+
+def timer_rounds(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
+    """Ten thousand zero-delay timers, with each scheduling the next turn."""
+    iterations = 10_000
+
+    async def once() -> None:
+        done = loop.create_future()
+        remaining = iterations
+
+        def step() -> None:
+            nonlocal remaining
+            remaining -= 1
+            if remaining == 0:
+                done.set_result(None)
+            else:
+                loop.call_later(0, step)
+
+        loop.call_later(0, step)
+        await done
 
     return _driver(loop, once)
 
@@ -273,7 +295,8 @@ WORKLOADS: dict[str, Workload] = {
     "bulk": bulk,
     "call_soon": call_soon,
     "call_soon_threadsafe": call_soon_threadsafe,
-    "timers": timers,
+    "timer_schedule_cancel": timer_schedule_cancel,
+    "timer_rounds": timer_rounds,
     "loop_iterations": loop_iterations,
     "tasks": tasks,
     "getaddrinfo": getaddrinfo,
