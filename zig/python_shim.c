@@ -1,15 +1,12 @@
 #include "python_shim.h"
 
-#ifdef Py_GIL_DISABLED
-static PyMutex zuvloop_mutex;
-#endif
-
-void zuvloop_critical_section_begin(zuvloop_critical_section *section) {
+void zuvloop_critical_section_begin(zuvloop_critical_section *section, PyObject *object) {
 #ifdef Py_GIL_DISABLED
     _Static_assert(sizeof(*section) >= sizeof(PyCriticalSection), "critical section storage is too small");
-    PyCriticalSection_BeginMutex((PyCriticalSection *)section, &zuvloop_mutex);
+    PyCriticalSection_Begin((PyCriticalSection *)section, object);
 #else
     (void)section;
+    (void)object;
 #endif
 }
 

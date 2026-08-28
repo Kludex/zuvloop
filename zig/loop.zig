@@ -1,9 +1,9 @@
 //! The native event loop: scheduling, timers, and the libuv run loop.
 //!
 //! `_run` detaches the thread state for the whole `uv_run` call. Each libuv
-//! callback reattaches it and enters the extension critical section. The depth
-//! starts at 1 because object methods enter with an attached thread state, so
-//! nested runs such as `close` skip the detach/attach pair.
+//! callback reattaches it. The depth starts at 1 because object methods enter
+//! with an attached thread state, so nested runs such as `close` skip the
+//! detach/attach pair.
 
 const std = @import("std");
 const py = @import("py.zig");
@@ -39,6 +39,7 @@ pub const State = struct {
     block: []u8,
 
     ready: collections.Ready = .empty,
+    threadsafe_ready: collections.Ready = .empty,
     timers: collections.Timers = .empty,
     pollers: pollermod.Map = .empty,
     scratch: ?[*]u8 = null,
@@ -51,8 +52,6 @@ pub const State = struct {
 
     tstate: ?*c.PyThreadState = null,
     python_depth: c_int = 1,
-    critical_section: py.CriticalSection,
-    critical_section_active: bool = false,
     fatal: ?*py.Object = null,
     metrics_cb: ?*py.Object = null,
     task_factory: ?*py.Object = null,
@@ -81,8 +80,6 @@ pub const State = struct {
         if (self.python_depth == 0) {
             c.PyEval_RestoreThread(self.tstate);
             self.tstate = null;
-            py.beginCriticalSection(&self.critical_section);
-            self.critical_section_active = true;
         }
         self.python_depth += 1;
     }
@@ -90,16 +87,12 @@ pub const State = struct {
     pub inline fn pythonExit(self: *State) void {
         self.python_depth -= 1;
         if (self.python_depth == 0) {
-            if (self.critical_section_active) {
-                py.endCriticalSection(&self.critical_section);
-                self.critical_section_active = false;
-            }
             self.tstate = c.PyEval_SaveThread();
         }
     }
 
     pub inline fn pythonResume(self: *State) void {
-        std.debug.assert(self.python_depth == 0 and !self.critical_section_active);
+        std.debug.assert(self.python_depth == 0);
         c.PyEval_RestoreThread(self.tstate);
         self.tstate = null;
         self.python_depth = 1;
@@ -140,6 +133,12 @@ pub inline fn asLoop(obj: *py.Object) *LoopObject {
 
 pub inline fn isReaping(st: *State) bool {
     return @atomicLoad(u8, &st.reap_state, .acquire) != 0;
+}
+
+/// True while the current thread owns and runs `loop_obj`.
+pub inline fn isRunningThread(loop_obj: *py.Object) bool {
+    const thread_id = @atomicLoad(c_ulong, &asLoop(loop_obj).state().thread_id, .acquire);
+    return thread_id != 0 and thread_id == c.PyThread_get_thread_ident();
 }
 
 /// Seconds on the clock `time.monotonic()` reads.
@@ -246,7 +245,16 @@ fn onWake(waker: ?*uv.Async) callconv(.c) void {
     const st = self.state();
     st.pythonEnter();
     defer st.pythonExit();
+    // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
+    var critical_section: py.CriticalSection = undefined;
+    py.beginCriticalSection(&critical_section, @ptrCast(self));
+    defer py.endCriticalSection(&critical_section);
     st.waker_pending = false;
+    drainThreadsafe(st) catch {
+        py.errNoMemory() catch {};
+        captureFatal(self);
+        return;
+    };
     startIdle(st);
 }
 
@@ -376,6 +384,12 @@ fn clearThreadsafeCandidate(st: *State, untrack_queue_only: bool) void {
     py.decref(candidate);
 }
 
+fn drainThreadsafe(st: *State) error{OutOfMemory}!void {
+    try st.ready.ensureUnusedCapacity(st.threadsafe_ready.len);
+    clearThreadsafeCandidate(st, true);
+    while (st.threadsafe_ready.pop()) |handle| st.ready.pushAssumeCapacity(handle);
+}
+
 /// The ready queue holds both handle types; only the type says which protocol
 /// a callback runs under.
 inline fn runOne(obj: *py.Object) void {
@@ -398,7 +412,6 @@ fn runReady(self: *LoopObject) void {
     st.callbacks_run += remaining;
     while (remaining != 0) : (remaining -= 1) {
         const obj = st.ready.pop() orelse break;
-        if (st.threadsafe_candidate == obj) clearThreadsafeCandidate(st, true);
         if ((st.debug or st.slow_callback_monitoring) and st.slow_callback_duration < std.math.inf(f64)) {
             const started = uv.uv_hrtime();
             runOne(obj);
@@ -572,11 +585,16 @@ pub inline fn checkClosed(st: *State) py.Error!void {
 
 fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py.Object {
     const st = self.state();
-    try checkClosed(st);
     const h = try handlemod.create(handlemod.handle_type.?, @ptrCast(self), callback, p.positional, p.context);
+    errdefer py.decref(h);
+    // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
+    var critical_section: py.CriticalSection = undefined;
+    py.beginCriticalSection(&critical_section, @ptrCast(self));
+    defer py.endCriticalSection(&critical_section);
+    try checkClosed(st);
+    drainThreadsafe(st) catch return py.errNoMemory();
     py.incref(h);
     st.ready.push(@as(*py.Object, @ptrCast(h))) catch {
-        py.decref(h);
         py.decref(h);
         return py.errNoMemory();
     };
@@ -602,10 +620,9 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
     clearThreadsafeCandidate(st, true);
     const h = try tshandle.create(self_obj, args[0].?, p.positional, p.context);
     py.incref(h);
-    // One FIFO for both schedulers, so a `call_soon` issued after a
-    // `call_soon_threadsafe` still runs after it. Producers and the loop touch
-    // `ready` only inside the extension critical section.
-    st.ready.push(h) catch {
+    // A loop-thread `call_soon` drains this inbox before appending its own
+    // handle, so both schedulers preserve registration order.
+    st.threadsafe_ready.push(h) catch {
         py.decref(h);
         py.decref(h);
         return py.errNoMemory();
@@ -615,7 +632,7 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
     st.threadsafe_candidate = h;
     // libuv clears its pending bit before `onWake` enters Python. Keep one at
     // this layer so a producer cannot issue another kernel wake in that window.
-    if (!st.idle_active and !st.waker_pending) {
+    if (!st.waker_pending) {
         st.waker_pending = true;
         _ = uv.uv_async_send(st.waker);
     }
@@ -670,7 +687,7 @@ fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
 
     st.running = true;
     st.stopping = false;
-    st.thread_id = c.PyThread_get_thread_ident();
+    @atomicStore(c_ulong, &st.thread_id, c.PyThread_get_thread_ident(), .release);
     startIdle(st);
     armTimer(self);
 
@@ -680,7 +697,7 @@ fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
 
     st.running = false;
     st.stopping = false;
-    st.thread_id = 0;
+    @atomicStore(c_ulong, &st.thread_id, 0, .release);
     // A write from the callback that stopped the loop has had no iteration left
     // to flush it. Draining after clearing `running` sends anything those
     // callbacks write in turn.
@@ -832,7 +849,7 @@ fn buildMetrics(st: *State) ?*py.Object {
         "callbacks_run",
         st.callbacks_run,
         "ready",
-        @as(c.Py_ssize_t, @intCast(st.ready.len)),
+        @as(c.Py_ssize_t, @intCast(st.ready.len + st.threadsafe_ready.len)),
         "timers",
         @as(c.Py_ssize_t, @intCast(st.timers.len)),
         "watchers",
@@ -907,6 +924,7 @@ fn closeLoop(self_obj: *py.Object) py.Error!*py.Object {
 
     clearThreadsafeCandidate(st, false);
     st.ready.deinit();
+    st.threadsafe_ready.deinit();
     st.timers.deinit();
     clearEmptyContexts(st);
     dropFlushList(st);
@@ -1076,8 +1094,6 @@ fn newLoop(tp: ?*c.PyTypeObject, _: ?*py.Object, _: ?*py.Object) callconv(.c) ?*
         .waker = @ptrCast(block.ptr + loop_size + idle_size + 2 * timer_size),
         .flusher = @ptrCast(block.ptr + loop_size + idle_size + 2 * timer_size + async_size),
         .block = block,
-        // SAFETY: PyCriticalSection_BeginMutex initializes this storage before reading it.
-        .critical_section = undefined,
     };
 
     if (uv.uv_loop_init(st.uvloop) < 0) {
@@ -1121,6 +1137,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
         if (needs_close) {
             clearThreadsafeCandidate(st, false);
             st.ready.deinit();
+            st.threadsafe_ready.deinit();
             st.timers.deinit();
             clearEmptyContexts(st);
         }
@@ -1163,6 +1180,14 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
             if (r != 0) return r;
         }
         i = 0;
+        while (i < st.threadsafe_ready.len) : (i += 1) {
+            const handle = st.threadsafe_ready.items[
+                (st.threadsafe_ready.head + i) & (st.threadsafe_ready.items.len - 1)
+            ].?;
+            r = tshandle.traverseQueued(handle, visitproc, arg);
+            if (r != 0) return r;
+        }
+        i = 0;
         while (i < st.timers.len) : (i += 1) {
             r = py.visit(st.timers.items[i].handle, visitproc, arg);
             if (r != 0) return r;
@@ -1195,6 +1220,7 @@ fn clear_(obj: ?*py.Object) callconv(.c) c_int {
     const self = asLoop(obj.?);
     if (self.st) |st| {
         st.ready.deinit();
+        st.threadsafe_ready.deinit();
         st.timers.deinit();
         py.clear(&st.fatal);
         py.clear(&st.metrics_cb);
@@ -1204,18 +1230,18 @@ fn clear_(obj: ?*py.Object) callconv(.c) c_int {
 }
 
 var methods = [_]c.PyMethodDef{
-    py.methodKw("call_soon", callSoon, "Schedule a callback for the next iteration."),
+    py.methodKwUnlocked("call_soon", callSoon, "Schedule a callback for the next iteration."),
     py.methodKw("call_soon_threadsafe", callSoonThreadsafe, "Schedule a callback from another thread."),
     py.methodKw("call_later", callLater, "Schedule a callback after a delay in seconds."),
     py.methodKw("call_at", callAt, "Schedule a callback at an absolute loop time."),
     py.methodNoArgs("time", time, "Return the loop's monotonic clock, in seconds."),
-    py.methodNoArgs("_run", runLoop, "Run the libuv loop until stopped."),
+    py.methodNoArgsUnlocked("_run", runLoop, "Run the libuv loop until stopped."),
     py.methodNoArgs("stop", stop, "Stop the loop."),
     py.methodNoArgs("is_running", isRunning, "Return True while the loop is running."),
     py.methodNoArgs("is_closed", isClosed, "Return True once the loop is closed."),
     py.methodNoArgs("get_debug", getDebug, "Return the debug mode flag."),
     py.methodO("set_debug", setDebug, "Set the debug mode flag."),
-    py.methodKw("create_task", createTask, "Schedule a coroutine as a task."),
+    py.methodKwUnlocked("create_task", createTask, "Schedule a coroutine as a task."),
     py.methodO("set_task_factory", setTaskFactory, "Set the task factory."),
     py.methodNoArgs("get_task_factory", getTaskFactory, "Return the task factory."),
     py.methodO("_set_slow_callback_monitoring", setSlowCallbackMonitoring, "Enable slow callback monitoring."),

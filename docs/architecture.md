@@ -21,9 +21,11 @@ packet, Python if it runs per connection or per loop.**
 
 The interpreter thread state is detached for the whole `uv_run` call and
 reattached for each libuv callback. On a standard build, this releases and
-reacquires the GIL. On a free-threaded build, an extension-wide critical section
-protects the native object graph and the ready queue from concurrent producers.
-Blocking Python calls suspend the critical section, as CPython requires.
+reacquires the GIL. On a free-threaded build, each loop's critical section
+protects its cross-thread inbox while the native object graph stays confined to
+the loop thread. Thread-safe handles use their own critical sections. Independent
+loops can run concurrently. Blocking Python calls suspend a critical section, as
+CPython requires.
 
 ## Scheduling
 
