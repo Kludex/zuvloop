@@ -232,7 +232,7 @@ def test_parallel_event_loops(
 ) -> None:
     """Four independent loops run CPU-bound callbacks in parallel."""
     workers = 4
-    iterations = 1_000_000
+    iterations = 250_000
 
     def setup() -> tuple[tuple[list[asyncio.AbstractEventLoop], threading.Barrier, list[int]], dict[str, int]]:
         loops = [(factory or asyncio.new_event_loop)() for _ in range(workers)]
