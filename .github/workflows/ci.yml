@@ -394,13 +394,6 @@ jobs:
             uv run --no-sync pytest benchmarks/ --codspeed
             -k "not parallel_event_loops and not ready_chain_with_idle_connections"
 
-      - name: Run profiler-incompatible benchmarks
-        # The CodSpeed walltime runner hangs around these threaded and socket-heavy
-        # cases. pytest-codspeed still measures and prints them without the runner.
-        run: >-
-          uv run --no-sync pytest benchmarks/ --codspeed --codspeed-mode=walltime
-          -k "parallel_event_loops or ready_chain_with_idle_connections"
-
   docs:
     runs-on: ubuntu-latest
 
