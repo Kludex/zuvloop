@@ -392,8 +392,11 @@ jobs:
           CODSPEED_PERF_ENABLED: "false"
         with:
           mode: walltime
+          # Disabling the runner profiler does not stop pytest-codspeed from
+          # activating CPython's perf trampoline while CODSPEED_ENV is set.
           run: >-
-            uv run --no-sync pytest benchmarks/ --codspeed
+            env -u CODSPEED_ENV uv run --no-sync pytest benchmarks/
+            --codspeed --codspeed-mode=walltime
             -k "parallel_event_loops or ready_chain_with_idle_connections"
 
   docs:
