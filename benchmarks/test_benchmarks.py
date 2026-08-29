@@ -496,6 +496,62 @@ def test_split_response_write(benchmark: BenchmarkFixture, loop: asyncio.Abstrac
 
 
 @pytest.mark.benchmark
+@pytest.mark.parametrize("buffer_count", [4, 8], ids=["4-buffers", "8-buffers"])
+def test_writelines_roundtrips(
+    benchmark: BenchmarkFixture,
+    loop: asyncio.AbstractEventLoop,
+    buffer_count: int,
+) -> None:
+    payload_size = 128
+    fragments = tuple(b"x" * (payload_size // buffer_count) for _ in range(buffer_count))
+    connections = 64
+    responses = 100
+
+    class Server(asyncio.Protocol):
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            self.transport = transport
+
+        def data_received(self, data: bytes) -> None:
+            for _ in data:
+                self.transport.writelines(fragments)  # type: ignore[attr-defined]
+
+    class Client(asyncio.Protocol):
+        def __init__(self) -> None:
+            self.seen = 0
+            self.remaining = responses
+            self.done = loop.create_future()
+
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            self.transport = transport
+            transport.write(b"\n")  # type: ignore[attr-defined]
+
+        def data_received(self, data: bytes) -> None:
+            self.seen += len(data)
+            while self.seen >= payload_size:
+                self.seen -= payload_size
+                self.remaining -= 1
+                if self.remaining == 0:
+                    self.done.set_result(None)
+                    return
+                self.transport.write(b"\n")  # type: ignore[attr-defined]
+
+    server = loop.run_until_complete(loop.create_server(Server, "127.0.0.1", 0))
+    port = server.sockets[0].getsockname()[1]
+
+    async def work() -> None:
+        pairs = await asyncio.gather(*(loop.create_connection(Client, "127.0.0.1", port) for _ in range(connections)))
+        await asyncio.gather(*(client.done for _transport, client in pairs))
+        for transport, _client in pairs:
+            transport.close()
+
+    try:
+        benchmark.pedantic(drive(loop, work), rounds=10)
+    finally:
+        server.close()
+        loop.run_until_complete(server.wait_closed())
+
+
+@pytest.mark.benchmark
 def test_bulk_stream(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
     """Bulk transfer with flow control engaged."""
     chunk = b"x" * 65536

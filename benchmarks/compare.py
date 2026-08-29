@@ -128,6 +128,53 @@ def split_write(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
     return _driver(loop, once)
 
 
+def writelines_8(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
+    """A response passed to `writelines()` as eight buffers."""
+    fragments = tuple(b"x" * 16 for _ in range(8))
+    payload_size = sum(map(len, fragments))
+    connections = 64
+    responses = 100
+
+    class Server(asyncio.Protocol):
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            self.transport = transport
+
+        def data_received(self, data: bytes) -> None:
+            for _ in data:
+                self.transport.writelines(fragments)  # type: ignore[attr-defined]
+
+    server = loop.run_until_complete(loop.create_server(Server, "127.0.0.1", 0))
+    port = server.sockets[0].getsockname()[1]
+
+    class Client(asyncio.Protocol):
+        def __init__(self) -> None:
+            self.seen = 0
+            self.remaining = responses
+            self.done = loop.create_future()
+
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            self.transport = transport
+            transport.write(b"\n")  # type: ignore[attr-defined]
+
+        def data_received(self, data: bytes) -> None:
+            self.seen += len(data)
+            while self.seen >= payload_size:
+                self.seen -= payload_size
+                self.remaining -= 1
+                if self.remaining == 0:
+                    self.done.set_result(None)
+                    return
+                self.transport.write(b"\n")  # type: ignore[attr-defined]
+
+    async def once() -> None:
+        pairs = await asyncio.gather(*(loop.create_connection(Client, "127.0.0.1", port) for _ in range(connections)))
+        await asyncio.gather(*(protocol.done for _transport, protocol in pairs))
+        for transport, _protocol in pairs:
+            transport.close()
+
+    return _driver(loop, once)
+
+
 def bulk(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
     """16 MiB in one direction, with flow control engaged."""
     chunk = b"x" * 65536
@@ -292,6 +339,7 @@ def spawn(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
 WORKLOADS: dict[str, Workload] = {
     "echo": echo,
     "split_write": split_write,
+    "writelines_8": writelines_8,
     "bulk": bulk,
     "call_soon": call_soon,
     "call_soon_threadsafe": call_soon_threadsafe,
