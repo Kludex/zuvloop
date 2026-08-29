@@ -62,9 +62,9 @@ const inline_bufs = 16;
 /// A protocol sends a response in pieces - a header block and a body, which is
 /// what ASGI and aiohttp both do - and writing each piece as it arrives costs a
 /// syscall per piece. Holding them until the iteration ends turns the whole
-/// response into one vectored write. Four slots covers the shapes that occur in
-/// practice; a protocol that writes more simply flushes when the batch fills,
-/// which is no worse than writing each one immediately.
+/// response into one vectored write. Four slots cover consecutive `write()`
+/// calls. A larger `writelines()` call is already a complete vector and goes
+/// directly to the socket without using this storage.
 const pending_max = 4;
 
 var str_connection_made: ?*py.Object = null;
@@ -694,9 +694,14 @@ fn appendPending(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) v
     loopmod.scheduleFlush(self.loopState(), self);
 }
 
-/// Accepts a write, deferring the syscall to the end of the iteration.
+/// Accepts a write, deferring it unless the complete vector exceeds the batch.
 /// Takes ownership of `views` on every path.
 fn submitWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!void {
+    if (self.pending_count == 0 and bufs.len > pending_max) {
+        try writeBufs(self, bufs, views);
+        maybeResumeProtocol(self);
+        return;
+    }
     if (!try acceptsWrite(self, views)) return;
     appendPending(self, bufs, views);
     // Batching pays off only for consecutive writes from one callback, and a
