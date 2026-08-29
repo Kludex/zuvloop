@@ -22,6 +22,7 @@ const arg_alloc = std.heap.c_allocator;
 
 const CANCELLED: u32 = 1 << 0;
 const SCHEDULED: u32 = 1 << 1;
+const in_heap: u32 = 1 << 2;
 
 const Payload = extern struct {
     loop: ?*py.Object,
@@ -58,11 +59,15 @@ pub fn deadline(obj: *py.Object) f64 {
     return payload(obj).when;
 }
 
-/// Leaving the heap is what ends being scheduled, by whichever route: run, due
-/// but cancelled, or compacted away. Cancelling alone does not, because the
-/// entry is still in the heap - the same order `BaseEventLoop` clears it in.
+/// Marks an already-due timer as ready without losing its scheduled state.
+pub fn markReady(obj: *py.Object) void {
+    payload(obj).flags &= ~in_heap;
+}
+
+/// Leaving the scheduler ends the scheduled state, whether by running, expiry,
+/// or compaction. Cancellation alone leaves the state set until retirement.
 pub fn clearScheduled(obj: *py.Object) void {
-    payload(obj).flags &= ~SCHEDULED;
+    payload(obj).flags &= ~(SCHEDULED | in_heap);
 }
 
 pub fn create(
@@ -76,7 +81,7 @@ pub fn create(
     const obj = c.PyType_GenericAlloc(timer_type.?, 0) orelse return py.Error.Python;
     const self = payload(obj);
     self.when = at;
-    self.flags = SCHEDULED;
+    self.flags = SCHEDULED | in_heap;
     if (original_when) |value| {
         py.incref(value);
         self.when_obj = value;
@@ -139,7 +144,9 @@ fn cancel(self_obj: *py.Object) py.Error!*py.Object {
         self.flags |= CANCELLED;
         clearArgs(self);
         py.clear(&self.callback);
-        if (self.loop) |l| loopmod.noteTimerCancelled(@ptrCast(@alignCast(l)));
+        if (self.flags & in_heap != 0) {
+            if (self.loop) |l| loopmod.noteTimerCancelled(@ptrCast(@alignCast(l)));
+        }
     }
     return py.noneRef();
 }

@@ -394,6 +394,7 @@ fn drainThreadsafe(st: *State) error{OutOfMemory}!void {
 /// a callback runs under.
 inline fn runOne(obj: *py.Object) void {
     if (timermod.owns(obj)) {
+        timermod.clearScheduled(obj);
         timermod.run(obj);
     } else if (tshandle.owns(obj)) {
         tshandle.run(obj);
@@ -642,6 +643,7 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
 fn scheduleAt(
     self: *LoopObject,
     when: f64,
+    already_due: bool,
     original_when: ?*py.Object,
     callback: *py.Object,
     p: Parsed,
@@ -650,6 +652,19 @@ fn scheduleAt(
     try checkClosed(st);
     const h = try timermod.create(@ptrCast(self), callback, p.positional, p.context, when, original_when);
     py.incref(h);
+    if (already_due) {
+        const can_bypass_heap = if (st.timers.peek()) |entry| when < entry.when else true;
+        if (can_bypass_heap) {
+            timermod.markReady(h);
+            st.ready.push(h) catch {
+                py.decref(h);
+                py.decref(h);
+                return py.errNoMemory();
+            };
+            startIdle(st);
+            return h;
+        }
+    }
     st.timers.push(when, h) catch {
         py.decref(h);
         py.decref(h);
@@ -664,14 +679,14 @@ fn callLater(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwna
     const delay = try py.asF64(args[0].?);
     const p = try parseCall(args, nargs, kwnames, 2);
     const when = now() + @max(delay, 0);
-    return scheduleAt(asLoop(self_obj), when, null, args[1].?, p);
+    return scheduleAt(asLoop(self_obj), when, delay <= 0, null, args[1].?, p);
 }
 
 fn callAt(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames: ?*py.Object) py.Error!*py.Object {
     if (nargs < 2) return py.errType("call_at() requires a time and a callback");
     const when = try py.asF64(args[0].?);
     const p = try parseCall(args, nargs, kwnames, 2);
-    return scheduleAt(asLoop(self_obj), when, args[0], args[1].?, p);
+    return scheduleAt(asLoop(self_obj), when, when <= now(), args[0], args[1].?, p);
 }
 
 fn time(self_obj: *py.Object) py.Error!*py.Object {
