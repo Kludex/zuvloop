@@ -18,7 +18,7 @@ Your code stays the same. The loop underneath gets faster. 🚀
 
 The key features are:
 
-- **Fast**: Scheduling, timers, sockets, and DNS run in native code, driven by [libuv](https://libuv.org) - the same engine behind Node.js. Over **25x faster than asyncio** at thread-safe scheduling and faster than [uvloop](https://github.com/MagicStack/uvloop) on 11 of the 12 benchmarks below.
+- **Fast**: Scheduling, timers, sockets, and DNS run in native code, driven by [libuv](https://libuv.org) - the same engine behind Node.js. Over **25x faster than asyncio** at thread-safe scheduling and matches or beats [uvloop](https://github.com/MagicStack/uvloop) on 13 of the 14 benchmarks below.
 - **Drop-in**: One line to switch. Everything is standard `asyncio` — same `Task` objects, same protocols, same APIs.
 - **Fully typed**: Ships type hints for everything and passes **strict mypy**. Your editor will love it. ✨
 - **Observable**: Built-in [OpenTelemetry](https://opentelemetry.io) instrumentation — slow-callback spans, unhandled-exception spans, loop metrics. Zero cost until you turn it on.
@@ -31,7 +31,7 @@ The key features are:
 </p>
 
 Throughput relative to stock asyncio (higher is better), measured with the suite in
-`benchmarks/` on an M3 Max, macOS 26, CPython 3.14.3, and libuv 1.51.0. Each result is the median of seven
+`benchmarks/` on an M3 Max, macOS 26, CPython 3.14, and libuv 1.51.0. Each result is the median of seven
 interleaved in-process runs or five interleaved HTTP runs. The labels show the absolute numbers.
 
 | Benchmark | asyncio | uvloop | zuvloop |
@@ -39,7 +39,9 @@ interleaved in-process runs or five interleaved HTTP runs. The labels show the a
 | `call_soon` | 2.36M/s | 4.49M/s | **8.81M/s** |
 | `call_soon` with arguments | 2.14M/s | 3.51M/s | **8.86M/s** |
 | `call_soon_threadsafe` | 0.44M/s | 5.13M/s | **11.9M/s** |
-| timer schedule + cancel | 1.32M/s | 2.53M/s | **9.37M/s** |
+| timer schedule + cancel | 1.17M/s | 1.93M/s | **9.02M/s** |
+| completed timer rounds | 70.2k/s | 76.9k/s | 78.0k/s |
+| prebuilt due timer batch | 1.38M/s | 2.73M/s | **5.89M/s** |
 | ready chain with 250 idle connections | 70.7k/s | 76.3k/s | **362.6k/s** |
 | bulk stream | 7.1 GiB/s | 7.9 GiB/s | **9.7 GiB/s** |
 | echo round trips, 1 KiB | 36.8k/s | 53.6k/s | **57.6k/s** |
@@ -48,6 +50,10 @@ interleaved in-process runs or five interleaved HTTP runs. The labels show the a
 | aiohttp server | 46.2k req/s | 58.0k req/s | **58.8k req/s** |
 | aiohttp client | 12.6k req/s | **15.0k req/s** | 14.8k req/s |
 | `getaddrinfo`, numeric host | 27.0k/s | 1.48M/s | **1.70M/s** |
+
+The timer rows measure different work. Timer schedule + cancel isolates heap bookkeeping and handle cleanup without
+firing callbacks. Completed timer rounds chain one zero-delay timer per event loop turn. The prebuilt due timer batch
+measures heap draining and callback dispatch, with allocation and deallocation outside the timed section.
 
 Curious how? The [architecture docs](https://zuvloop.marcelotryle.com) explain the design:
 argument storage inside handles (no tuple per callback), a native timer heap behind a single

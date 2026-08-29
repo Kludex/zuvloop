@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import math
 import os
 import socket
 import threading
+import time
 from collections.abc import Callable, Coroutine, Iterator
 
 import pytest
@@ -215,7 +217,7 @@ def test_call_soon_args(benchmark: BenchmarkFixture, loop: asyncio.AbstractEvent
 
 
 @pytest.mark.benchmark
-def test_timers(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
+def test_timer_schedule_cancel(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
     """Schedule then cancel, never firing: timer bookkeeping on its own."""
     iterations = 10_000
 
@@ -224,6 +226,54 @@ def test_timers(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) ->
             loop.call_later(30, _noop).cancel()
 
     benchmark(drive(loop, work))
+
+
+@pytest.mark.benchmark
+def test_timer_rounds(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
+    """Run one zero-delay timer per loop turn until the chain completes."""
+    iterations = 10_000
+
+    async def work() -> None:
+        done = loop.create_future()
+        remaining = iterations
+
+        def step() -> None:
+            nonlocal remaining
+            remaining -= 1
+            if remaining == 0:
+                done.set_result(None)
+            else:
+                loop.call_later(0, step)
+
+        loop.call_later(0, step)
+        await done
+
+    benchmark(drive(loop, work))
+
+
+@pytest.mark.benchmark
+def test_timer_due_batch(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
+    """Drain a prebuilt batch of due timers without timing allocation or deallocation."""
+    iterations = 100_000
+
+    def setup() -> tuple[tuple[asyncio.Future[None], list[asyncio.TimerHandle]], dict[str, int]]:
+        done = loop.create_future()
+        deadline = loop.time() + 0.5
+        handles = [loop.call_at(deadline, _noop) for _ in range(iterations)]
+        sentinel_deadline = deadline + 0.01
+        handles.append(loop.call_at(sentinel_deadline, done.set_result, None))
+        if not all(math.isfinite(handle.when()) for handle in handles):
+            raise RuntimeError("timer returned a non-finite deadline")
+        time.sleep(max(0.0, sentinel_deadline - loop.time()) + 0.001)
+        return (done, handles), {}
+
+    def measure(done: asyncio.Future[None], _handles: list[asyncio.TimerHandle]) -> None:
+        loop.run_until_complete(done)
+
+    def teardown(_done: asyncio.Future[None], handles: list[asyncio.TimerHandle]) -> None:
+        handles.clear()
+
+    benchmark.pedantic(measure, setup=setup, teardown=teardown, rounds=7)
 
 
 @pytest.mark.benchmark
