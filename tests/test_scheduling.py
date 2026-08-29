@@ -315,6 +315,26 @@ async def test_a_cancelled_zero_delay_timer_retires_without_running() -> None:
     assert called == []
 
 
+async def test_a_zero_delay_timer_does_not_overtake_an_older_due_timer() -> None:
+    loop = running_loop()
+    called: list[str] = []
+    done: asyncio.Future[None] = loop.create_future()
+
+    def record(value: str) -> None:
+        called.append(value)
+        if len(called) == 2:
+            done.set_result(None)
+
+    def block_past_deadline() -> None:
+        time.sleep(0.02)
+        loop.call_later(0, record, "zero")
+
+    loop.call_later(0.005, record, "older")
+    loop.call_soon(block_past_deadline)
+    await done
+    assert called == ["older", "zero"]
+
+
 async def test_a_cancelled_timer_stops_being_scheduled_when_it_leaves_the_heap() -> None:
     """Cancelling alone leaves it in the heap, as it does in asyncio. Reaching the
     deadline retires it, and so does the compaction a run of cancellations sets off."""

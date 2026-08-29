@@ -653,14 +653,17 @@ fn scheduleAt(
     const h = try timermod.create(@ptrCast(self), callback, p.positional, p.context, when, original_when);
     py.incref(h);
     if (already_due) {
-        timermod.markReady(h);
-        st.ready.push(h) catch {
-            py.decref(h);
-            py.decref(h);
-            return py.errNoMemory();
-        };
-        startIdle(st);
-        return h;
+        const can_bypass_heap = if (st.timers.peek()) |entry| when < entry.when else true;
+        if (can_bypass_heap) {
+            timermod.markReady(h);
+            st.ready.push(h) catch {
+                py.decref(h);
+                py.decref(h);
+                return py.errNoMemory();
+            };
+            startIdle(st);
+            return h;
+        }
     }
     st.timers.push(when, h) catch {
         py.decref(h);
