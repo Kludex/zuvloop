@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Coroutine
+from functools import partial
 
 import uvloop
 
@@ -128,9 +129,9 @@ def split_write(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
     return _driver(loop, once)
 
 
-def writelines_8(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
-    """A response passed to `writelines()` as eight buffers."""
-    fragments = tuple(b"x" * 16 for _ in range(8))
+def writelines(loop: asyncio.AbstractEventLoop, buffer_count: int) -> Callable[[], None]:
+    """A 128-byte response passed to `writelines()` in equal fragments."""
+    fragments = tuple(b"x" * (128 // buffer_count) for _ in range(buffer_count))
     payload_size = sum(map(len, fragments))
     connections = 64
     responses = 100
@@ -339,7 +340,8 @@ def spawn(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
 WORKLOADS: dict[str, Workload] = {
     "echo": echo,
     "split_write": split_write,
-    "writelines_8": writelines_8,
+    "writelines_4": partial(writelines, buffer_count=4),
+    "writelines_8": partial(writelines, buffer_count=8),
     "bulk": bulk,
     "call_soon": call_soon,
     "call_soon_threadsafe": call_soon_threadsafe,
