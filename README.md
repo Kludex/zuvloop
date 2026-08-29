@@ -40,7 +40,7 @@ interleaved in-process runs or five interleaved HTTP runs. The labels show the a
 | `call_soon` with arguments | 2.14M/s | 3.51M/s | **8.86M/s** |
 | `call_soon_threadsafe` | 0.44M/s | 5.13M/s | **11.9M/s** |
 | timer schedule + cancel | 1.17M/s | 1.93M/s | **9.02M/s** |
-| completed timer rounds | 70.2k/s | 76.9k/s | 78.0k/s |
+| completed timer rounds | 71.1k/s | 78.2k/s | **2.93M/s** |
 | prebuilt due timer batch | 1.38M/s | 2.73M/s | **5.89M/s** |
 | ready chain with 250 idle connections | 70.7k/s | 76.3k/s | **362.6k/s** |
 | bulk stream | 7.1 GiB/s | 7.9 GiB/s | **9.7 GiB/s** |
