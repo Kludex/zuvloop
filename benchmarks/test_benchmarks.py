@@ -62,33 +62,32 @@ def drive(loop: asyncio.AbstractEventLoop, work: Callable[[], Coroutine[None, No
 
 @pytest.mark.benchmark
 def test_call_soon(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
+    """Measure registration only and drain the callbacks after each round."""
     iterations = 10_000
+    done: asyncio.Future[None] | None = None
 
-    async def work() -> None:
+    def schedule() -> None:
+        nonlocal done
         done = loop.create_future()
-        seen = 0
-
-        def step() -> None:
-            nonlocal seen
-            seen += 1
-            if seen == iterations:
-                done.set_result(None)
-
         for _ in range(iterations):
-            loop.call_soon(step)
-        await done
+            loop.call_soon(_noop)
+        loop.call_soon(done.set_result, None)
 
-    benchmark(drive(loop, work))
+    def drain() -> None:
+        assert done is not None
+        loop.run_until_complete(done)
+
+    benchmark.pedantic(schedule, teardown=drain, rounds=10)
 
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("iterations", [100_000, 1_000_000], ids=["100k", "1m"])
-def test_call_soon_large_queue(
+def test_call_soon_batch_large_queue(
     benchmark: BenchmarkFixture,
     loop: asyncio.AbstractEventLoop,
     iterations: int,
 ) -> None:
-    """Schedule the full queue before draining it, exposing handle allocation cost."""
+    """Measure scheduling and dispatch together for large ready queues."""
 
     async def work() -> None:
         done = loop.create_future()
@@ -196,24 +195,53 @@ def test_threadsafe_flood_timer_fairness(benchmark: BenchmarkFixture, loop: asyn
 
 @pytest.mark.benchmark
 def test_call_soon_args(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
-    """Arguments are where the handle layout shows: asyncio packs a tuple per call."""
+    """Measure registration with arguments and drain outside the timed section."""
     iterations = 10_000
+    done: asyncio.Future[None] | None = None
 
-    async def work() -> None:
+    def callback(_a: int, _b: int, _c: int) -> None:
+        pass
+
+    def schedule() -> None:
+        nonlocal done
         done = loop.create_future()
+        for _ in range(iterations):
+            loop.call_soon(callback, 1, 2, 3)
+        loop.call_soon(done.set_result, None)
+
+    def drain() -> None:
+        assert done is not None
+        loop.run_until_complete(done)
+
+    benchmark.pedantic(schedule, teardown=drain, rounds=10)
+
+
+@pytest.mark.benchmark
+def test_ready_batch(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
+    """Build the ready queue outside the measurement and time dispatch only."""
+    iterations = 10_000
+    done: asyncio.Future[None] | None = None
+
+    def setup() -> None:
+        nonlocal done
+        local_done = loop.create_future()
+        done = local_done
         seen = 0
 
-        def step(_a: int, _b: int, _c: int) -> None:
+        def step() -> None:
             nonlocal seen
             seen += 1
             if seen == iterations:
-                done.set_result(None)
+                local_done.set_result(None)
 
         for _ in range(iterations):
-            loop.call_soon(step, 1, 2, 3)
-        await done
+            loop.call_soon(step)
 
-    benchmark(drive(loop, work))
+    def dispatch() -> None:
+        assert done is not None
+        loop.run_until_complete(done)
+
+    benchmark.pedantic(dispatch, setup=setup, rounds=10)
 
 
 @pytest.mark.benchmark

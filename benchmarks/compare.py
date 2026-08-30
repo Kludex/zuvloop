@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Coroutine
+from dataclasses import dataclass
 from functools import partial
 
 import uvloop
@@ -29,7 +30,16 @@ import uvloop
 import zuvloop
 
 type Factory = Callable[[], asyncio.AbstractEventLoop]
-type Workload = Callable[[asyncio.AbstractEventLoop], Callable[[], None]]
+
+
+@dataclass(frozen=True)
+class Isolated:
+    run: Callable[[], None]
+    setup: Callable[[], None] | None = None
+    cleanup: Callable[[], None] | None = None
+
+
+type Workload = Callable[[asyncio.AbstractEventLoop], Callable[[], None] | Isolated]
 
 PAYLOAD = os.urandom(1024)
 REPS = 40
@@ -215,11 +225,54 @@ def bulk(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
     return _driver(loop, once)
 
 
-def call_soon(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
-    """Scheduling on its own: 10000 callbacks, no arguments."""
+def call_soon(loop: asyncio.AbstractEventLoop) -> Callable[[], None] | Isolated:
+    """Registration only: dispatch happens after each timed sample."""
     iterations = 10_000
+    done: asyncio.Future[None] | None = None
 
-    async def once() -> None:
+    def schedule() -> None:
+        nonlocal done
+        done = loop.create_future()
+        for _ in range(iterations):
+            loop.call_soon(_noop)
+        loop.call_soon(done.set_result, None)
+
+    def drain() -> None:
+        assert done is not None
+        loop.run_until_complete(done)
+
+    return Isolated(schedule, cleanup=drain)
+
+
+def call_soon_args(loop: asyncio.AbstractEventLoop) -> Callable[[], None] | Isolated:
+    """Registration with arguments, with dispatch outside the sample."""
+    iterations = 10_000
+    done: asyncio.Future[None] | None = None
+
+    def callback(_a: int, _b: int, _c: int) -> None:
+        pass
+
+    def schedule() -> None:
+        nonlocal done
+        done = loop.create_future()
+        for _ in range(iterations):
+            loop.call_soon(callback, 1, 2, 3)
+        loop.call_soon(done.set_result, None)
+
+    def drain() -> None:
+        assert done is not None
+        loop.run_until_complete(done)
+
+    return Isolated(schedule, cleanup=drain)
+
+
+def ready_batch(loop: asyncio.AbstractEventLoop) -> Callable[[], None] | Isolated:
+    """Dispatch a ready queue built before the timed section."""
+    iterations = 10_000
+    done: asyncio.Future[None] | None = None
+
+    def schedule() -> None:
+        nonlocal done
         done = loop.create_future()
         seen = 0
 
@@ -231,9 +284,12 @@ def call_soon(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
 
         for _ in range(iterations):
             loop.call_soon(step)
-        await done
 
-    return _driver(loop, once)
+    def dispatch() -> None:
+        assert done is not None
+        loop.run_until_complete(done)
+
+    return Isolated(dispatch, setup=schedule)
 
 
 def call_soon_threadsafe(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
@@ -344,7 +400,9 @@ WORKLOADS: dict[str, Workload] = {
     "writelines_8": partial(writelines, buffer_count=8),
     "bulk": bulk,
     "call_soon": call_soon,
+    "call_soon_args": call_soon_args,
     "call_soon_threadsafe": call_soon_threadsafe,
+    "ready_batch": ready_batch,
     "timer_schedule_cancel": timer_schedule_cancel,
     "timer_rounds": timer_rounds,
     "loop_iterations": loop_iterations,
@@ -372,16 +430,30 @@ class Arm:
     def __init__(self, factory: Factory, workload: Workload) -> None:
         self.loop = factory()
         asyncio.set_event_loop(self.loop)
-        self.run = workload(self.loop)
+        prepared = workload(self.loop)
+        self.setup: Callable[[], None] | None
+        self.cleanup: Callable[[], None] | None
+        if isinstance(prepared, Isolated):
+            self.run = prepared.run
+            self.setup = prepared.setup
+            self.cleanup = prepared.cleanup
+        else:
+            self.run = prepared
+            self.setup = None
+            self.cleanup = None
         self.wall: list[float] = []
         self.cpu: list[float] = []
 
     def sample(self) -> None:
+        if self.setup is not None:
+            self.setup()
         started_cpu = time.process_time()
         started = time.perf_counter()
         self.run()
         self.wall.append(time.perf_counter() - started)
         self.cpu.append(time.process_time() - started_cpu)
+        if self.cleanup is not None:
+            self.cleanup()
 
     def close(self) -> None:
         self.loop.close()
@@ -394,7 +466,11 @@ def compare(name: str, workload: Workload) -> None:
     }
     for arm in arms.values():
         for _ in range(3):
+            if arm.setup is not None:
+                arm.setup()
             arm.run()
+            if arm.cleanup is not None:
+                arm.cleanup()
 
     gc.disable()
     try:

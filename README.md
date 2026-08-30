@@ -36,8 +36,9 @@ interleaved in-process runs or five interleaved HTTP runs. The labels show the a
 
 | Benchmark | asyncio | uvloop | zuvloop |
 | --- | ---: | ---: | ---: |
-| `call_soon` | 2.36M/s | 4.49M/s | **8.81M/s** |
-| `call_soon` with arguments | 2.14M/s | 3.51M/s | **8.86M/s** |
+| `call_soon` registration | 2.70M/s | 4.99M/s | **9.80M/s** |
+| `call_soon` registration with arguments | 2.40M/s | 3.45M/s | **7.95M/s** |
+| ready callback batch | 6.36M/s | 12.1M/s | **17.1M/s** |
 | `call_soon_threadsafe` | 0.44M/s | 5.13M/s | **11.9M/s** |
 | timer schedule + cancel | 1.17M/s | 1.93M/s | **9.02M/s** |
 | completed timer rounds | 71.1k/s | 78.2k/s | **2.93M/s** |
@@ -50,6 +51,10 @@ interleaved in-process runs or five interleaved HTTP runs. The labels show the a
 | aiohttp server | 46.2k req/s | 58.0k req/s | **58.8k req/s** |
 | aiohttp client | 12.6k req/s | **15.0k req/s** | 14.8k req/s |
 | `getaddrinfo`, numeric host | 27.0k/s | 1.48M/s | **1.70M/s** |
+
+The `call_soon` rows measure registration only and drain the queued callbacks after timing stops. The ready callback
+batch builds its queue before timing starts, then measures dispatch only. `call_soon_threadsafe` measures a producer
+thread scheduling while the loop concurrently dispatches its callbacks.
 
 The timer rows measure different work. Timer schedule + cancel isolates heap bookkeeping and handle cleanup without
 firing callbacks. Completed timer rounds chain one zero-delay timer per event loop turn. The prebuilt due timer batch
