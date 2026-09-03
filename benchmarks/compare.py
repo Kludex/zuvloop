@@ -131,8 +131,16 @@ def split_write(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
 
 def ingest_boundary(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
     """A 64 KiB body plus typical HTTP headers, acknowledged with one byte."""
-    payload = b"x" * (64 * 1024 + 256)
-    requests = 5_000
+    headers = (
+        b"POST / HTTP/1.1\r\n"
+        b"host: 127.0.0.1\r\n"
+        b"content-type: application/octet-stream\r\n"
+        b"content-length: 65536\r\n"
+        b"x-padding: " + b"x" * 144 + b"\r\n\r\n"
+    )
+    assert len(headers) == 256
+    payload = headers + b"x" * (64 * 1024)
+    requests = 500
 
     class Server(asyncio.Protocol):
         def __init__(self) -> None:
