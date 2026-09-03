@@ -34,9 +34,9 @@ setuptools==84.0.0 \
     --hash=sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670 \
     --hash=sha256:f4695c21257f0d9b537ec2692c941d02ee143b7cc1276941349a546573b2ef73
     # via setuptools-scm
-setuptools-scm==10.2.1 \
-    --hash=sha256:4fa7dd82cf8c800df59c9a288c90299b1657ff1ecfc3f5cc00287c5dbf5e27a9 \
-    --hash=sha256:b7c82f4102d389ee57dc66ccdb4f9b4bca3c40ba83b43f1f63d68ccd72db2580
+setuptools-scm==10.2.2 \
+    --hash=sha256:36b5dcef6bbeee0bc76b7756d1b574b3762e2138611a4f18e898f22f1aaee462 \
+    --hash=sha256:509585ce0628ede1c64ab1e40e7464481fb880c80a388effce9067bf6b2142fe
     # via hatch-vcs
 tomlkit==0.15.1 \
     --hash=sha256:177a05aece5a8ca5266fd3c448abb47b8d352f09d477d3ca8332db4d89b24304 \
@@ -46,9 +46,9 @@ trove-classifiers==2026.6.1.19 \
     --hash=sha256:ab4c4ec93cc4a4e7815fa759906e05e6bb3f2fbd92ea0f897288c6a43efd15b3 \
     --hash=sha256:c5132b4b61a829d11cfbd2d72e97f20a45ed6edb95e45c5efdeb5e00836b2745
     # via hatchling
-vcs-versioning==2.3.1 \
-    --hash=sha256:806635bd0ea653c96af98a70624be758d408a989f2cd0b390e63474d99f96b63 \
-    --hash=sha256:a11299394e101569a62ab061375260d08bc56cd33d685b7067d85312368f4457
+vcs-versioning==2.3.2 \
+    --hash=sha256:24abddff97aecf44cf3fec727eae8d76d9c6f70f5acb39afc41f824d69f2aac5 \
+    --hash=sha256:df6cdf10eab8fc0cc41c8ab9d1f1ebdacab8489a4c46fbeb1e6e06823b74d31f
     # via setuptools-scm
 ziglang==0.16.0 \
     --hash=sha256:089a16a4eb5a2f45151993342f8fabad24ff1a0723dc146642895c29208a3939 \
