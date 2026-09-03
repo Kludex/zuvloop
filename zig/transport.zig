@@ -34,6 +34,7 @@ const PIPE_OWNED: u32 = 1 << 9;
 const CLOSE_REQUESTED: u32 = 1 << 10;
 const ALLOCATING_READ_BUFFER: u32 = 1 << 11;
 const READ_STATE_PENDING: u32 = 1 << 12;
+const previous_read_full_flag: u32 = 1 << 13;
 
 pub const KIND_TCP: c_int = 0;
 pub const KIND_PIPE: c_int = 1;
@@ -50,11 +51,11 @@ const default_high_water: usize = 64 * 1024;
 const read_size_min: usize = 16 * 1024;
 const read_size_max: usize = 256 * 1024;
 
-/// Below this, a read is copied out of a shared buffer into an exactly sized
-/// `bytes`; above it, libuv fills the final object directly. Small requests -
-/// an HTTP header block is a couple of hundred bytes - are far cheaper to copy
-/// than to allocate a large object for and shrink.
-pub const copy_threshold: usize = 64 * 1024;
+/// At or below this, a read is copied out of a shared buffer into an exactly
+/// sized `bytes`; above it, libuv fills the final object directly. This keeps a
+/// 64 KiB body plus its framing in one read without allocating a large object
+/// and shrinking it for every request.
+pub const copy_threshold: usize = 128 * 1024;
 const inline_bufs = 16;
 
 /// Writes issued within one loop iteration are held here and sent together.
@@ -499,6 +500,10 @@ fn takeUvError(status: c_int) ?*py.Object {
 fn adjustReadSize(self: *Transport, nread: usize) void {
     if (nread >= self.read_size) {
         self.read_size = @min(self.read_size * 2, read_size_max);
+        self.flags |= previous_read_full_flag;
+    } else if (self.flags & previous_read_full_flag != 0) {
+        // A short remainder after a full read marks a message boundary, not a smaller traffic shape.
+        self.flags &= ~previous_read_full_flag;
     } else if (nread * 4 <= self.read_size) {
         self.read_size = @max(self.read_size / 2, read_size_min);
     }
