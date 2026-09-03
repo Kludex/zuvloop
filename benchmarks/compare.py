@@ -129,6 +129,52 @@ def split_write(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
     return _driver(loop, once)
 
 
+def ingest_boundary(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
+    """A 64 KiB body plus typical HTTP headers, acknowledged with one byte."""
+    payload = b"x" * (64 * 1024 + 256)
+    requests = 5_000
+
+    class Server(asyncio.Protocol):
+        def __init__(self) -> None:
+            self.pending = 0
+
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            self.transport = transport
+
+        def data_received(self, data: bytes) -> None:
+            self.pending += len(data)
+            while self.pending >= len(payload):
+                self.pending -= len(payload)
+                self.transport.write(b"x")  # type: ignore[attr-defined]
+
+    server = loop.run_until_complete(loop.create_server(Server, "127.0.0.1", 0))
+    port = server.sockets[0].getsockname()[1]
+
+    class Client(asyncio.Protocol):
+        def __init__(self) -> None:
+            self.remaining = requests
+            self.done = loop.create_future()
+
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            self.transport = transport
+            transport.write(payload)  # type: ignore[attr-defined]
+
+        def data_received(self, data: bytes) -> None:
+            for _ in data:
+                self.remaining -= 1
+                if self.remaining == 0:
+                    self.done.set_result(None)
+                    return
+                self.transport.write(payload)  # type: ignore[attr-defined]
+
+    async def once() -> None:
+        transport, protocol = await loop.create_connection(Client, "127.0.0.1", port)
+        await protocol.done
+        transport.close()
+
+    return _driver(loop, once)
+
+
 def writelines(loop: asyncio.AbstractEventLoop, buffer_count: int) -> Callable[[], None]:
     """A 128-byte response passed to `writelines()` in equal fragments."""
     fragments = tuple(b"x" * (128 // buffer_count) for _ in range(buffer_count))
@@ -340,6 +386,7 @@ def spawn(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
 WORKLOADS: dict[str, Workload] = {
     "echo": echo,
     "split_write": split_write,
+    "ingest_boundary": ingest_boundary,
     "writelines_4": partial(writelines, buffer_count=4),
     "writelines_8": partial(writelines, buffer_count=8),
     "bulk": bulk,
