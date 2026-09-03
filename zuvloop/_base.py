@@ -500,7 +500,7 @@ def _stop_when_done(future: asyncio.Future[Any]) -> None:
 def _finish_deferred_signal_cleanup(signals: tuple[int, ...], wakeup_fd: int, owner: SignalOwner) -> None:
     global _wakeup_fd_owner
     owner.finalized = True
-    if _wakeup_fd_owner is owner:
+    if _wakeup_fd_owner is owner:  # pragma: no cover - free-threaded pending-call tracing
         signal.set_wakeup_fd(-1)
         _wakeup_fd_owner = None
     try:
