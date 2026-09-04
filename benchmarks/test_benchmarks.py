@@ -496,6 +496,65 @@ def test_split_response_write(benchmark: BenchmarkFixture, loop: asyncio.Abstrac
 
 
 @pytest.mark.benchmark
+def test_ingest_boundary(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
+    """Receive a 64 KiB body plus typical HTTP headers, then acknowledge it."""
+    headers = (
+        b"POST / HTTP/1.1\r\n"
+        b"host: 127.0.0.1\r\n"
+        b"content-type: application/octet-stream\r\n"
+        b"content-length: 65536\r\n"
+        b"x-padding: " + b"x" * 144 + b"\r\n\r\n"
+    )
+    assert len(headers) == 256
+    payload = headers + b"x" * (64 * 1024)
+    requests = 500
+
+    class Server(asyncio.Protocol):
+        def __init__(self) -> None:
+            self.pending = 0
+
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            self.transport = transport
+
+        def data_received(self, data: bytes) -> None:
+            self.pending += len(data)
+            while self.pending >= len(payload):
+                self.pending -= len(payload)
+                self.transport.write(b"x")  # type: ignore[attr-defined]
+
+    class Client(asyncio.Protocol):
+        def __init__(self) -> None:
+            self.remaining = requests
+            self.done = loop.create_future()
+
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            self.transport = transport
+            transport.write(payload)  # type: ignore[attr-defined]
+
+        def data_received(self, data: bytes) -> None:
+            for _ in data:
+                self.remaining -= 1
+                if self.remaining == 0:
+                    self.done.set_result(None)
+                    return
+                self.transport.write(payload)  # type: ignore[attr-defined]
+
+    server = loop.run_until_complete(loop.create_server(Server, "127.0.0.1", 0))
+    port = server.sockets[0].getsockname()[1]
+
+    async def work() -> None:
+        transport, client = await loop.create_connection(Client, "127.0.0.1", port)
+        await client.done
+        transport.close()
+
+    try:
+        benchmark(drive(loop, work))
+    finally:
+        server.close()
+        loop.run_until_complete(server.wait_closed())
+
+
+@pytest.mark.benchmark
 @pytest.mark.parametrize("buffer_count", [4, 8], ids=["4-buffers", "8-buffers"])
 def test_writelines_roundtrips(
     benchmark: BenchmarkFixture,
