@@ -71,8 +71,9 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           uv pip compile .github/build-requirements.in --universal --generate-hashes \
-            --no-header --output-file /tmp/build-constraints.txt
-          tail -n +3 .github/build-constraints.txt | diff -u - /tmp/build-constraints.txt
+            --no-header --no-annotate --constraint .github/build-constraints.txt \
+            --output-file /tmp/build-constraints.txt
+          sed '/^[[:space:]]*#/d' .github/build-constraints.txt | diff -u - /tmp/build-constraints.txt
           uv build --sdist --wheel --build-constraints .github/build-constraints.txt \
             --require-hashes --out-dir /tmp/zuv-sdist
 
