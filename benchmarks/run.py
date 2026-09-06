@@ -66,7 +66,38 @@ def _noop() -> None:
 
 
 async def bench_call_soon(iterations: int = 200_000) -> float:
-    """Dispatch cost: a full batch scheduled, then drained in one go."""
+    """Registration cost, with callback dispatch outside the timed section."""
+    loop = asyncio.get_running_loop()
+    done = loop.create_future()
+
+    started = time.perf_counter()
+    for _ in range(iterations):
+        loop.call_soon(_noop)
+    elapsed = time.perf_counter() - started
+    loop.call_soon(done.set_result, None)
+    await done
+    return iterations / elapsed
+
+
+async def bench_call_soon_args(iterations: int = 200_000) -> float:
+    """Registration with arguments, with dispatch outside the timed section."""
+    loop = asyncio.get_running_loop()
+    done = loop.create_future()
+
+    def callback(_a: int, _b: int, _c: int) -> None:
+        pass
+
+    started = time.perf_counter()
+    for _ in range(iterations):
+        loop.call_soon(callback, 1, 2, 3)
+    elapsed = time.perf_counter() - started
+    loop.call_soon(done.set_result, None)
+    await done
+    return iterations / elapsed
+
+
+async def bench_ready_batch(iterations: int = 200_000) -> float:
+    """Dispatch cost for a ready queue built before the timed section."""
     loop = asyncio.get_running_loop()
     done = loop.create_future()
     seen = 0
@@ -77,28 +108,9 @@ async def bench_call_soon(iterations: int = 200_000) -> float:
         if seen == iterations:
             done.set_result(None)
 
-    started = time.perf_counter()
     for _ in range(iterations):
         loop.call_soon(step)
-    await done
-    return iterations / (time.perf_counter() - started)
-
-
-async def bench_call_soon_args(iterations: int = 200_000) -> float:
-    """Same, with arguments - asyncio packs these into a tuple per call."""
-    loop = asyncio.get_running_loop()
-    done = loop.create_future()
-    seen = 0
-
-    def step(_a: int, _b: int, _c: int) -> None:
-        nonlocal seen
-        seen += 1
-        if seen == iterations:
-            done.set_result(None)
-
     started = time.perf_counter()
-    for _ in range(iterations):
-        loop.call_soon(step, 1, 2, 3)
     await done
     return iterations / (time.perf_counter() - started)
 
@@ -351,9 +363,10 @@ async def bench_process_pipe(repetitions: int = 12, payload_size: int = 4 << 20)
 
 
 BENCHMARKS: dict[str, Benchmark] = {
-    "call_soon": Benchmark("callbacks/s", async_work=bench_call_soon),
-    "call_soon_args": Benchmark("callbacks/s", async_work=bench_call_soon_args),
+    "call_soon": Benchmark("calls/s", async_work=bench_call_soon),
+    "call_soon_args": Benchmark("calls/s", async_work=bench_call_soon_args),
     "call_soon_threadsafe": Benchmark("callbacks/s", async_work=bench_call_soon_threadsafe),
+    "ready_batch": Benchmark("callbacks/s", async_work=bench_ready_batch),
     "timer_schedule_cancel": Benchmark("timers/s", async_work=bench_timer_schedule_cancel),
     "timer_rounds": Benchmark("timers/s", async_work=bench_timer_rounds),
     "timer_due_batch": Benchmark("timers/s", stopped_loop_work=bench_timer_due_batch),
