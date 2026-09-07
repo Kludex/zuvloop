@@ -1,0 +1,151 @@
+README benchmark results - 2026-09-07
+Apple M3 Max, macOS 26.6.2, CPython 3.14.6, libuv 1.51.0
+zuvloop 0.0.14.dev3, uvloop 0.22.1, rloop 0.5.0
+zuvloop source: b45158cb14d15ef2463d0c65e9293aff1579bff6 (with rloop added to the benchmark harnesses)
+uvicorn 0.52.4, aiohttp 3.14.3, httptools 0.8.0, oha 1.14.0
+
+Seven interleaved in-process runs; five interleaved HTTP runs.
+HTTP server warmup: 1s per sample; 64 connections.
+Uvicorn measurement: 5s per sample; aiohttp server: 4s per sample.
+Aiohttp client: 20,000 requests, concurrency 16, after 2,000 warmup requests.
+The aiohttp client benchmark keeps its server on stock asyncio.
+The scripts below ran sequentially.
+NO_COLOR=true avoids oha rejecting the inherited NO_COLOR=1 value.
+
+$ uv run --group bench python benchmarks/run.py --repeat 7 --only call_soon call_soon_args call_soon_threadsafe timer_schedule_cancel timer_rounds timer_due_batch ready_with_io stream echo_1kb getaddrinfo
+python 3.14.6   libuv 1.51.0
+
+call_soon
+  asyncio       1,791,069 callbacks/s  (+/- 6.4%)
+  zuvloop       5,998,418 callbacks/s  (+/- 8.2%)
+  uvloop        3,619,323 callbacks/s  (+/- 7.5%)
+  rloop         6,228,549 callbacks/s  (+/- 4.7%)
+          zuvloop / uvloop  1.66x
+
+call_soon_args
+  asyncio       1,633,430 callbacks/s  (+/- 4.3%)
+  zuvloop       4,822,061 callbacks/s  (+/- 12.0%)
+  uvloop        2,362,168 callbacks/s  (+/- 6.3%)
+  rloop         4,375,869 callbacks/s  (+/- 5.2%)
+          zuvloop / uvloop  2.04x
+
+call_soon_threadsafe
+  asyncio         435,279 callbacks/s  (+/- 0.7%)
+  zuvloop       9,617,292 callbacks/s  (+/- 7.7%)
+  uvloop        4,158,696 callbacks/s  (+/- 5.0%)
+  rloop        11,424,029 callbacks/s  (+/- 1.6%)
+          zuvloop / uvloop  2.31x
+
+timer_schedule_cancel
+  asyncio       1,077,267 timers/s  (+/- 7.7%)
+  zuvloop       9,162,526 timers/s  (+/- 2.3%)
+  uvloop        1,491,004 timers/s  (+/- 16.0%)
+  rloop         5,041,614 timers/s  (+/- 23.9%)
+          zuvloop / uvloop  6.15x
+
+timer_rounds
+  asyncio          71,805 timers/s  (+/- 3.4%)
+  zuvloop       3,073,495 timers/s  (+/- 7.8%)
+  uvloop           79,059 timers/s  (+/- 2.7%)
+  rloop         3,499,920 timers/s  (+/- 4.2%)
+          zuvloop / uvloop  38.88x
+
+timer_due_batch
+  asyncio       1,118,820 timers/s  (+/- 14.9%)
+  zuvloop       4,297,617 timers/s  (+/- 6.2%)
+  uvloop        2,032,806 timers/s  (+/- 21.5%)
+  rloop         5,183,417 timers/s  (+/- 51.2%)
+          zuvloop / uvloop  2.11x
+
+ready_with_io
+  asyncio          71,320 iterations/s  (+/- 2.0%)
+  zuvloop         374,385 iterations/s  (+/- 9.6%)
+  uvloop           77,100 iterations/s  (+/- 0.8%)
+  rloop         2,801,644 iterations/s  (+/- 11.9%)
+          zuvloop / uvloop  4.86x
+
+stream
+  asyncio        7,527 MiB/s  (+/- 13.7%)
+  zuvloop        9,481 MiB/s  (+/- 8.7%)
+  uvloop         7,980 MiB/s  (+/- 1.7%)
+  rloop          9,051 MiB/s  (+/- 1.5%)
+          zuvloop / uvloop  1.19x
+
+echo_1kb
+  asyncio          47,077 roundtrips/s  (+/- 0.6%)
+  zuvloop          57,839 roundtrips/s  (+/- 2.0%)
+  uvloop           54,108 roundtrips/s  (+/- 1.0%)
+  rloop            52,145 roundtrips/s  (+/- 1.8%)
+          zuvloop / uvloop  1.07x
+
+getaddrinfo
+  asyncio          27,036 lookups/s  (+/- 1.3%)
+  zuvloop       1,715,928 lookups/s  (+/- 2.8%)
+  uvloop        1,464,665 lookups/s  (+/- 3.5%)
+  rloop         1,065,209 lookups/s  (+/- 2.8%)
+          zuvloop / uvloop  1.17x
+
+
+$ NO_COLOR=true uv run --group bench python benchmarks/uvicorn_bench.py --rounds 5
+python 3.14.6  libuv 1.51.0  uvicorn 0.52.4  httptools  oha -c 64 -z 5s
+
+round 1/5 done
+round 2/5 done
+round 3/5 done
+round 4/5 done
+round 5/5 done
+
+plaintext
+  asyncio       51,631 req/s  (+/- 0.9%)
+  zuvloop       71,615 req/s  (+/- 0.4%)
+  uvloop        66,610 req/s  (+/- 0.8%)
+  rloop         54,536 req/s  (+/- 1.2%)
+          zuvloop / uvloop  1.08x
+
+10kb
+  asyncio       48,433 req/s  (+/- 2.0%)
+  zuvloop       69,315 req/s  (+/- 0.4%)
+  uvloop        64,299 req/s  (+/- 0.3%)
+  rloop         51,696 req/s  (+/- 1.4%)
+          zuvloop / uvloop  1.08x
+
+
+$ NO_COLOR=true uv run --group bench python benchmarks/aiohttp_bench.py --rounds 5
+python 3.14.6  libuv 1.51.0  oha -c 64 -z 4s
+
+round 1/5 done
+round 2/5 done
+round 3/5 done
+round 4/5 done
+round 5/5 done
+
+aiohttp server
+  asyncio       47,174 req/s  (+/- 12.5%)
+  zuvloop       53,588 req/s  (+/- 10.0%)
+  uvloop        52,988 req/s  (+/- 10.3%)
+  rloop         47,553 req/s  (+/- 10.5%)
+          zuvloop / uvloop  1.01x
+
+aiohttp client
+  asyncio       12,391 req/s  (+/- 1.2%)
+  zuvloop       14,881 req/s  (+/- 6.5%)
+  uvloop        14,740 req/s  (+/- 3.1%)
+  rloop         13,861 req/s  (+/- 4.7%)
+          zuvloop / uvloop  1.01x
+
+
+Aiohttp stderr summary:
+303 unhandled task exceptions were logged.
+A separate per-loop diagnostic isolated these to rloop, when oha aborts ongoing requests at its deadline.
+All completed responses in that diagnostic returned HTTP 200; a direct request returned the expected body.
+Representative traceback:
+Task exception was never retrieved
+future: <Task finished name='Task-616685' coro=<RequestHandler.start() done, defined at /Users/marcelotryle/.codex/worktrees/0c1c/zuvloop/.venv/lib/python3.14/site-packages/aiohttp/web_protocol.py:608> exception=TypeError("'NoneType' object is not callable")>
+Traceback (most recent call last):
+  File "/Users/marcelotryle/.codex/worktrees/0c1c/zuvloop/.venv/lib/python3.14/site-packages/aiohttp/web_protocol.py", line 664, in start
+    request = self._request_factory(
+        message,
+    ...<3 lines>...
+        self._task_handler or asyncio.current_task(loop),  # type: ignore[arg-type]
+    )
+TypeError: 'NoneType' object is not callable

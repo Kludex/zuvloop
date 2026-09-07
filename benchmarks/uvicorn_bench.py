@@ -118,8 +118,15 @@ def loop_factories() -> dict[str, Factory]:
     try:
         import uvloop
     except ImportError:
-        return factories
-    factories["uvloop"] = uvloop.new_event_loop
+        pass
+    else:
+        factories["uvloop"] = uvloop.new_event_loop
+    try:
+        import rloop
+    except ImportError:
+        pass
+    else:
+        factories["rloop"] = rloop.new_event_loop
     return factories
 
 
