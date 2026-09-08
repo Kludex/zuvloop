@@ -166,6 +166,7 @@ fn onExit(handle: ?*uv.Process, status: i64, signal: c_int) callconv(.c) void {
 fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     const self: *Process = @ptrCast(@alignCast(uv.getData(handle.?)));
     const st = self.loopState();
+    st.externalHandleClosed();
     st.pythonEnter();
     defer st.pythonExit();
     py.decref(self);
@@ -174,14 +175,14 @@ fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
 fn closeHandle(self: *Process) void {
     if (self.flags & OPEN == 0) return;
     self.flags &= ~OPEN;
-    uv.uv_close(uv.asHandle(self.handle()), onClosed);
+    self.loopState().closeExternalHandle(uv.asHandle(self.handle()), onClosed);
 }
 
 /// Closes a process handle discovered while the owning loop shuts down.
 pub fn closeFromLoop(handle: *uv.Handle) void {
     const self: *Process = @ptrCast(@alignCast(uv.getData(handle)));
     self.flags &= ~OPEN;
-    uv.uv_close(handle, onClosed);
+    self.loopState().closeExternalHandle(handle, onClosed);
 }
 
 // ---------------------------------------------------------------------------
@@ -301,12 +302,13 @@ pub fn spawnProcess(self_obj: *py.Object, args_in: []const ?*py.Object) py.Error
 
     uv.setData(self.handle(), self);
     const status = uv.uv_spawn(st.uvloop, self.handle(), &options);
+    st.external_handles += 1;
     if (status < 0) {
         // `uv_spawn` links the handle into the loop before anything in it can
         // fail, and only `uv_close` unlinks it. Freeing the object here would
         // leave the loop holding a queue node inside it.
         py.incref(obj); // released by the close callback
-        uv.uv_close(uv.asHandle(self.handle()), onClosed);
+        self.loopState().closeExternalHandle(uv.asHandle(self.handle()), onClosed);
         return py.errUv(status);
     }
 

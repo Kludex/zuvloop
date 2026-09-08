@@ -14,6 +14,7 @@ const alloc = std.heap.c_allocator;
 
 pub const Poller = struct {
     loop: *LoopObject,
+    state: *State,
     reader: ?*Handle = null,
     writer: ?*Handle = null,
     fd: c_int,
@@ -64,6 +65,7 @@ fn schedule(st: *State, maybe: ?*Handle) void {
 
 fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     const self: *Poller = @ptrCast(@alignCast(uv.getData(handle.?)));
+    self.state.externalHandleClosed();
     alloc.free(@as([*]u8, @ptrCast(self))[0 .. poll_offset + uv.uv_handle_size(.poll)]);
 }
 
@@ -78,7 +80,7 @@ fn destroy(self: *Poller) void {
     const writer = self.writer;
     self.reader = null;
     self.writer = null;
-    uv.uv_close(uv.asHandle(self.uvPoll()), onClosed);
+    self.state.closeExternalHandle(uv.asHandle(self.uvPoll()), onClosed);
     if (reader) |h| {
         h.flags |= handlemod.CANCELLED;
         py.decref(h);
@@ -95,7 +97,7 @@ fn get(st: *State, loop: *LoopObject, fd: c_int) py.Error!*Poller {
     const size = poll_offset + uv.uv_handle_size(.poll);
     const raw = alloc.alignedAlloc(u8, .@"8", size) catch return py.errNoMemory();
     const self: *Poller = @ptrCast(raw.ptr);
-    self.* = .{ .loop = loop, .fd = fd };
+    self.* = .{ .loop = loop, .state = st, .fd = fd };
     // Python hands over a socket's `fileno()`, which on Windows is the
     // `SOCKET` itself rather than a CRT descriptor - the plain `uv_poll_init`
     // would run it through `_get_osfhandle` and reject it.
@@ -107,9 +109,10 @@ fn get(st: *State, loop: *LoopObject, fd: c_int) py.Error!*Poller {
         alloc.free(raw);
         return py.errUv(status);
     }
+    st.external_handles += 1;
     uv.setData(self.uvPoll(), self);
     st.pollers.put(alloc, fd, self) catch {
-        uv.uv_close(uv.asHandle(self.uvPoll()), onClosed);
+        self.state.closeExternalHandle(uv.asHandle(self.uvPoll()), onClosed);
         return py.errNoMemory();
     };
     return self;
