@@ -44,8 +44,15 @@ def loop_factories() -> dict[str, Factory]:
     try:
         import uvloop
     except ImportError:
-        return factories
-    factories["uvloop"] = uvloop.new_event_loop
+        pass
+    else:
+        factories["uvloop"] = uvloop.new_event_loop
+    try:
+        import rloop
+    except ImportError:
+        pass
+    else:
+        factories["rloop"] = rloop.new_event_loop
     return factories
 
 
@@ -375,7 +382,7 @@ def humanise(value: float, unit: str) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Compare zuvloop against asyncio and uvloop.")
+    parser = argparse.ArgumentParser(description="Compare zuvloop against asyncio, uvloop, and rloop.")
     parser.add_argument("--repeat", type=int, default=3, help="runs per benchmark; the median is reported")
     parser.add_argument("--only", nargs="*", choices=sorted(BENCHMARKS), help="benchmarks to run")
     args = parser.parse_args()

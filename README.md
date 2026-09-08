@@ -18,7 +18,7 @@ Your code stays the same. The loop underneath gets faster. 🚀
 
 The key features are:
 
-- **Fast**: Scheduling, timers, sockets, and DNS run in native code, driven by [libuv](https://libuv.org) - the same engine behind Node.js. Over **25x faster than asyncio** at thread-safe scheduling and matches or beats [uvloop](https://github.com/MagicStack/uvloop) on 13 of the 14 benchmarks below.
+- **Fast**: Scheduling, timers, sockets, and DNS run in native code, driven by [libuv](https://libuv.org) - the same engine behind Node.js. Over **20x faster than asyncio** at thread-safe scheduling. Compare it with [uvloop](https://github.com/MagicStack/uvloop) and [rloop](https://github.com/gi0baro/rloop) in the benchmarks below.
 - **Drop-in**: One line to switch. Everything is standard `asyncio` — same `Task` objects, same protocols, same APIs.
 - **Fully typed**: Ships type hints for everything and passes **strict mypy**. Your editor will love it. ✨
 - **Observable**: Built-in [OpenTelemetry](https://opentelemetry.io) instrumentation — slow-callback spans, unhandled-exception spans, loop metrics. Zero cost until you turn it on.
@@ -27,29 +27,37 @@ The key features are:
 ## Performance
 
 <p align="center">
-  <img src="docs/assets/performance.png" alt="zuvloop vs uvloop vs asyncio benchmarks">
+  <img src="docs/assets/performance.png" alt="zuvloop vs rloop vs uvloop vs asyncio benchmarks">
 </p>
 
 Throughput relative to stock asyncio (higher is better), measured with the suite in
-`benchmarks/` on an M3 Max, macOS 26, CPython 3.14, and libuv 1.51.0. Each result is the median of seven
-interleaved in-process runs or five interleaved HTTP runs. The labels show the absolute numbers.
+`benchmarks/` on an M3 Max, macOS 26.6.2, CPython 3.14.6, and libuv 1.51.0. The comparison uses
+uvloop 0.22.1 and rloop 0.5.0. Each result is the median of seven interleaved in-process runs or five
+interleaved HTTP runs. The chart shows selected benchmarks, with a separate scale for each panel.
+Labels show absolute throughput. See the [recorded results and commands](benchmarks/results/readme-2026-09-08.txt).
 
-| Benchmark | asyncio | uvloop | zuvloop |
-| --- | ---: | ---: | ---: |
-| `call_soon` | 2.36M/s | 4.49M/s | **8.81M/s** |
-| `call_soon` with arguments | 2.14M/s | 3.51M/s | **8.86M/s** |
-| `call_soon_threadsafe` | 0.44M/s | 5.13M/s | **11.9M/s** |
-| timer schedule + cancel | 1.17M/s | 1.93M/s | **9.02M/s** |
-| completed timer rounds | 71.1k/s | 78.2k/s | **2.93M/s** |
-| prebuilt due timer batch | 1.38M/s | 2.73M/s | **5.89M/s** |
-| ready chain with 250 idle connections | 70.7k/s | 76.3k/s | **362.6k/s** |
-| bulk stream | 7.1 GiB/s | 7.9 GiB/s | **9.7 GiB/s** |
-| echo round trips, 1 KiB | 36.8k/s | 53.6k/s | **57.6k/s** |
-| uvicorn, plaintext | 50.3k req/s | 67.2k req/s | **72.6k req/s** |
-| uvicorn, 10 KiB body | 48.0k req/s | 65.2k req/s | **70.2k req/s** |
-| aiohttp server | 46.2k req/s | 58.0k req/s | **58.8k req/s** |
-| aiohttp client | 12.6k req/s | **15.0k req/s** | 14.8k req/s |
-| `getaddrinfo`, numeric host | 27.0k/s | 1.48M/s | **1.70M/s** |
+These measurements come from a shared machine with background load. Check the recorded
+run-to-run variation before treating small differences as meaningful.
+
+| Benchmark | asyncio | uvloop | rloop | zuvloop |
+| --- | ---: | ---: | ---: | ---: |
+| `call_soon` | 1.93M/s | 3.56M/s | **6.30M/s** | 6.05M/s |
+| `call_soon` with arguments | 1.59M/s | 2.36M/s | 4.41M/s | **4.71M/s** |
+| `call_soon_threadsafe` | 407.7k/s | 4.14M/s | **11.37M/s** | 9.21M/s |
+| timer schedule + cancel | 1.09M/s | 1.49M/s | 5.05M/s | **8.79M/s** |
+| completed timer rounds | 67.4k/s | 75.0k/s | **3.39M/s** | 3.10M/s |
+| prebuilt due timer batch | 1.35M/s | 2.68M/s | **9.58M/s** | 5.59M/s |
+| ready chain with 250 idle connections | 54.3k/s | 59.5k/s | **3.05M/s** | 2.12M/s |
+| bulk stream | 5.1 GiB/s | 5.9 GiB/s | 5.9 GiB/s | **6.1 GiB/s** |
+| echo round trips, 1 KiB | 38.6k/s | 47.4k/s | 46.1k/s | **49.6k/s** |
+| uvicorn, plaintext | 47.6k req/s | 65.6k req/s | 50.4k req/s | **70.1k req/s** |
+| uvicorn, 10 KiB body | 43.7k req/s | 63.2k req/s | 49.6k req/s | **68.5k req/s** |
+| aiohttp server | 46.2k req/s | 55.6k req/s | 48.6k req/s | **57.1k req/s** |
+| aiohttp client | 11.2k req/s | **13.2k req/s** | 12.7k req/s | 12.9k req/s |
+| `getaddrinfo`, numeric host | 22.7k/s | 1.40M/s | 1.01M/s | **1.63M/s** |
+
+With rloop, the aiohttp server benchmark logs `TypeError` callback errors when the load generator
+disconnects at its deadline. The throughput above includes this behavior.
 
 The timer rows measure different work. Timer schedule + cancel isolates heap bookkeeping and handle cleanup without
 firing callbacks. Completed timer rounds chain one zero-delay timer per event loop turn. The prebuilt due timer batch
