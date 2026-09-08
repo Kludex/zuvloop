@@ -26,7 +26,8 @@ const alloc = std.heap.c_allocator;
 const min_cancelled_timers = 100;
 const context_pool_capacity = 16;
 const ready_drain_batch_limit = 64;
-const ready_drain_io_batch_limit = 8;
+const ready_drain_io_batch_limit = 256;
+const ready_drain_io_time_limit_ns = 25 * 1000;
 const ready_drain_callback_limit = 16 * 1024;
 
 pub const State = struct {
@@ -49,6 +50,9 @@ pub const State = struct {
     dns_requests: ?*anyopaque = null,
     transport_head: ?*transportmod.Transport = null,
     flush_head: ?*transportmod.Transport = null,
+    /// Initialized external handles, including those awaiting a close callback.
+    external_handles: usize = 0,
+    closing_handles: usize = 0,
 
     tstate: ?*c.PyThreadState = null,
     python_depth: c_int = 1,
@@ -75,6 +79,19 @@ pub const State = struct {
     slow_callback_duration: f64 = 0.1,
     callbacks_run: u64 = 0,
     iterations: u64 = 0,
+
+    /// Starts closing an external handle without counting repeated close requests.
+    pub fn closeExternalHandle(self: *State, handle: *uv.Handle, callback: uv.CloseCb) void {
+        if (uv.uv_is_closing(handle) != 0) return;
+        self.closing_handles += 1;
+        uv.uv_close(handle, callback);
+    }
+
+    /// Retires a counted handle before its close callback releases its storage.
+    pub fn externalHandleClosed(self: *State) void {
+        self.external_handles -= 1;
+        self.closing_handles -= 1;
+    }
 
     pub inline fn pythonEnter(self: *State) void {
         if (self.python_depth == 0) {
@@ -109,12 +126,6 @@ pub const LoopObject = extern struct {
 };
 
 pub var loop_type: ?*c.PyTypeObject = null;
-
-const ReadyActivity = struct {
-    st: *State,
-    external_handles: usize = 0,
-    closing: bool = false,
-};
 
 var str_call_exception_handler: ?*py.Object = null;
 var str_coro: ?*py.Object = null;
@@ -183,51 +194,31 @@ fn onIdle(idle: ?*uv.Idle) callconv(.c) void {
     defer st.pythonExit();
     var batches: usize = 0;
     var callbacks: usize = 0;
-    var batch_limit: usize = ready_drain_batch_limit;
+    const started = uv.uv_hrtime();
     while (st.ready.len != 0) {
         const batch = st.ready.len;
+        // The self-pipe poller is the one external handle every loop owns.
+        const has_io = st.external_handles > 1;
+        const batch_limit: usize = if (has_io) ready_drain_io_batch_limit else ready_drain_batch_limit;
         if (batches != 0 and
             (batches >= batch_limit or
                 callbacks >= ready_drain_callback_limit or
                 batch > ready_drain_callback_limit - callbacks or
-                (batch_limit == ready_drain_io_batch_limit and batch != 1))) break;
+                (has_io and batch != 1))) break;
         runReady(self);
         batches += 1;
         callbacks += batch;
         if (st.stopping or st.fatal != null or st.ready.len == 0) break;
         if (st.timer_active or st.dns_requests != null or st.flush_head != null) break;
-        if (batch_limit == ready_drain_batch_limit) {
-            var activity = ReadyActivity{ .st = st };
-            uv.uv_walk(st.uvloop, countExternalHandles, &activity);
-            // The self-pipe poller is the one external handle every loop owns.
-            if (activity.closing) break;
-            if (activity.external_handles > 1) {
-                if (batch != 1) break;
-                batch_limit = ready_drain_io_batch_limit;
-            }
+        if (st.closing_handles != 0) break;
+        if (st.external_handles > 1) {
+            if (batch != 1 or uv.uv_hrtime() - started >= ready_drain_io_time_limit_ns) break;
         }
     }
     if (st.ready.len == 0 and st.idle_active) {
         _ = uv.uv_idle_stop(st.idle);
         st.idle_active = false;
     }
-}
-
-fn countExternalHandles(handle: ?*uv.Handle, arg: ?*anyopaque) callconv(.c) void {
-    const activity: *ReadyActivity = @ptrCast(@alignCast(arg.?));
-    const h = handle.?;
-    const internal = [_]*uv.Handle{
-        @ptrCast(activity.st.idle),
-        @ptrCast(activity.st.timer),
-        @ptrCast(activity.st.sampler),
-        @ptrCast(activity.st.waker),
-        @ptrCast(activity.st.flusher),
-    };
-    for (internal) |owned| {
-        if (h == owned) return;
-    }
-    activity.external_handles += 1;
-    if (uv.uv_is_closing(h) != 0) activity.closing = true;
 }
 
 fn onTimer(timer: ?*uv.Timer) callconv(.c) void {
@@ -1040,6 +1031,7 @@ fn closeAllHandles(st: *State) void {
     dns.cancelAll(st);
     uv.uv_walk(st.uvloop, walkClose, null);
     while (hasHandles(st)) _ = uv.uv_run(st.uvloop, .once);
+    std.debug.assert(st.external_handles == 0 and st.closing_handles == 0);
     if (uv.uv_loop_close(st.uvloop) == 0) return;
 
     if (st.dns_requests != null and startDnsReaper(st)) return;

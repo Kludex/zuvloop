@@ -27,11 +27,14 @@ import socket
 import threading
 import time
 from collections.abc import Callable, Coroutine, Iterator
+from contextlib import ExitStack
+from typing import Never
 
 import pytest
 from pytest_codspeed import BenchmarkFixture
 
 import zuvloop
+from benchmarks.ready_io import ReadinessSample, idle_connections, ready_chain, socket_readiness
 
 Factory = Callable[[], asyncio.AbstractEventLoop]
 
@@ -357,38 +360,35 @@ def test_parallel_event_loops(
 
 
 @pytest.mark.benchmark
-def test_ready_chain_with_idle_connections(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
-    """One ready callback per turn while idle stream handles remain active."""
-    connection_count = 250
-    accepted: list[asyncio.BaseTransport] = []
+@pytest.mark.parametrize("connection_count", [0, 1, 250])
+def test_ready_chain_with_idle_connections(
+    benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop, connection_count: int
+) -> None:
+    with idle_connections(loop, connection_count):
+        benchmark(lambda: loop.run_until_complete(ready_chain()))
 
-    class Hold(asyncio.Protocol):
-        def connection_made(self, transport: asyncio.BaseTransport) -> None:
-            accepted.append(transport)
 
-    async def setup() -> tuple[asyncio.AbstractServer, list[asyncio.BaseTransport]]:
-        server = await loop.create_server(Hold, "127.0.0.1", 0)
-        port = server.sockets[0].getsockname()[1]
-        pairs = await asyncio.gather(
-            *(loop.create_connection(asyncio.Protocol, "127.0.0.1", port) for _ in range(connection_count))
-        )
-        while len(accepted) < connection_count:
-            await asyncio.sleep(0)
-        return server, [transport for transport, _protocol in pairs]
+@pytest.mark.benchmark
+@pytest.mark.parametrize("callback_ns", [0, 100_000], ids=["fast", "100us"])
+@pytest.mark.skipif(os.name == "nt", reason="The asyncio ProactorEventLoop does not support add_reader")
+def test_socket_readiness_with_ready_chain(
+    benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop, callback_ns: int
+) -> None:
+    reader, writer = socket.socketpair()
+    with reader, writer, ExitStack() as stack:
+        reader.setblocking(False)
+        writer.setblocking(False)
 
-    async def work() -> None:
-        for _ in range(1_000):
-            await asyncio.sleep(0)
+        def setup() -> tuple[tuple[Callable[[], ReadinessSample]], dict[str, Never]]:
+            measure = stack.enter_context(socket_readiness(loop, reader, writer, callback_ns))
+            return (measure,), {}
 
-    server, clients = loop.run_until_complete(setup())
-    try:
-        benchmark(drive(loop, work))
-    finally:
-        for transport in clients + accepted:
-            transport.close()
-        server.close()
-        loop.run_until_complete(server.wait_closed())
-        loop.run_until_complete(asyncio.sleep(0))
+        def teardown(measure: Callable[[], ReadinessSample]) -> None:
+            stack.close()
+
+        sample = benchmark.pedantic(lambda measure: measure(), setup=setup, teardown=teardown, rounds=5)
+    assert len(sample.latency_ns) == 200
+    assert len(sample.callbacks_before_read) == 200
 
 
 # ---------------------------------------------------------------------------
