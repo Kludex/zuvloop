@@ -7,6 +7,8 @@ uv run pytest benchmarks/test_benchmarks.py -k ready_chain --timeout=60
 ```
 
 You can select `asyncio` or `uvloop` with `--loop`. The script writes JSON lines.
+On Windows, the asyncio runner reports socket readiness as skipped because
+ProactorEventLoop does not support `add_reader`.
 It runs two warmups and nine measured rounds per case. Connections remain open
 across rounds, and their setup stays outside the throughput measurement.
 Garbage collection uses Python's defaults.
@@ -23,8 +25,8 @@ These are synthetic readiness delays, not network service latency bounds.
 
 CodSpeed records the elapsed time for each workload. The separate script reports
 the median and 95th percentile of individual read delays, plus the callbacks that
-ran between sending and reading. Socket creation stays outside the measurement;
-reader registration and cleanup are included in the CodSpeed workload.
+ran between sending and reading. Socket creation, reader registration, and cleanup
+stay outside the CodSpeed measurement.
 
 ## Baseline
 
