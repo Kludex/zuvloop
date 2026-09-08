@@ -1,0 +1,46 @@
+{"python": "3.14.6 (main, Aug  4 2026, 19:23:56) [Clang 22.1.3 ]", "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O", "loop": "zuvloop"}
+{"case": "ready_chain", "connections": 0, "round": 0, "iterations_per_second": 2065564.3163023423}
+{"case": "ready_chain", "connections": 0, "round": 1, "iterations_per_second": 2057365.9461496808}
+{"case": "ready_chain", "connections": 0, "round": 2, "iterations_per_second": 2047030.526342724}
+{"case": "ready_chain", "connections": 0, "round": 3, "iterations_per_second": 2082393.653197328}
+{"case": "ready_chain", "connections": 0, "round": 4, "iterations_per_second": 2082917.6176921355}
+{"case": "ready_chain", "connections": 0, "round": 5, "iterations_per_second": 2065297.6909765285}
+{"case": "ready_chain", "connections": 0, "round": 6, "iterations_per_second": 2064498.2278347213}
+{"case": "ready_chain", "connections": 0, "round": 7, "iterations_per_second": 2138999.4573358377}
+{"case": "ready_chain", "connections": 0, "round": 8, "iterations_per_second": 2071876.7183627533}
+{"case": "ready_chain", "connections": 1, "round": 0, "iterations_per_second": 442015.01206745184}
+{"case": "ready_chain", "connections": 1, "round": 1, "iterations_per_second": 499042.46227550885}
+{"case": "ready_chain", "connections": 1, "round": 2, "iterations_per_second": 529140.2006171574}
+{"case": "ready_chain", "connections": 1, "round": 3, "iterations_per_second": 537747.6247149669}
+{"case": "ready_chain", "connections": 1, "round": 4, "iterations_per_second": 537610.3317523468}
+{"case": "ready_chain", "connections": 1, "round": 5, "iterations_per_second": 525551.6650133687}
+{"case": "ready_chain", "connections": 1, "round": 6, "iterations_per_second": 504641.66883788747}
+{"case": "ready_chain", "connections": 1, "round": 7, "iterations_per_second": 507932.2251809839}
+{"case": "ready_chain", "connections": 1, "round": 8, "iterations_per_second": 548962.9376456055}
+{"case": "ready_chain", "connections": 250, "round": 0, "iterations_per_second": 388229.517719164}
+{"case": "ready_chain", "connections": 250, "round": 1, "iterations_per_second": 390581.1359075885}
+{"case": "ready_chain", "connections": 250, "round": 2, "iterations_per_second": 391811.7917952887}
+{"case": "ready_chain", "connections": 250, "round": 3, "iterations_per_second": 381562.8815628816}
+{"case": "ready_chain", "connections": 250, "round": 4, "iterations_per_second": 367647.0588235294}
+{"case": "ready_chain", "connections": 250, "round": 5, "iterations_per_second": 340595.1047968563}
+{"case": "ready_chain", "connections": 250, "round": 6, "iterations_per_second": 361886.1506170159}
+{"case": "ready_chain", "connections": 250, "round": 7, "iterations_per_second": 383722.4918938624}
+{"case": "ready_chain", "connections": 250, "round": 8, "iterations_per_second": 390497.8898860773}
+{"case": "socket_readiness", "callback_ns": 0, "round": 0, "median_us": 2.375, "p95_us": 3.792, "median_callbacks_before_read": 8.0}
+{"case": "socket_readiness", "callback_ns": 0, "round": 1, "median_us": 2.459, "p95_us": 5.542, "median_callbacks_before_read": 8.0}
+{"case": "socket_readiness", "callback_ns": 0, "round": 2, "median_us": 2.417, "p95_us": 4.292, "median_callbacks_before_read": 8.0}
+{"case": "socket_readiness", "callback_ns": 0, "round": 3, "median_us": 2.417, "p95_us": 3.459, "median_callbacks_before_read": 8.0}
+{"case": "socket_readiness", "callback_ns": 0, "round": 4, "median_us": 2.417, "p95_us": 4.458, "median_callbacks_before_read": 8.0}
+{"case": "socket_readiness", "callback_ns": 0, "round": 5, "median_us": 2.417, "p95_us": 3.208, "median_callbacks_before_read": 8.0}
+{"case": "socket_readiness", "callback_ns": 0, "round": 6, "median_us": 2.458, "p95_us": 4.916, "median_callbacks_before_read": 8.0}
+{"case": "socket_readiness", "callback_ns": 0, "round": 7, "median_us": 2.375, "p95_us": 3.209, "median_callbacks_before_read": 8.0}
+{"case": "socket_readiness", "callback_ns": 0, "round": 8, "median_us": 2.458, "p95_us": 2.667, "median_callbacks_before_read": 8.0}
+{"case": "socket_readiness", "callback_ns": 100000, "round": 0, "median_us": 904.292, "p95_us": 915.0, "median_callbacks_before_read": 8.0}
+{"case": "socket_readiness", "callback_ns": 100000, "round": 1, "median_us": 903.9795, "p95_us": 911.25, "median_callbacks_before_read": 8.0}
+{"case": "socket_readiness", "callback_ns": 100000, "round": 2, "median_us": 903.9585, "p95_us": 912.208, "median_callbacks_before_read": 8.0}
+{"case": "socket_readiness", "callback_ns": 100000, "round": 3, "median_us": 904.542, "p95_us": 919.542, "median_callbacks_before_read": 8.0}
+{"case": "socket_readiness", "callback_ns": 100000, "round": 4, "median_us": 906.1045, "p95_us": 918.542, "median_callbacks_before_read": 8.0}
+{"case": "socket_readiness", "callback_ns": 100000, "round": 5, "median_us": 905.5205, "p95_us": 921.5, "median_callbacks_before_read": 8.0}
+{"case": "socket_readiness", "callback_ns": 100000, "round": 6, "median_us": 904.5415, "p95_us": 915.0, "median_callbacks_before_read": 8.0}
+{"case": "socket_readiness", "callback_ns": 100000, "round": 7, "median_us": 904.2705, "p95_us": 913.959, "median_callbacks_before_read": 8.0}
+{"case": "socket_readiness", "callback_ns": 100000, "round": 8, "median_us": 904.542, "p95_us": 919.041, "median_callbacks_before_read": 8.0}
