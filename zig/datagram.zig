@@ -323,6 +323,7 @@ fn releaseSocketView(self: *Datagram) void {
 fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     const self: *Datagram = @ptrCast(@alignCast(uv.getData(handle.?)));
     const st = self.loopState();
+    st.externalHandleClosed();
     st.pythonEnter();
     defer st.pythonExit();
 
@@ -342,7 +343,7 @@ fn shutdownAndClose(self: *Datagram) void {
     // Detach the Python socket while the number still names our endpoint.
     releaseSocketView(self);
     const handle = uv.asHandle(self.udp());
-    if (uv.uv_is_closing(handle) == 0) uv.uv_close(handle, onClosed);
+    self.loopState().closeExternalHandle(handle, onClosed);
 }
 
 /// Closes a datagram endpoint discovered while the owning loop shuts down.
@@ -355,7 +356,7 @@ pub fn closeFromLoop(handle: *uv.Handle) void {
         self.flags &= ~READING;
     }
     releaseSocketView(self);
-    if (uv.uv_is_closing(handle) == 0) uv.uv_close(handle, onClosed);
+    self.loopState().closeExternalHandle(handle, onClosed);
 }
 
 // ---------------------------------------------------------------------------
@@ -624,6 +625,7 @@ pub fn makeDatagram(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*p
     try loopmod.checkClosed(st);
 
     try py.errUvIfNeg(uv.uv_udp_init_ex(st.uvloop, self.udp(), 0));
+    st.external_handles += 1;
     self.flags |= OPEN;
     uv.setData(self.udp(), self);
 
@@ -632,7 +634,7 @@ pub fn makeDatagram(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*p
         // libuv never took the descriptor, so the caller still owns it.
         self.flags &= ~OPEN;
         py.incref(obj);
-        uv.uv_close(uv.asHandle(self.udp()), onOpenFailed);
+        st.closeExternalHandle(uv.asHandle(self.udp()), onOpenFailed);
         return py.errUv(status);
     }
 
@@ -647,6 +649,7 @@ pub fn makeDatagram(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*p
 fn onOpenFailed(handle: ?*uv.Handle) callconv(.c) void {
     const self: *Datagram = @ptrCast(@alignCast(uv.getData(handle.?)));
     const st = self.loopState();
+    st.externalHandleClosed();
     st.pythonEnter();
     defer st.pythonExit();
     py.decref(self);

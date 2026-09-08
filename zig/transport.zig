@@ -777,6 +777,7 @@ fn releaseSocketView(self: *Transport) void {
 fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     const self: *Transport = @ptrCast(@alignCast(uv.getData(handle.?)));
     const st = self.loopState();
+    st.externalHandleClosed();
     st.pythonEnter();
     defer st.pythonExit();
 
@@ -803,6 +804,7 @@ fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
 fn onOpenFailed(handle: ?*uv.Handle) callconv(.c) void {
     const self: *Transport = @ptrCast(@alignCast(uv.getData(handle.?)));
     const st = self.loopState();
+    st.externalHandleClosed();
     st.pythonEnter();
     defer st.pythonExit();
     py.decref(self);
@@ -820,7 +822,7 @@ fn shutdownAndClose(self: *Transport) void {
     // same number after another thread has already reused it.
     releaseSocketView(self);
     const handle = uv.asHandle(self.stream());
-    if (uv.uv_is_closing(handle) == 0) uv.uv_close(handle, onClosed);
+    self.loopState().closeExternalHandle(handle, onClosed);
 }
 
 /// Closes a transport discovered while the owning loop is shutting down.
@@ -835,7 +837,7 @@ pub fn closeFromLoop(handle: *uv.Handle) void {
         self.flags &= ~READING;
     }
     releaseSocketView(self);
-    if (uv.uv_is_closing(handle) == 0) uv.uv_close(handle, onClosed);
+    self.loopState().closeExternalHandle(handle, onClosed);
 }
 
 fn closeTransport(self: *Transport) void {
@@ -1196,6 +1198,7 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
     else
         uv.uv_pipe_init(st.uvloop, @ptrCast(self.stream()), 0);
     try py.errUvIfNeg(init_status);
+    st.external_handles += 1;
     self.flags |= OPEN;
     uv.setData(self.stream(), self);
 
@@ -1207,7 +1210,7 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
         // uv_close is asynchronous, and the handle's storage is embedded in
         // `obj`. Keep that storage alive until libuv has finished with it.
         py.incref(obj);
-        uv.uv_close(uv.asHandle(self.stream()), onOpenFailed);
+        st.closeExternalHandle(uv.asHandle(self.stream()), onOpenFailed);
         self.flags &= ~OPEN;
         return py.errUv(open_status);
     }
