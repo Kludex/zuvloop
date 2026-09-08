@@ -27,12 +27,14 @@ import socket
 import threading
 import time
 from collections.abc import Callable, Coroutine, Iterator
+from contextlib import ExitStack
+from typing import Never
 
 import pytest
 from pytest_codspeed import BenchmarkFixture
 
 import zuvloop
-from benchmarks.ready_io import idle_connections, ready_chain, socket_readiness
+from benchmarks.ready_io import ReadinessSample, idle_connections, ready_chain, socket_readiness
 
 Factory = Callable[[], asyncio.AbstractEventLoop]
 
@@ -373,10 +375,18 @@ def test_socket_readiness_with_ready_chain(
     benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop, callback_ns: int
 ) -> None:
     reader, writer = socket.socketpair()
-    with reader, writer:
+    with reader, writer, ExitStack() as stack:
         reader.setblocking(False)
         writer.setblocking(False)
-        sample = benchmark.pedantic(socket_readiness, args=(loop, reader, writer, callback_ns), rounds=5)
+
+        def setup() -> tuple[tuple[Callable[[], ReadinessSample]], dict[str, Never]]:
+            measure = stack.enter_context(socket_readiness(loop, reader, writer, callback_ns))
+            return (measure,), {}
+
+        def teardown(measure: Callable[[], ReadinessSample]) -> None:
+            stack.close()
+
+        sample = benchmark.pedantic(lambda measure: measure(), setup=setup, teardown=teardown, rounds=5)
     assert len(sample.latency_ns) == 200
     assert len(sample.callbacks_before_read) == 200
 

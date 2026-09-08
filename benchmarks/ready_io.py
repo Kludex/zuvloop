@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import socket
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -54,9 +54,12 @@ class ReadinessSample:
     callbacks_before_read: list[int]
 
 
+@contextmanager
 def socket_readiness(
     loop: asyncio.AbstractEventLoop, reader: socket.socket, writer: socket.socket, callback_ns: int, samples: int = 200
-) -> ReadinessSample:
+) -> Iterator[Callable[[], ReadinessSample]]:
+    if samples <= 0:
+        raise ValueError("samples must be positive")
     pending = False
     finished = False
     sent_at = 0
@@ -91,11 +94,14 @@ def socket_readiness(
                 pass
         handle = loop.call_soon(step)
 
+    def measure() -> ReadinessSample:
+        loop.run_forever()
+        return result
+
     loop.add_reader(reader.fileno(), readable)
     handle = loop.call_soon(step)
     try:
-        loop.run_forever()
-        return result
+        yield measure
     finally:
         handle.cancel()
         loop.remove_reader(reader.fileno())

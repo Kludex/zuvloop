@@ -55,13 +55,20 @@ def main() -> None:
                             )
                             + "\n"
                         )
+        if sys.platform == "win32" and args.loop == "asyncio":
+            sys.stdout.write(
+                json.dumps({"case": "socket_readiness", "skipped": "ProactorEventLoop does not support add_reader"})
+                + "\n"
+            )
+            return
         reader, writer = socket.socketpair()
         with reader, writer:
             reader.setblocking(False)
             writer.setblocking(False)
             for callback_ns in (0, 100_000):
                 for repetition in range(args.rounds + 2):
-                    sample = socket_readiness(loop, reader, writer, callback_ns)
+                    with socket_readiness(loop, reader, writer, callback_ns) as measure:
+                        sample = measure()
                     if repetition >= 2:
                         sys.stdout.write(
                             json.dumps(
