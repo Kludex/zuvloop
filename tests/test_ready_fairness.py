@@ -47,6 +47,7 @@ def test_slow_ready_chain_yields_to_a_reader_registered_by_its_callback() -> Non
     assert observed[0] <= 3
 
 
+@pytest.mark.timeout(10)
 def test_stop_finishes_the_current_ready_batch_with_io_registered() -> None:
     loop = zuvloop.new_event_loop()
     reader, writer = socket.socketpair()
