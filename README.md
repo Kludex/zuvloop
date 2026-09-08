@@ -34,24 +34,27 @@ Throughput relative to stock asyncio (higher is better), measured with the suite
 `benchmarks/` on an M3 Max, macOS 26.6.2, CPython 3.14.6, and libuv 1.51.0. The comparison uses
 uvloop 0.22.1 and rloop 0.5.0. Each result is the median of seven interleaved in-process runs or five
 interleaved HTTP runs. The chart shows selected benchmarks, with a separate scale for each panel.
-Labels show absolute throughput. See the [recorded results and commands](benchmarks/results/readme-2026-09-07.txt).
+Labels show absolute throughput. See the [recorded results and commands](benchmarks/results/readme-2026-09-08.txt).
+
+These measurements come from a shared machine with background load. Check the recorded
+run-to-run variation before treating small differences as meaningful.
 
 | Benchmark | asyncio | uvloop | rloop | zuvloop |
 | --- | ---: | ---: | ---: | ---: |
-| `call_soon` | 1.79M/s | 3.62M/s | **6.23M/s** | 6.00M/s |
-| `call_soon` with arguments | 1.63M/s | 2.36M/s | 4.38M/s | **4.82M/s** |
-| `call_soon_threadsafe` | 435.3k/s | 4.16M/s | **11.42M/s** | 9.62M/s |
-| timer schedule + cancel | 1.08M/s | 1.49M/s | 5.04M/s | **9.16M/s** |
-| completed timer rounds | 71.8k/s | 79.1k/s | **3.50M/s** | 3.07M/s |
-| prebuilt due timer batch | 1.12M/s | 2.03M/s | **5.18M/s** | 4.30M/s |
-| ready chain with 250 idle connections | 71.3k/s | 77.1k/s | **2.80M/s** | 374.4k/s |
-| bulk stream | 7.4 GiB/s | 7.8 GiB/s | 8.8 GiB/s | **9.3 GiB/s** |
-| echo round trips, 1 KiB | 47.1k/s | 54.1k/s | 52.1k/s | **57.8k/s** |
-| uvicorn, plaintext | 51.6k req/s | 66.6k req/s | 54.5k req/s | **71.6k req/s** |
-| uvicorn, 10 KiB body | 48.4k req/s | 64.3k req/s | 51.7k req/s | **69.3k req/s** |
-| aiohttp server | 47.2k req/s | 53.0k req/s | 47.6k req/s | **53.6k req/s** |
-| aiohttp client | 12.4k req/s | 14.7k req/s | 13.9k req/s | **14.9k req/s** |
-| `getaddrinfo`, numeric host | 27.0k/s | 1.46M/s | 1.07M/s | **1.72M/s** |
+| `call_soon` | 1.93M/s | 3.56M/s | **6.30M/s** | 6.05M/s |
+| `call_soon` with arguments | 1.59M/s | 2.36M/s | 4.41M/s | **4.71M/s** |
+| `call_soon_threadsafe` | 407.7k/s | 4.14M/s | **11.37M/s** | 9.21M/s |
+| timer schedule + cancel | 1.09M/s | 1.49M/s | 5.05M/s | **8.79M/s** |
+| completed timer rounds | 67.4k/s | 75.0k/s | **3.39M/s** | 3.10M/s |
+| prebuilt due timer batch | 1.35M/s | 2.68M/s | **9.58M/s** | 5.59M/s |
+| ready chain with 250 idle connections | 54.3k/s | 59.5k/s | **3.05M/s** | 2.12M/s |
+| bulk stream | 5.1 GiB/s | 5.9 GiB/s | 5.9 GiB/s | **6.1 GiB/s** |
+| echo round trips, 1 KiB | 38.6k/s | 47.4k/s | 46.1k/s | **49.6k/s** |
+| uvicorn, plaintext | 47.6k req/s | 65.6k req/s | 50.4k req/s | **70.1k req/s** |
+| uvicorn, 10 KiB body | 43.7k req/s | 63.2k req/s | 49.6k req/s | **68.5k req/s** |
+| aiohttp server | 46.2k req/s | 55.6k req/s | 48.6k req/s | **57.1k req/s** |
+| aiohttp client | 11.2k req/s | **13.2k req/s** | 12.7k req/s | 12.9k req/s |
+| `getaddrinfo`, numeric host | 22.7k/s | 1.40M/s | 1.01M/s | **1.63M/s** |
 
 With rloop, the aiohttp server benchmark logs `TypeError` callback errors when the load generator
 disconnects at its deadline. The throughput above includes this behavior.
