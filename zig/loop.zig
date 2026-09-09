@@ -431,16 +431,17 @@ fn reportSlowCallback(self: *LoopObject, h: *py.Object, elapsed: f64, cpu_elapse
         return;
     };
     defer py.decref(duration);
-    const cpu_time = py.float(cpu_elapsed) orelse {
-        c.PyErr_Clear();
-        return;
-    };
-    defer py.decref(cpu_time);
-    const args = [_]?*py.Object{ @ptrCast(self), h, duration, cpu_time };
+    var args = [_]?*py.Object{ @ptrCast(self), h, duration, null };
+    if (cpu_elapsed >= 0) {
+        args[3] = py.float(cpu_elapsed);
+        if (args[3] == null) c.PyErr_Clear();
+    }
+    defer if (args[3]) |cpu_time| py.decref(cpu_time);
+    const nargs: usize = if (args[3] != null) 4 else 3;
     const res = c.PyObject_VectorcallMethod(
         str_on_slow_callback,
         &args,
-        4 | c.PY_VECTORCALL_ARGUMENTS_OFFSET,
+        nargs | c.PY_VECTORCALL_ARGUMENTS_OFFSET,
         null,
     );
     if (res) |r| py.decref(r) else py.writeUnraisable(@ptrCast(self));
