@@ -388,7 +388,7 @@ jobs:
 
       # Walltime, not simulation: an event loop spends its time in syscalls and
       # polling, which instruction counting does not model.
-      - uses: CodSpeedHQ/action@4296e51e7041e24dadb86d1d6e8b9320d223dbe8 # v5.0.3
+      - uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
         with:
           mode: walltime
           run: >-
@@ -421,6 +421,6 @@ jobs:
 
     steps:
       - name: Require every CI job
-        uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
+        uses: re-actors/alls-green@b5b5b37504aa4183270bd3d855c52a67f212be35 # v1.3.0
         with:
           jobs: ${{ toJSON(needs) }}
