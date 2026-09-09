@@ -4,6 +4,7 @@ import asyncio
 import contextvars
 import logging
 import sys
+import threading
 import time
 import traceback
 from collections.abc import Mapping
@@ -51,6 +52,8 @@ async def test_slow_callbacks_are_reported_without_debug_mode(telemetry: Telemet
     assert span.status.status_code is StatusCode.UNSET
     assert numeric_attribute(span, "logfire.level_num") == 13
     assert numeric_attribute(span, "duration") >= 0.01
+    assert span.attributes is not None
+    assert "cpu_time" not in span.attributes
     assert "Handle" in str(attribute(span, "code.callback"))
     assert telemetry.counted("zuvloop.slow_callbacks") >= 1
 
@@ -757,3 +760,38 @@ async def test_the_stdlib_call_graph_apis_work_on_this_loop() -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.parametrize("busy", [False, True])
+async def test_opt_in_callback_cpu_time_distinguishes_sleep_from_cpu_work(telemetry: Telemetry, busy: bool) -> None:
+    loop = running_loop()
+    assert loop.slow_callback_cpu_time_enabled is False
+    loop.slow_callback_cpu_time_enabled = True
+    assert loop.slow_callback_cpu_time_enabled is True
+    loop.slow_callback_duration = 0.01
+
+    def measured_callback() -> None:
+        if busy:
+            deadline = time.thread_time() + 0.05
+            while time.thread_time() < deadline:
+                pass
+        else:
+            time.sleep(0.05)
+
+    try:
+        loop.call_soon(measured_callback)
+        await asyncio.sleep(0.2)
+    finally:
+        loop.slow_callback_cpu_time_enabled = False
+        loop.slow_callback_duration = 0.1
+    span = next(
+        span
+        for span in telemetry.spans("zuvloop.slow_callback")
+        if "measured_callback" in str(attribute(span, "code.callback"))
+    )
+    cpu_time = numeric_attribute(span, "cpu_time")
+    if busy:
+        assert cpu_time >= 0.045
+    else:
+        assert 0 <= cpu_time < numeric_attribute(span, "duration") / 2
+    assert numeric_attribute(span, "thread.id") == threading.get_ident()

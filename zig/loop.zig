@@ -65,6 +65,7 @@ pub const State = struct {
     stopping: bool = false,
     debug: bool = false,
     slow_callback_monitoring: bool = false,
+    slow_callback_cpu_time_enabled: bool = false,
     idle_active: bool = false,
     waker_pending: bool = false,
     timer_active: bool = false,
@@ -405,10 +406,18 @@ fn runReady(self: *LoopObject) void {
     while (remaining != 0) : (remaining -= 1) {
         const obj = st.ready.pop() orelse break;
         if ((st.debug or st.slow_callback_monitoring) and st.slow_callback_duration < std.math.inf(f64)) {
+            const cpu_started = if (st.slow_callback_cpu_time_enabled) c.zuvloop_thread_cpu_time() else -1;
             const started = uv.uv_hrtime();
             runOne(obj);
             const elapsed = @as(f64, @floatFromInt(uv.uv_hrtime() - started)) / 1e9;
-            if (elapsed > st.slow_callback_duration) reportSlowCallback(self, obj, elapsed);
+            if (elapsed > st.slow_callback_duration) {
+                const cpu_ended = if (cpu_started >= 0) c.zuvloop_thread_cpu_time() else -1;
+                const cpu_time: f64 = if (cpu_ended >= cpu_started and cpu_started >= 0)
+                    @as(f64, @floatFromInt(cpu_ended - cpu_started)) / 1e9
+                else
+                    -1;
+                reportSlowCallback(self, obj, elapsed, cpu_time);
+            }
         } else {
             runOne(obj);
         }
@@ -416,17 +425,22 @@ fn runReady(self: *LoopObject) void {
     }
 }
 
-fn reportSlowCallback(self: *LoopObject, h: *py.Object, elapsed: f64) void {
+fn reportSlowCallback(self: *LoopObject, h: *py.Object, elapsed: f64, cpu_elapsed: f64) void {
     const duration = py.float(elapsed) orelse {
         c.PyErr_Clear();
         return;
     };
     defer py.decref(duration);
-    const args = [_]?*py.Object{ @ptrCast(self), h, duration };
+    const cpu_time = py.float(cpu_elapsed) orelse {
+        c.PyErr_Clear();
+        return;
+    };
+    defer py.decref(cpu_time);
+    const args = [_]?*py.Object{ @ptrCast(self), h, duration, cpu_time };
     const res = c.PyObject_VectorcallMethod(
         str_on_slow_callback,
         &args,
-        3 | c.PY_VECTORCALL_ARGUMENTS_OFFSET,
+        4 | c.PY_VECTORCALL_ARGUMENTS_OFFSET,
         null,
     );
     if (res) |r| py.decref(r) else py.writeUnraisable(@ptrCast(self));
@@ -818,6 +832,16 @@ fn getTaskFactory(self_obj: *py.Object) py.Error!*py.Object {
 fn setSlowCallbackMonitoring(self_obj: *py.Object, value: *py.Object) py.Error!*py.Object {
     asLoop(self_obj).state().slow_callback_monitoring = try py.isTrue(value);
     return py.noneRef();
+}
+
+fn getSlowCallbackCPUTimeEnabled(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
+    return py.boolRef(asLoop(self_obj.?).state().slow_callback_cpu_time_enabled);
+}
+
+fn setSlowCallbackCPUTimeEnabled(self_obj: ?*py.Object, value: ?*py.Object, _: ?*anyopaque) callconv(.c) c_int {
+    const enabled = py.isTrue(value orelse return -1) catch return -1;
+    asLoop(self_obj.?).state().slow_callback_cpu_time_enabled = enabled;
+    return 0;
 }
 
 fn getSlowCallbackDuration(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
@@ -1271,6 +1295,13 @@ var methods = [_]c.PyMethodDef{
 };
 
 var getsets = [_]c.PyGetSetDef{
+    .{
+        .name = "slow_callback_cpu_time_enabled",
+        .get = py.wrapGet(getSlowCallbackCPUTimeEnabled),
+        .set = py.wrapSet(setSlowCallbackCPUTimeEnabled),
+        .doc = "Measure thread CPU time for slow callbacks (disabled by default).",
+        .closure = null,
+    },
     .{
         .name = "slow_callback_duration",
         .get = py.wrapGet(getSlowCallbackDuration),

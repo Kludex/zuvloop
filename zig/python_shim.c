@@ -1,5 +1,29 @@
 #include "python_shim.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <time.h>
+#endif
+
+int64_t zuvloop_thread_cpu_time(void) {
+#ifdef _WIN32
+    FILETIME created, exited, kernel, user;
+    if (!GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user)) {
+        return -1;
+    }
+    uint64_t kernel_ticks = ((uint64_t)kernel.dwHighDateTime << 32) | kernel.dwLowDateTime;
+    uint64_t user_ticks = ((uint64_t)user.dwHighDateTime << 32) | user.dwLowDateTime;
+    return (int64_t)((kernel_ticks + user_ticks) * 100);
+#else
+    struct timespec value;
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &value) != 0) {
+        return -1;
+    }
+    return (int64_t)value.tv_sec * 1000000000 + value.tv_nsec;
+#endif
+}
+
 void zuvloop_critical_section_begin(zuvloop_critical_section *section, PyObject *object) {
 #ifdef Py_GIL_DISABLED
     _Static_assert(sizeof(*section) >= sizeof(PyCriticalSection), "critical section storage is too small");

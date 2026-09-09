@@ -111,6 +111,7 @@ class Loop:
     """Native scheduling core: everything on a hot path lives here."""
 
     slow_callback_duration: float
+    slow_callback_cpu_time_enabled: bool
 
     def create_task[T](
         self,
