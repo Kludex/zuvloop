@@ -337,8 +337,8 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
                     "an unexpected error in custom exception handler"
                 )
 
-    def _on_slow_callback(self, handle: object, duration: float) -> None:
-        self._instrumentation.report_slow_callback(handle, duration)
+    def _on_slow_callback(self, handle: object, duration: float, cpu_time: float = -1) -> None:
+        self._instrumentation.report_slow_callback(handle, duration, cpu_time)
 
     def _on_sample(self, snapshot: dict[str, int]) -> None:
         if not self._monitoring_armed and instrumentation_provider_installed():

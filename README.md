@@ -147,9 +147,14 @@ snapshot is dropped).
 
 You get:
 
-- **`zuvloop.slow_callback`** spans — with real start/end timestamps measured by `uv_hrtime()`
-  in native code, and the awaiting call graph attached (via `asyncio.format_call_graph()`),
-  so you see *why* a callback was running, not just its repr.
+- **`zuvloop.slow_callback`** spans include elapsed callback time measured by `uv_hrtime()`
+  in native code. The call graph is captured after the callback returns, so its last
+  await identifies the next suspension point, not necessarily the work that was slow.
+  `thread.id` identifies the loop thread. Set `loop.slow_callback_cpu_time_enabled = True`
+  to add `cpu_time` in seconds when the platform clock is available. The default is
+  `False`, avoiding a thread CPU clock read on every monitored callback. A low CPU/wall
+  ratio can reflect synchronous waiting or scheduling delays; it does not distinguish
+  them. GC CPU time is included in callback CPU time.
 - **`zuvloop.unhandled_exception`** spans — with the exception recorded.
 - Counters, a callback-duration histogram, and live loop gauges (`loop_count`, `events`,
   `idle_time_ns`, `ready`, `timers`, `watchers`, ...).

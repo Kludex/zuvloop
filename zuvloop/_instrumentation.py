@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import threading
 import time
 import traceback
 from collections.abc import Mapping
@@ -51,7 +52,7 @@ class Instrumentation:
     as installing a provider, as does any other OpenTelemetry setup.
     """
 
-    def report_slow_callback(self, handle: object, duration: float) -> None:
+    def report_slow_callback(self, handle: object, duration: float, cpu_time: float = -1) -> None:
         try:
             _counter("slow_callbacks", "Callbacks that exceeded slow_callback_duration").add(1)
             _histogram("callback_duration", "Duration of slow callbacks", "s").record(duration)
@@ -65,8 +66,11 @@ class Instrumentation:
             attributes: dict[str, AttributeValue] = {
                 "code.callback": _safe_repr(handle),
                 "duration": duration,
+                "thread.id": threading.get_ident(),
                 "logfire.level_num": 13,
             }
+            if cpu_time >= 0:
+                attributes["cpu_time"] = cpu_time
             if graph is not None:
                 attributes["asyncio.call_graph"] = _bounded(graph)
             span = _tracer().start_span(
