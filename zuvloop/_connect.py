@@ -440,9 +440,10 @@ class ConnectionOperations(SendfileOperations):
             if conn.fileno() != -1:
                 conn.close()
                 server._detach()
+            elif isinstance(exc, (ConnectionError, TimeoutError)):
+                return
             if isinstance(exc, OSError):
-                if not isinstance(exc, (ConnectionError, TimeoutError)):
-                    self.call_exception_handler({"message": "Error completing a TLS handshake", "exception": exc})
+                self.call_exception_handler({"message": "Error completing a TLS handshake", "exception": exc})
                 return
             raise
 
