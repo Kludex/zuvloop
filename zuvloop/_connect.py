@@ -442,7 +442,7 @@ class ConnectionOperations(SendfileOperations):
                 server._detach()
             elif isinstance(exc, (ConnectionError, TimeoutError)):
                 return
-            if isinstance(exc, OSError):
+            if isinstance(exc, Exception):
                 self.call_exception_handler({"message": "Error completing a TLS handshake", "exception": exc})
                 return
             raise

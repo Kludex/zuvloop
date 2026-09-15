@@ -1017,8 +1017,15 @@ async def test_server_factory_failure_does_not_prevent_wait_closed(
     errors: list[BaseException | None] = []
     loop.set_exception_handler(lambda _loop, context: errors.append(context.get("exception")))
     error = error_type("broken protocol factory")
+    factory_called = asyncio.Event()
+    accept_tasks: list[asyncio.Task[None]] = []
 
     def broken_factory() -> asyncio.Protocol:
+        if tls:
+            task = asyncio.current_task()
+            assert task is not None
+            accept_tasks.append(task)
+        factory_called.set()
         raise error
 
     server = await loop.create_server(
@@ -1031,10 +1038,11 @@ async def test_server_factory_failure_does_not_prevent_wait_closed(
     client.setblocking(False)
     try:
         await loop.sock_connect(client, server.sockets[0].getsockname())
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(factory_called.wait(), 2)
     finally:
         client.close()
         server.close()
+        await asyncio.gather(*accept_tasks, return_exceptions=True)
 
     await asyncio.wait_for(server.wait_closed(), 2)
     assert errors == [error]
