@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import subprocess
 import sys
+import textwrap
 import threading
 import time
 import traceback
@@ -168,6 +170,69 @@ async def test_unhandled_exceptions_are_reported(telemetry: Telemetry) -> None:
     assert span.events[0].attributes is not None
     assert span.events[0].attributes["exception.type"] == "ValueError"
     assert telemetry.counted("zuvloop.unhandled_exceptions") >= 1
+
+
+def test_logfire_exception_callback_can_drop_shielded_future_exceptions() -> None:
+    # Providers are process-global, so isolate Logfire from the suite's OpenTelemetry providers.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent("""
+                import asyncio
+                from contextlib import suppress
+
+                import logfire
+                from logfire.types import ExceptionCallbackHelper
+                from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+                from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+                from opentelemetry.trace import StatusCode
+
+                import zuvloop
+
+                exception = ConnectionResetError("peer went away")
+                callback_calls: list[BaseException] = []
+
+                def exception_callback(helper: ExceptionCallbackHelper) -> None:
+                    callback_calls.append(helper.exception)
+                    helper.no_record_exception()
+
+                exporter = InMemorySpanExporter()
+                logfire.configure(
+                    send_to_logfire=False,
+                    console=False,
+                    additional_span_processors=[SimpleSpanProcessor(exporter)],
+                    advanced=logfire.AdvancedOptions(exception_callback=exception_callback),
+                )
+
+                async def main() -> None:
+                    inner: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+
+                    async def waiter() -> None:
+                        await asyncio.shield(inner)
+
+                    task = asyncio.create_task(waiter())
+                    await asyncio.sleep(0)
+                    task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
+                    inner.set_exception(exception)
+                    await asyncio.sleep(0)
+
+                asyncio.run(main(), loop_factory=zuvloop.new_event_loop)
+
+                assert callback_calls == [exception], callback_calls
+                spans = [s for s in exporter.get_finished_spans() if s.name == "zuvloop.unhandled_exception"]
+                assert len(spans) == 1, spans
+                assert spans[0].status.status_code is StatusCode.ERROR
+                assert spans[0].events == (), spans[0].events
+            """),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_default_exception_reporting_survives_telemetry_failure(

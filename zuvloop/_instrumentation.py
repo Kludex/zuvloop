@@ -98,14 +98,15 @@ class Instrumentation:
 
             span = _tracer().start_span(f"{_NAMESPACE}.unhandled_exception", attributes=attributes)
             if isinstance(exception, BaseException):
-                span.add_event(
-                    "exception",
+                span.record_exception(
+                    exception,
                     attributes={
                         "exception.type": _bounded(type(exception).__name__),
                         "exception.message": _bounded(str(exception)),
                         "exception.stacktrace": _bounded("".join(traceback.format_exception(exception))),
                         "exception.escaped": False,
                     },
+                    escaped=False,
                 )
             span.set_status(Status(StatusCode.ERROR, _bounded(str(message))))
             span.end()
