@@ -11,7 +11,11 @@ from collections.abc import Mapping
 from types import MethodType
 from typing import Literal, Never
 
+import logfire
 import pytest
+from logfire.types import ExceptionCallbackHelper
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
 
 import zuvloop
@@ -168,6 +172,54 @@ async def test_unhandled_exceptions_are_reported(telemetry: Telemetry) -> None:
     assert span.events[0].attributes is not None
     assert span.events[0].attributes["exception.type"] == "ValueError"
     assert telemetry.counted("zuvloop.unhandled_exceptions") >= 1
+
+
+async def test_logfire_exception_callback_can_drop_shielded_future_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exception = ConnectionResetError("peer went away")
+    callback_calls: list[BaseException] = []
+
+    def exception_callback(helper: ExceptionCallbackHelper) -> None:
+        callback_calls.append(helper.exception)
+        helper.no_record_exception()
+
+    exporter = InMemorySpanExporter()
+    instance = logfire.configure(
+        local=True,
+        send_to_logfire=False,
+        console=False,
+        metrics=False,
+        additional_span_processors=[SimpleSpanProcessor(exporter)],
+        advanced=logfire.AdvancedOptions(exception_callback=exception_callback),
+    )
+    tracer = instance.config.get_tracer_provider().get_tracer("zuvloop")
+    monkeypatch.setattr("zuvloop._instrumentation._tracer", lambda: tracer)
+    loop = running_loop()
+    inner: asyncio.Future[None] = loop.create_future()
+
+    async def waiter() -> None:
+        await asyncio.shield(inner)
+
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(None)
+    try:
+        task = asyncio.create_task(waiter())
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        inner.set_exception(exception)
+        await asyncio.sleep(0)
+
+        assert callback_calls == [exception]
+        spans = [span for span in exporter.get_finished_spans() if span.name == "zuvloop.unhandled_exception"]
+        assert len(spans) == 1
+        assert spans[0].status.status_code is StatusCode.ERROR
+        assert spans[0].events == ()
+    finally:
+        loop.set_exception_handler(previous)
+        instance.config.shutdown()
 
 
 def test_default_exception_reporting_survives_telemetry_failure(
