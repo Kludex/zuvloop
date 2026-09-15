@@ -2011,24 +2011,37 @@ async def test_closing_a_server_releases_serve_forever() -> None:
         await asyncio.wait_for(task, 5)
 
 
-async def test_cancelling_serve_forever_closes_its_connections() -> None:
+@pytest.mark.parametrize("stop", ["cancel", "close"])
+async def test_stopping_serve_forever_preserves_its_connections(stop: Literal["cancel", "close"]) -> None:
     loop = running_loop()
     server, port, _ = await start_echo()
     task = loop.create_task(server.serve_forever())
-    await asyncio.sleep(0.02)
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
-    await asyncio.sleep(0.02)
+    try:
+        writer.write(b"before")
+        await writer.drain()
+        assert await asyncio.wait_for(reader.readexactly(6), 5) == b"before"
 
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, 5)
-    assert await asyncio.wait_for(reader.read(), 5) == b""
-    assert not server.is_serving()
-    with pytest.raises(ConnectionRefusedError):
-        await asyncio.open_connection("127.0.0.1", port)
+        if stop == "cancel":
+            task.cancel()
+        else:
+            server.close()
+        await asyncio.sleep(0)
 
-    writer.close()
-    await writer.wait_closed()
+        assert not server.is_serving()
+        with pytest.raises(ConnectionRefusedError):
+            await asyncio.wait_for(asyncio.open_connection("127.0.0.1", port), 5)
+        assert not task.done()
+
+        writer.write(b"after")
+        await writer.drain()
+        assert await asyncio.wait_for(reader.readexactly(5), 5) == b"after"
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        server.close()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)
 
 
 async def test_aborting_a_backed_up_transport_reports_no_reason() -> None:
