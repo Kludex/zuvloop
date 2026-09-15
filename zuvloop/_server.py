@@ -203,7 +203,6 @@ class Server(asyncio.AbstractServer):
         except asyncio.CancelledError:
             try:
                 self.close()
-                self.close_clients()
                 await self.wait_closed()
             finally:
                 raise
