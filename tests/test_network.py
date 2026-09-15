@@ -1009,13 +1009,24 @@ async def test_server_can_close_clients_without_closing_listener(method: str) ->
 
 
 @pytest.mark.parametrize("tls", [False, True])
-async def test_server_factory_failure_does_not_prevent_wait_closed(tls: bool, server_context: ssl.SSLContext) -> None:
+@pytest.mark.parametrize("error_type", [RuntimeError, ConnectionError, TimeoutError])
+async def test_server_factory_failure_does_not_prevent_wait_closed(
+    tls: bool, error_type: type[Exception], server_context: ssl.SSLContext
+) -> None:
     loop = running_loop()
     errors: list[BaseException | None] = []
     loop.set_exception_handler(lambda _loop, context: errors.append(context.get("exception")))
+    error = error_type("broken protocol factory")
+    factory_called = asyncio.Event()
+    accept_tasks: list[asyncio.Task[None]] = []
 
     def broken_factory() -> asyncio.Protocol:
-        raise RuntimeError("broken protocol factory")
+        if tls:
+            task = asyncio.current_task()
+            assert task is not None
+            accept_tasks.append(task)
+        factory_called.set()
+        raise error
 
     server = await loop.create_server(
         broken_factory,
@@ -1027,14 +1038,14 @@ async def test_server_factory_failure_does_not_prevent_wait_closed(tls: bool, se
     client.setblocking(False)
     try:
         await loop.sock_connect(client, server.sockets[0].getsockname())
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(factory_called.wait(), 2)
     finally:
         client.close()
         server.close()
+        await asyncio.gather(*accept_tasks, return_exceptions=True)
 
     await asyncio.wait_for(server.wait_closed(), 2)
-    assert errors
-    assert isinstance(errors[0], RuntimeError)
+    assert errors == [error]
 
 
 async def test_failure_after_transport_adoption_detaches_server_once(monkeypatch: pytest.MonkeyPatch) -> None:

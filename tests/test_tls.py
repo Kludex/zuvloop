@@ -4,6 +4,9 @@ import asyncio
 import contextlib
 import socket
 import ssl
+import struct
+import sys
+from typing import Literal
 
 import pytest
 
@@ -95,6 +98,37 @@ async def test_cancelling_a_server_handshake_disarms_the_accepted_socket_before_
         peer.close()
 
 
+@pytest.mark.parametrize("failure", ["disconnect", "reset", "timeout"])
+async def test_a_peer_disconnect_during_a_tls_handshake_is_not_reported(
+    server_context: ssl.SSLContext, failure: Literal["disconnect", "reset", "timeout"]
+) -> None:
+    loop = running_loop()
+    previous = loop.get_exception_handler()
+    reported = collect_contexts(loop)
+    accepted = asyncio.Event()
+
+    def protocol_factory() -> asyncio.Protocol:
+        accepted.set()
+        return asyncio.Protocol()
+
+    server = await loop.create_server(protocol_factory, "127.0.0.1", 0, ssl=server_context, ssl_handshake_timeout=0.1)
+    try:
+        async with asyncio.timeout(5), server:
+            with socket.socket() as client:
+                client.setblocking(False)
+                await loop.sock_connect(client, server.sockets[0].getsockname())
+                await accepted.wait()
+                if failure == "reset":
+                    linger = struct.pack("HH" if sys.platform == "win32" else "ii", 1, 0)
+                    client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
+                elif failure == "timeout":
+                    assert await loop.sock_recv(client, 1) == b""
+        await asyncio.sleep(0)
+        assert reported == []
+    finally:
+        loop.set_exception_handler(previous)
+
+
 async def test_a_failed_handshake_is_reported(server_context: ssl.SSLContext) -> None:
     loop = running_loop()
     reported = collect_contexts(loop)
@@ -107,7 +141,9 @@ async def test_a_failed_handshake_is_reported(server_context: ssl.SSLContext) ->
         await reader.read(1)
         writer.close()
         await asyncio.sleep(0.2)
-        assert any("TLS handshake" in str(entry.get("message", "")) for entry in reported)
+        assert any(
+            "TLS handshake" in entry["message"] and isinstance(entry["exception"], ssl.SSLError) for entry in reported
+        )
     finally:
         loop.set_exception_handler(None)
         server.close()
