@@ -309,6 +309,50 @@ async def test_start_tls_closes_the_transport_when_the_handshake_fails(client_co
         await asyncio.sleep(0.05)
 
 
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_start_tls_runs_setup_callbacks_only_without_cancellation(
+    server_context: ssl.SSLContext, client_context: ssl.SSLContext, monkeypatch: pytest.MonkeyPatch, cancel: bool
+) -> None:
+    loop = running_loop()
+    calls: list[str] = []
+
+    class HandshakeProbe(ssl.SSLObject):
+        def do_handshake(self) -> None:
+            calls.append("handshake")
+            super().do_handshake()
+
+    client_context.sslobject_class = HandshakeProbe
+    server = await loop.create_server(asyncio.Protocol, "127.0.0.1", 0, ssl=server_context)
+    async with server:
+        transport, protocol = await loop.create_connection(asyncio.Protocol, *server.sockets[0].getsockname())
+        resume = transport.resume_reading
+
+        def resume_reading() -> None:
+            calls.append("resume")
+            resume()
+
+        monkeypatch.setattr(transport, "resume_reading", resume_reading)
+        upgrade = loop.start_tls(transport, protocol, client_context, server_hostname="localhost")
+        try:
+            if cancel:
+                # Deliver cancellation before the queued setup callbacks get a turn.
+                upgrade.send(None)
+                assert not transport.is_reading()
+                with pytest.raises(asyncio.CancelledError):
+                    upgrade.throw(asyncio.CancelledError())
+                assert transport.is_closing()
+                await asyncio.sleep(0)
+                assert calls == []
+            else:
+                upgraded = await asyncio.wait_for(upgrade, 5)
+                assert "handshake" in calls
+                assert "resume" in calls
+                upgraded.close()
+        finally:
+            upgrade.close()
+            transport.abort()
+
+
 async def test_start_tls_rejects_a_write_only_transport(client_context: ssl.SSLContext) -> None:
     with pytest.raises(TypeError, match="both reading and writing"):
         await running_loop().start_tls(asyncio.WriteTransport(), asyncio.Protocol(), client_context)
