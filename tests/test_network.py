@@ -853,15 +853,150 @@ async def test_create_connection_rejects_a_datagram_socket() -> None:
             await loop.create_connection(Collector, sock=sock)
 
 
-async def test_create_connection_binds_a_local_address() -> None:
-    server, port, _ = await start_echo()
+@pytest.mark.parametrize("happy_eyeballs_delay", [None, 0.01])
+async def test_local_address_resolution_does_not_block_callbacks(
+    happy_eyeballs_delay: float | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
     loop = running_loop()
+    server, port, _ = await start_echo()
+    original_getaddrinfo = loop.getaddrinfo
+    started: asyncio.Future[None] = loop.create_future()
+    release = asyncio.Event()
+    lookups: list[dict[str, int]] = []
+
+    async def getaddrinfo(
+        host: str | bytes | None, port: str | bytes | int | None, **kwargs: int
+    ) -> Sequence[AddrInfo]:
+        if host == "localhost":
+            lookups.append(kwargs)
+            started.set_result(None)
+            await release.wait()
+        return await original_getaddrinfo(host, port, **kwargs)
+
+    monkeypatch.setattr(loop, "getaddrinfo", getaddrinfo)
     async with server:
-        transport, protocol = await loop.create_connection(Collector, "127.0.0.1", port, local_addr=("127.0.0.1", 0))
-        assert transport.get_extra_info("sockname")[0] == "127.0.0.1"
+        connecting = loop.create_task(
+            loop.create_connection(
+                Collector,
+                "127.0.0.1",
+                port,
+                local_addr=("localhost", 0),
+                family=socket.AF_INET,
+                proto=socket.IPPROTO_TCP,
+                flags=socket.AI_CANONNAME,
+                happy_eyeballs_delay=happy_eyeballs_delay,
+            )
+        )
+        try:
+            await asyncio.wait((started, connecting), timeout=2, return_when=asyncio.FIRST_COMPLETED)
+            assert started.done()
+            tick: asyncio.Future[None] = loop.create_future()
+            loop.call_soon(tick.set_result, None)
+            await asyncio.wait_for(tick, 2)
+            assert not connecting.done()
+            assert lookups == [
+                {
+                    "family": socket.AF_INET,
+                    "type": socket.SOCK_STREAM,
+                    "proto": socket.IPPROTO_TCP,
+                    "flags": socket.AI_CANONNAME,
+                }
+            ]
+        finally:
+            release.set()
+            transport, _ = await asyncio.wait_for(connecting, 2)
+            transport.close()
+
+
+@pytest.mark.parametrize(
+    "host", ["127.0.0.1", pytest.param("::1", marks=pytest.mark.skipif(not socket.has_ipv6, reason="IPv6 unavailable"))]
+)
+@pytest.mark.parametrize("hostname", [False, True])
+async def test_create_connection_binds_a_local_address(host: str, hostname: bool) -> None:
+    loop = running_loop()
+    server = await loop.create_server(Echo, host, 0)
+    port = server.sockets[0].getsockname()[1]
+    async with server:
+        transport, protocol = await loop.create_connection(
+            Collector, host, port, local_addr=("localhost" if hostname else host, 0)
+        )
+        assert transport.get_extra_info("sockname")[0] == host
         transport.close()
         assert protocol.done is not None
         await protocol.done
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+async def test_local_address_candidates_match_family_and_try_each_bind(
+    fallback: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = running_loop()
+    original_getaddrinfo = loop.getaddrinfo
+    server, port, _ = await start_echo()
+    with socket.socket() as first, socket.socket() as second:
+        first.bind(("127.0.0.1", 0))
+        second.bind(("127.0.0.1", 0))
+        local_infos: list[AddrInfo] = [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 0, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", first.getsockname()),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", second.getsockname()),
+        ]
+        if fallback:
+            local_infos.append((socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0)))
+
+        async def getaddrinfo(
+            host: str | bytes | None, port: str | bytes | int | None, **kwargs: int
+        ) -> Sequence[AddrInfo]:
+            if host == "localhost":
+                return local_infos
+            return await original_getaddrinfo(host, port, **kwargs)
+
+        monkeypatch.setattr(loop, "getaddrinfo", getaddrinfo)
+        async with server:
+            if fallback:
+                transport, _ = await loop.create_connection(
+                    Collector, "127.0.0.1", port, local_addr=("localhost", 0), all_errors=True
+                )
+                assert transport.get_extra_info("sockname")[0] == "127.0.0.1"
+                transport.close()
+            else:
+                with pytest.raises(ExceptionGroup) as caught:
+                    await loop.create_connection(
+                        Collector, "127.0.0.1", port, local_addr=("localhost", 0), all_errors=True
+                    )
+                assert len(caught.value.exceptions) == 2
+                assert all(
+                    isinstance(exc, OSError) and exc.errno == errno.EADDRINUSE for exc in caught.value.exceptions
+                )
+
+
+@pytest.mark.parametrize(
+    ("local_infos", "message"),
+    [
+        ([], "getaddrinfo() returned empty list"),
+        (
+            [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 0, 0, 0))],
+            "no matching local address with family=2 found",
+        ),
+    ],
+)
+async def test_local_address_resolution_requires_matching_addresses(
+    local_infos: list[AddrInfo], message: str, monkeypatch: pytest.MonkeyPatch, closed_port: int
+) -> None:
+    loop = running_loop()
+    original_getaddrinfo = loop.getaddrinfo
+
+    async def getaddrinfo(
+        host: str | bytes | None, port: str | bytes | int | None, **kwargs: int
+    ) -> Sequence[AddrInfo]:
+        if host == "localhost":
+            return local_infos
+        return await original_getaddrinfo(host, port, **kwargs)
+
+    monkeypatch.setattr(loop, "getaddrinfo", getaddrinfo)
+    with pytest.raises(OSError) as caught:
+        await loop.create_connection(Collector, "127.0.0.1", closed_port, local_addr=("localhost", 0))
+    assert str(caught.value) == message
 
 
 async def test_create_connection_reports_every_address_failing(closed_port: int) -> None:
