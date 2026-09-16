@@ -176,7 +176,6 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
                     if threading.current_thread() is threading.main_thread():
                         cleanup()
                     else:
-                        # ponytail: queue exhaustion retains the fd; a main-thread retry queue could reclaim it.
                         self._defer_close(cleanup)
             finally:
                 try:
@@ -503,13 +502,14 @@ def _finish_deferred_signal_cleanup(signals: tuple[int, ...], wakeup_fd: int, ow
     try:
         for sig in signals:
             if _signal_owners.get(sig) is owner:
-                del _signal_owners[sig]
                 handler = signal.default_int_handler if sig == signal.SIGINT else signal.SIG_DFL
                 try:
                     signal.signal(sig, handler)
                 except (OSError, ValueError) as exc:
-                    if failure is None:
-                        failure = exc
+                    # A failed reset keeps its owner, so a later reset cannot lose the signal.
+                    failure = failure or exc
+                else:
+                    del _signal_owners[sig]
         if failure is not None:
             raise failure
     finally:

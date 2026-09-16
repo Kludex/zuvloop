@@ -534,7 +534,16 @@ def test_close_attempts_all_signal_resets_after_a_failure(
         assert calls == [signal.SIGUSR1, signal.SIGUSR1, signal.SIGUSR2]
         assert signal.set_wakeup_fd(-1) == -1
         loop.close()
+        monkeypatch.undo()
+        replacement = zuvloop.new_event_loop()
+        try:
+            replacement.add_signal_handler(signal.SIGUSR1, print)
+            assert replacement.remove_signal_handler(signal.SIGUSR1) is True
+            assert signal.getsignal(signal.SIGUSR1) is signal.SIG_DFL
+        finally:
+            replacement.close()
     finally:
+        monkeypatch.undo()
         signal.set_wakeup_fd(-1)
         restore_signal(signal.SIGUSR1, original_usr1)
         restore_signal(signal.SIGUSR2, original_usr2)
