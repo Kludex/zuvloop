@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import socket
 import sys
+from typing import Literal, Never
 
 import pytest
 
-from tests.conftest import running_loop
+from tests.conftest import collect_contexts, running_loop
 from zuvloop import new_event_loop
 
 pytestmark = pytest.mark.anyio
@@ -123,6 +124,107 @@ async def test_sock_connect_reports_refusal(closed_port: int) -> None:
             await loop.sock_connect(sock, ("127.0.0.1", closed_port))
     finally:
         sock.close()
+
+
+@pytest.mark.parametrize("operation", ["connect", "fileno", "getsockopt"])
+@pytest.mark.parametrize("error_type", [OSError, ValueError])
+async def test_sock_connect_propagates_socket_errors(
+    operation: Literal["connect", "fileno", "getsockopt"],
+    error_type: type[Exception],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = running_loop()
+    previous = loop.get_exception_handler()
+    reported = collect_contexts(loop)
+    called = asyncio.Event()
+    error = error_type("socket operation failed")
+    client, peer = socket.socketpair()
+    client.setblocking(False)
+    fd = client.fileno()
+
+    def fail(*_args: socket.socket | int) -> Never:
+        called.set()
+        raise error
+
+    def connect(sock: socket.socket, _address: tuple[str, int]) -> None:
+        if operation == "connect":
+            fail(sock)
+        raise BlockingIOError
+
+    with client, peer, monkeypatch.context() as patch:
+        patch.setattr(socket.socket, "connect", connect)
+        if operation != "connect":
+            patch.setattr(socket.socket, operation, fail)
+        connecting = loop.create_task(loop.sock_connect(client, ("127.0.0.1", 1)))
+        try:
+            await asyncio.wait_for(called.wait(), 2)
+            await asyncio.sleep(0)
+            assert connecting.done()
+            with pytest.raises(error_type) as caught:
+                await connecting
+            assert caught.value is error
+            assert reported == []
+            assert loop.remove_writer(fd) is False
+        finally:
+            connecting.cancel()
+            await asyncio.gather(connecting, return_exceptions=True)
+            loop.set_exception_handler(previous)
+
+
+@pytest.mark.parametrize("error_type", [BlockingIOError, InterruptedError])
+async def test_sock_connect_retries_transient_inspection_errors(
+    error_type: type[OSError], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = running_loop()
+    attempts = 0
+    client, peer = socket.socketpair()
+    client.setblocking(False)
+    fd = client.fileno()
+
+    def connect(_sock: socket.socket, _address: tuple[str, int]) -> Never:
+        raise BlockingIOError
+
+    def getsockopt(_sock: socket.socket, _level: int, _option: int) -> int:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise error_type
+        return 0
+
+    with client, peer, monkeypatch.context() as patch:
+        patch.setattr(socket.socket, "connect", connect)
+        patch.setattr(socket.socket, "getsockopt", getsockopt)
+        await asyncio.wait_for(loop.sock_connect(client, ("127.0.0.1", 1)), 2)
+        assert attempts == 2
+        assert loop.remove_writer(fd) is False
+
+
+@pytest.mark.parametrize("error_type", [SystemExit, KeyboardInterrupt])
+def test_sock_connect_does_not_swallow_process_control_exceptions(
+    error_type: type[BaseException], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loop = new_event_loop()
+    client, peer = socket.socketpair()
+    client.setblocking(False)
+
+    def connect(_sock: socket.socket, _address: tuple[str, int]) -> Never:
+        raise BlockingIOError
+
+    def getsockopt(_sock: socket.socket, _level: int, _option: int) -> Never:
+        raise error_type
+
+    with client, peer, monkeypatch.context() as patch:
+        patch.setattr(socket.socket, "connect", connect)
+        patch.setattr(socket.socket, "getsockopt", getsockopt)
+        connecting = loop.create_task(loop.sock_connect(client, ("127.0.0.1", 1)))
+        try:
+            with pytest.raises(error_type):
+                loop.run_until_complete(connecting)
+            assert not connecting.done()
+        finally:
+            connecting.cancel()
+            loop.run_until_complete(asyncio.gather(connecting, return_exceptions=True))
+            loop.close()
 
 
 @pytest.mark.parametrize("address", ["not-a-tuple", (123, 80)])

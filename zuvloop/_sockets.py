@@ -92,15 +92,22 @@ class SocketOperations(LoopBase):
         except BlockingIOError, InterruptedError:
             pass
 
-        future = self.create_future()
+        future: asyncio.Future[None] = self.create_future()
         fd = sock.fileno()
 
         def check() -> None:
             if future.done():  # pragma: no cover - guards a wakeup the tests cannot force
                 return
-            err = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
-            if err:
-                future.set_exception(OSError(err, f"Connect call failed {address!r}"))
+            try:
+                err = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+                if err:
+                    raise OSError(err, f"Connect call failed {address!r}")
+            except BlockingIOError, InterruptedError:
+                pass
+            except SystemExit, KeyboardInterrupt:
+                raise
+            except BaseException as exc:
+                future.set_exception(exc)
             else:
                 future.set_result(None)
 
