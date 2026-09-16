@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import gc
 import os
 import signal
+import socket
 import sys
 import threading
 import weakref
@@ -369,6 +371,198 @@ def test_close_removes_signal_handlers_and_releases_the_loop() -> None:
         assert loop_ref() is None
     finally:
         signal.signal(signal.SIGUSR1, original)
+
+
+def test_worker_thread_close_finishes_teardown_and_restores_signals(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_usr1 = signal.getsignal(signal.SIGUSR1)
+    original_usr2 = signal.getsignal(signal.SIGUSR2)
+    original_close = os.close
+    closed_fds: list[tuple[int, int]] = []
+    loop = zuvloop.new_event_loop()
+    loop_ref = weakref.ref(loop)
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    loop.set_default_executor(executor)
+    loop.add_signal_handler(signal.SIGUSR1, print)
+    loop.add_signal_handler(signal.SIGUSR2, print)
+    timer_ref = weakref.ref(loop.call_later(60, lambda: None))
+    wakeup_fd = signal.set_wakeup_fd(-1)
+    signal.set_wakeup_fd(wakeup_fd)
+
+    def close_fd(fd: int) -> None:
+        installed = signal.set_wakeup_fd(-1)
+        signal.set_wakeup_fd(installed)
+        closed_fds.append((fd, installed))
+        original_close(fd)
+
+    monkeypatch.setattr(os, "close", close_fd)
+
+    def close(owned: zuvloop.EventLoop) -> bool:
+        with pytest.raises(ValueError, match="main thread"):
+            owned.close()
+        return owned.is_closed()
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as worker:
+            assert worker.submit(close, loop).result(5) is True
+        loop.close()
+        gc.collect()
+        assert timer_ref() is None
+        assert (wakeup_fd, -1) in closed_fds
+        assert signal.getsignal(signal.SIGUSR1) is signal.SIG_DFL
+        assert signal.getsignal(signal.SIGUSR2) is signal.SIG_DFL
+        assert signal.set_wakeup_fd(-1) == -1
+        with pytest.raises(RuntimeError, match="shutdown"):
+            executor.submit(int, 1)
+    finally:
+        signal.set_wakeup_fd(-1)
+        loop.close()
+        executor.shutdown(wait=True)
+        signal.signal(signal.SIGUSR1, original_usr1)
+        signal.signal(signal.SIGUSR2, original_usr2)
+    del loop
+    gc.collect()
+    assert loop_ref() is None
+
+
+def test_worker_thread_close_releases_transports_servers_and_pending_dns() -> None:
+    original = signal.getsignal(signal.SIGUSR1)
+    loop = zuvloop.new_event_loop()
+    loop_ref = weakref.ref(loop)
+    loop.add_signal_handler(signal.SIGUSR1, print)
+    server = loop.run_until_complete(loop.create_server(asyncio.Protocol, "127.0.0.1", 0))
+    listener = server.sockets[0]
+    client, peer = socket.socketpair()
+    transport, _ = loop.run_until_complete(loop.connect_accepted_socket(asyncio.Protocol, client))
+    socket_view = transport.get_extra_info("socket")
+    query = loop.getaddrinfo("localhost", 80)
+    pending = query.send(None)
+    assert isinstance(pending, asyncio.Future)
+    assert not pending.done()
+
+    def close(owned: zuvloop.EventLoop) -> bool:
+        with pytest.raises(ValueError, match="main thread"):
+            owned.close()
+        return owned.is_closed()
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as worker:
+            assert worker.submit(close, loop).result(5) is True
+        assert transport.is_closing()
+        assert socket_view.fileno() == -1
+        assert loop.remove_reader(listener.fileno()) is False
+        assert signal.getsignal(signal.SIGUSR1) is signal.SIG_DFL
+        assert signal.set_wakeup_fd(-1) == -1
+    finally:
+        signal.set_wakeup_fd(-1)
+        query.close()
+        transport.abort()
+        server.close()
+        loop.close()
+        peer.close()
+        signal.signal(signal.SIGUSR1, original)
+    del pending, query, transport, server, loop
+    gc.collect()
+    assert loop_ref() is None
+
+
+def test_worker_thread_close_preserves_a_newer_signal_owner() -> None:
+    original = signal.getsignal(signal.SIGUSR1)
+    old = zuvloop.new_event_loop()
+    current = zuvloop.new_event_loop()
+    received: list[str] = []
+    try:
+        old.add_signal_handler(signal.SIGUSR1, print)
+        current.add_signal_handler(signal.SIGUSR1, received.append, "delivered")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as worker:
+            worker.submit(old.close).result(5)
+        assert old.is_closed()
+        os.kill(os.getpid(), signal.SIGUSR1)
+        current.run_until_complete(asyncio.sleep(0.01))
+        assert received == ["delivered"]
+    finally:
+        old.close()
+        current.close()
+        signal.signal(signal.SIGUSR1, original)
+
+
+def test_worker_thread_close_detaches_wakeup_after_signal_ownership_changes() -> None:
+    original = signal.getsignal(signal.SIGUSR1)
+    old = zuvloop.new_event_loop()
+    current = zuvloop.new_event_loop()
+    received: list[str] = []
+    try:
+        old.add_signal_handler(signal.SIGUSR1, print)
+        current.add_signal_handler(signal.SIGUSR1, received.append, "delivered")
+        old.run_until_complete(asyncio.sleep(0))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as worker:
+            worker.submit(old.close).result(5)
+        assert old.is_closed()
+        assert signal.set_wakeup_fd(-1) == -1
+        current.call_soon(os.kill, os.getpid(), signal.SIGUSR1)
+        current.run_until_complete(asyncio.sleep(0.01))
+        assert received == ["delivered"]
+    finally:
+        signal.set_wakeup_fd(-1)
+        old.close()
+        current.close()
+        signal.signal(signal.SIGUSR1, original)
+
+
+@pytest.mark.parametrize("error_type", [OSError, ValueError])
+def test_close_attempts_all_signal_resets_after_a_failure(
+    error_type: type[Exception], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_usr1 = signal.getsignal(signal.SIGUSR1)
+    original_usr2 = signal.getsignal(signal.SIGUSR2)
+    restore_signal = signal.signal
+    loop = zuvloop.new_event_loop()
+    loop.add_signal_handler(signal.SIGUSR1, print)
+    loop.add_signal_handler(signal.SIGUSR2, print)
+    calls: list[int] = []
+    error = error_type("signal reset failed")
+
+    def fail(sig: int, _handler: signal.Handlers | Callable[[int, FrameType | None], None]) -> None:
+        calls.append(sig)
+        raise error
+
+    monkeypatch.setattr(signal, "signal", fail)
+    try:
+        with pytest.raises(error_type) as caught:
+            loop.close()
+        assert caught.value is error
+        assert loop.is_closed()
+        assert calls == [signal.SIGUSR1, signal.SIGUSR1, signal.SIGUSR2]
+        assert signal.set_wakeup_fd(-1) == -1
+        loop.close()
+    finally:
+        signal.set_wakeup_fd(-1)
+        restore_signal(signal.SIGUSR1, original_usr1)
+        restore_signal(signal.SIGUSR2, original_usr2)
+        loop.close()
+
+
+def test_removing_a_signal_handler_preserves_a_reentrant_replacement(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = signal.getsignal(signal.SIGUSR1)
+    restore_signal = signal.signal
+    loop = zuvloop.new_event_loop()
+    received: list[str] = []
+    loop.add_signal_handler(signal.SIGUSR1, print)
+
+    def replace(sig: int, handler: signal.Handlers | Callable[[int, FrameType | None], None]) -> None:
+        restore_signal(sig, handler)
+        monkeypatch.undo()
+        loop.add_signal_handler(sig, received.append, "replacement")
+
+    monkeypatch.setattr(signal, "signal", replace)
+    try:
+        assert loop.remove_signal_handler(signal.SIGUSR1) is True
+        os.kill(os.getpid(), signal.SIGUSR1)
+        loop.run_until_complete(asyncio.sleep(0.01))
+        assert received == ["replacement"]
+    finally:
+        monkeypatch.undo()
+        loop.close()
+        restore_signal(signal.SIGUSR1, original)
 
 
 def test_unclosed_loop_finalization_restores_signal_state() -> None:

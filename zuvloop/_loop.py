@@ -86,12 +86,16 @@ class EventLoop(ConnectionOperations):
 
     def remove_signal_handler(self, sig: int) -> bool:
         _check_signal(sig)
-        if self._signal_handlers.pop(sig, None) is None:
+        entry = self._signal_handlers.get(sig)
+        if entry is None:
             return False
         if _signal_owners.get(sig) is self._signal_owner:
-            del _signal_owners[sig]
             handler = signal.default_int_handler if sig == signal.SIGINT else signal.SIG_DFL
             signal.signal(sig, handler)
+        if self._signal_handlers.get(sig) is entry:
+            del self._signal_handlers[sig]
+            if _signal_owners.get(sig) is self._signal_owner:
+                del _signal_owners[sig]
         self._detach_wakeup_fd()
         return True
 
