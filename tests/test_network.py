@@ -918,12 +918,47 @@ async def test_create_connection_binds_a_local_address(host: str, hostname: bool
     port = server.sockets[0].getsockname()[1]
     async with server:
         transport, protocol = await loop.create_connection(
-            Collector, host, port, local_addr=("localhost" if hostname else host, 0)
+            Collector, host, port, local_addr=("localhost" if hostname else host, 0), family=server.sockets[0].family
         )
         assert transport.get_extra_info("sockname")[0] == host
         transport.close()
         assert protocol.done is not None
         await protocol.done
+
+
+@pytest.mark.skipif(not socket.has_ipv6, reason="IPv6 unavailable")
+@pytest.mark.parametrize(
+    ("local_addr", "expected"),
+    [
+        (("::1", 0, 7), ("::1", 0, 7, 0)),
+        (("::1", 0, 7, 11), ("::1", 0, 7, 11)),
+        (("localhost", 0, 7, 11), ("::1", 0, 0, 0)),
+    ],
+)
+async def test_create_connection_accepts_extended_ipv6_local_addresses(
+    local_addr: tuple[str, int, int] | tuple[str, int, int, int],
+    expected: tuple[str, int, int, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = running_loop()
+    server = await loop.create_server(Echo, "::1", 0)
+    original_bind = socket.socket.bind
+    bound: list[tuple[str, int] | tuple[str, int, int, int]] = []
+
+    def bind(sock: socket.socket, address: tuple[str, int] | tuple[str, int, int, int]) -> None:
+        bound.append(address)
+        # Scope IDs are host-specific, so probe the sockaddr before binding loopback.
+        original_bind(sock, address[:2])
+
+    monkeypatch.setattr(socket.socket, "bind", bind)
+    async with server:
+        transport, protocol = await loop.create_connection(
+            Collector, "::1", server.sockets[0].getsockname()[1], local_addr=local_addr, family=socket.AF_INET6
+        )
+        transport.close()
+        assert protocol.done is not None
+        await protocol.done
+    assert bound == [expected]
 
 
 @pytest.mark.parametrize("fallback", [False, True])

@@ -10,7 +10,10 @@ import stat
 import subprocess
 import sys
 from asyncio import base_subprocess, sslproto, staggered, trsock
-from asyncio.base_events import _interleave_addrinfos  # type: ignore[attr-defined]  # private, not in typeshed
+from asyncio.base_events import (  # type: ignore[attr-defined]  # private CPython helpers
+    _interleave_addrinfos,
+    _ipaddr_info,
+)
 from asyncio.streams import StreamReaderProtocol
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Protocol
@@ -77,7 +80,7 @@ class ConnectionOperations(SendfileOperations):
         proto: int = 0,
         flags: int = 0,
         sock: socket.socket | None = None,
-        local_addr: tuple[str, int] | None = None,
+        local_addr: tuple[str, int] | tuple[str, int, int] | tuple[str, int, int, int] | None = None,
         server_hostname: str | None = None,
         ssl_handshake_timeout: float | None = None,
         ssl_shutdown_timeout: float | None = None,
@@ -165,7 +168,7 @@ class ConnectionOperations(SendfileOperations):
         family: int,
         proto: int,
         flags: int,
-        local_addr: tuple[str, int] | None,
+        local_addr: tuple[str, int] | tuple[str, int, int] | tuple[str, int, int, int] | None,
         happy_eyeballs_delay: float | None = None,
         interleave: int | None = None,
         all_errors: bool = False,
@@ -175,9 +178,15 @@ class ConnectionOperations(SendfileOperations):
             raise OSError(f"getaddrinfo({host!r}, {port!r}) returned no addresses")
         local_infos: Sequence[_AddrInfo] | None = None
         if local_addr is not None:
-            local_infos = await self.getaddrinfo(
-                *local_addr, family=family, type=socket.SOCK_STREAM, proto=proto, flags=flags
+            local_info: _AddrInfo | None = _ipaddr_info(
+                local_addr[0], local_addr[1], family, socket.SOCK_STREAM, proto, *local_addr[2:]
             )
+            if local_info is not None:
+                local_infos = [local_info]
+            else:
+                local_infos = await self.getaddrinfo(
+                    local_addr[0], local_addr[1], family=family, type=socket.SOCK_STREAM, proto=proto, flags=flags
+                )
             if not local_infos:
                 raise OSError("getaddrinfo() returned empty list")
         if interleave:
