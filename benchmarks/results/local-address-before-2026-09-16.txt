@@ -1,0 +1,48 @@
+Local-address resolution baseline - 2026-09-16
+
+This fresh run replaces the earlier 21.8/117.0 ms record, whose environment
+metadata was incomplete. The numbers below belong to this run only.
+
+Machine and runtime:
+Apple M3 Max, Mac15,8, 16 logical CPUs, 64 GiB RAM
+macOS 26.6.2 (25G83), Darwin 25.6.0, arm64
+CPython 3.14.6 (main, Aug 4 2026, 19:23:56), built with Clang 22.1.3; GIL enabled
+zuvloop 0.0.18.dev4, libuv 1.51.0, uvloop 0.22.1
+pytest 9.1.1, pytest-codspeed 5.0.3, anyio 4.14.2
+logfire 5.1.0, opentelemetry-api 1.44.0, opentelemetry-sdk 1.44.0
+
+Build:
+Zig/ziglang 0.16.0, ReleaseFast, baseline CPU target
+hatchling 1.32.0, hatch-vcs 0.5.0, hatch-ziglang 0.2.1
+uv 0.12.1 (Homebrew 2026-07-31 aarch64-apple-darwin)
+Runtime source: b1c1b47fe6f4b1d10d5c31d6bc9909366286d98f
+Benchmark source SHA-256:
+d6a13c52f37b91958b18940231693a1859a375f562cd23a3beb49ebb60e71da9
+
+Shared developer machine, without CPU pinning or load isolation.
+Small timing differences are not evidence of a performance advantage.
+
+Environment preparation:
+uv sync --locked --group bench --reinstall-package zuvloop
+
+Command:
+COLUMNS=180 uv run --group bench pytest benchmarks/test_benchmarks.py -k concurrent_local_address_resolution --codspeed --codspeed-mode=walltime -q
+
+Workload: five concurrent connections to a loopback server, binding localhost.
+Model: inject a 20 ms delay into synchronous hostname binding or asynchronous
+local-address resolution. At this baseline, asyncio uses the async resolver and
+zuvloop uses synchronous binding. Moving zuvloop to the async path is the intended
+change being measured, not a reason to invalidate the benchmark.
+
+Counters assert that each run's resolution count equals its completed-connection
+count and that exactly one of the two delay boundaries was used. This detects a
+bypassed or double-injected delay without requiring a loop to remain blocking.
+The counters also work when pytest runs a single unmeasured smoke iteration.
+
+These results model blocking versus overlap under slow DNS, not the operating
+system's resolver throughput. Only asyncio and zuvloop are included because the
+injected boundaries are Python methods.
+
+Five rounds, one iteration per round. Best round:
+asyncio: 22.4 ms (relative standard deviation 3.2%)
+zuvloop: 115.5 ms (relative standard deviation 3.7%)
