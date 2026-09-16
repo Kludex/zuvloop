@@ -23,6 +23,7 @@ const arg_alloc = std.heap.c_allocator;
 const CANCELLED: u32 = 1 << 0;
 const SCHEDULED: u32 = 1 << 1;
 const in_heap: u32 = 1 << 2;
+const running_flag: u32 = 1 << 3;
 
 const Payload = extern struct {
     loop: ?*py.Object,
@@ -119,10 +120,19 @@ pub fn create(
     return obj;
 }
 
+/// Runs the callback, deferring self-cancellation cleanup until it returns.
 pub fn run(obj: *py.Object) void {
     const self = payload(obj);
     if (self.flags & CANCELLED != 0) return;
     const callback = self.callback orelse return;
+    self.flags |= running_flag;
+    defer {
+        self.flags &= ~running_flag;
+        if (self.flags & CANCELLED != 0) {
+            clearArgs(self);
+            py.clear(&self.callback);
+        }
+    }
     handlemod.invoke(obj, self.loop, callback, self.argv(), self.nargs, self.context.?);
 }
 
@@ -142,8 +152,10 @@ fn cancel(self_obj: *py.Object) py.Error!*py.Object {
     const self = payload(self_obj);
     if (self.flags & CANCELLED == 0) {
         self.flags |= CANCELLED;
-        clearArgs(self);
-        py.clear(&self.callback);
+        if (self.flags & running_flag == 0) {
+            clearArgs(self);
+            py.clear(&self.callback);
+        }
         if (self.flags & in_heap != 0) {
             if (self.loop) |l| loopmod.noteTimerCancelled(@ptrCast(@alignCast(l)));
         }

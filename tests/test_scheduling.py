@@ -3,15 +3,19 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextvars
+import functools
+import gc
 import socket
 import threading
 import time
+import weakref
 from collections.abc import Coroutine
+from typing import Literal
 
 import pytest
 
 import zuvloop
-from tests.conftest import running_loop
+from tests.conftest import collect_contexts, running_loop
 
 pytestmark = pytest.mark.anyio
 
@@ -163,21 +167,49 @@ async def test_cancelled_callback_does_not_run() -> None:
     assert seen == []
 
 
-@pytest.mark.parametrize("args", [(1, 2, 3), (1, 2, 3, 4, 5, 6)])
-async def test_callback_can_cancel_its_own_handle_during_vectorcall(args: tuple[int, ...]) -> None:
+@pytest.mark.parametrize("method", ["soon", "later", "at", "threadsafe"])
+@pytest.mark.parametrize("args", [(), (1,), (1, 2, 3), (1, 2, 3, 4, 5, 6)])
+@pytest.mark.parametrize("raises", [False, True])
+async def test_callback_can_cancel_its_own_handle_during_vectorcall(
+    method: Literal["soon", "later", "at", "threadsafe"], args: tuple[int, ...], raises: bool
+) -> None:
     loop = running_loop()
-    handles: list[zuvloop.Handle] = []
-    seen: list[tuple[int, ...]] = []
+    handles: list[zuvloop.Handle | asyncio.Handle] = []
+    seen: list[tuple[bool, bool, tuple[int, ...]]] = []
+    done: asyncio.Future[None] = loop.create_future()
+    error = RuntimeError("callback failed")
+    previous = loop.get_exception_handler()
+    reported = collect_contexts(loop)
 
     def callback(*received: int) -> None:
         handles[0].cancel()
-        seen.append(received)
+        handles[0].cancel()
+        seen.append((reference() is not None, handles[0].cancelled(), received))
+        done.set_result(None)
+        if raises:
+            raise error
 
-    handles.append(loop.call_soon(callback, *args))
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-    assert seen == [args]
-    assert handles[0].cancelled()
+    wrapped = functools.partial(callback)
+    reference = weakref.ref(wrapped)
+    if method == "soon":
+        handles.append(loop.call_soon(wrapped, *args))
+    elif method == "later":
+        handles.append(loop.call_later(0.001, wrapped, *args))
+    elif method == "at":
+        handles.append(loop.call_at(loop.time(), wrapped, *args))
+    else:
+        handles.append(loop.call_soon_threadsafe(wrapped, *args))
+    del wrapped
+    try:
+        await asyncio.wait_for(done, 2)
+        assert seen == [(True, True, args)]
+        assert [context["exception"] for context in reported] == ([error] if raises else [])
+        gc.collect()
+        assert reference() is None
+        assert handles[0].cancelled()
+    finally:
+        handles[0].cancel()
+        loop.set_exception_handler(previous)
 
 
 async def test_handle_repr_names_the_callback() -> None:
@@ -589,6 +621,43 @@ def test_threadsafe_cancel_inside_its_own_callback_completes_the_run() -> None:
     thread.join()
     loop.close()
     assert results == ["ran"]
+    assert observed == [True]
+
+
+async def test_threadsafe_callback_finalizer_can_wait_for_foreign_cancellation() -> None:
+    loop = running_loop()
+    done: asyncio.Future[None] = loop.create_future()
+    cancelled = threading.Event()
+    observed: list[bool] = []
+    threads: list[threading.Thread] = []
+
+    def cancel_from_worker() -> None:
+        handle.cancel()
+        cancelled.set()
+
+    def finalized() -> None:
+        thread = threading.Thread(target=cancel_from_worker)
+        threads.append(thread)
+        thread.start()
+        observed.append(cancelled.wait(2))
+
+    def callback() -> None:
+        handle.cancel()
+        done.set_result(None)
+
+    wrapped = functools.partial(callback)
+    finalizer = weakref.finalize(wrapped, finalized)
+    handle = loop.call_soon_threadsafe(wrapped)
+    del wrapped
+    try:
+        await asyncio.wait_for(done, 5)
+        gc.collect()
+    finally:
+        handle.cancel()
+        for thread in threads:
+            thread.join(2)
+            assert not thread.is_alive()
+    assert not finalizer.alive
     assert observed == [True]
 
 

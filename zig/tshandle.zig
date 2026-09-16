@@ -122,14 +122,19 @@ pub fn run(obj: *py.Object) void {
     if (@cmpxchgStrong(u32, &self.run_state, PENDING, RUNNING, .acq_rel, .acquire) != null) return;
     const previous_running = running_payload;
     running_payload = self;
-    defer running_payload = previous_running;
     defer {
+        // Finalizers can wait for foreign cancellers, so publish completion before releasing references.
         @atomicStore(u32, &self.run_state, DONE, .release);
         var node = self.waiters;
         self.waiters = null;
+        running_payload = previous_running;
         while (node) |w| {
             node = w.next;
             c.PyThread_release_lock(w.lock);
+        }
+        if (self.flags & cancelled_flag != 0) {
+            py.clear(&self.callback);
+            clearArgs(self);
         }
     }
     const callback = self.callback.?;
@@ -196,8 +201,10 @@ fn cancel(self_obj: *py.Object) py.Error!*py.Object {
     }
     if (self.flags & cancelled_flag == 0) {
         self.flags |= cancelled_flag;
-        py.clear(&self.callback);
-        clearArgs(self);
+        if (@atomicLoad(u32, &self.run_state, .acquire) != RUNNING) {
+            py.clear(&self.callback);
+            clearArgs(self);
+        }
     }
     return py.noneRef();
 }
