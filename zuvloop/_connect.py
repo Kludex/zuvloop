@@ -574,11 +574,13 @@ class ConnectionOperations(SendfileOperations):
                 stream_reader._buffer.clear()
                 stream_reader._paused = False
         stream.set_protocol(ssl_protocol)
-        self.call_soon(ssl_protocol.connection_made, stream)
-        self.call_soon(stream.resume_reading)
+        connection_made_handle = self.call_soon(ssl_protocol.connection_made, stream)
+        resume_reading_handle = self.call_soon(stream.resume_reading)
         try:
             await waiter
         except BaseException:
+            connection_made_handle.cancel()
+            resume_reading_handle.cancel()
             stream.close()
             raise
         app_transport = ssl_protocol._app_transport
