@@ -26,7 +26,7 @@ import os
 import socket
 import threading
 import time
-from collections.abc import Callable, Coroutine, Iterator
+from collections.abc import Callable, Coroutine, Iterator, Sequence
 from contextlib import ExitStack
 from typing import Never
 
@@ -659,6 +659,46 @@ def test_getaddrinfo_literal(benchmark: BenchmarkFixture, loop: asyncio.Abstract
             await loop.getaddrinfo("127.0.0.1", 80, type=socket.SOCK_STREAM)
 
     benchmark(drive(loop, work))
+
+
+@pytest.mark.benchmark
+@pytest.mark.parametrize("loop", ["asyncio", "zuvloop"], indirect=True)
+def test_concurrent_local_address_resolution(
+    benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Model slow local DNS with equal blocking and asynchronous delays."""
+    delay = 0.02
+    original_bind = socket.socket.bind
+    original_getaddrinfo = loop.getaddrinfo
+    server = loop.run_until_complete(loop.create_server(asyncio.Protocol, "127.0.0.1", 0))
+    port = server.sockets[0].getsockname()[1]
+
+    def bind(sock: socket.socket, address: tuple[str, int]) -> None:
+        if address[0] == "localhost":
+            time.sleep(delay)
+        original_bind(sock, address)
+
+    async def getaddrinfo(
+        host: str | bytes | None, port: str | bytes | int | None, **kwargs: int
+    ) -> Sequence[tuple[int, int, int, str, tuple[str, int] | tuple[str, int, int, int] | tuple[int, bytes]]]:
+        if host == "localhost":
+            await asyncio.sleep(delay)
+        return await original_getaddrinfo(host, port, **kwargs)
+
+    async def connect() -> None:
+        transport, _ = await loop.create_connection(asyncio.Protocol, "127.0.0.1", port, local_addr=("localhost", 0))
+        transport.close()
+
+    async def work() -> None:
+        await asyncio.gather(*(connect() for _ in range(5)))
+
+    monkeypatch.setattr(socket.socket, "bind", bind)
+    monkeypatch.setattr(loop, "getaddrinfo", getaddrinfo)
+    try:
+        benchmark.pedantic(drive(loop, work), rounds=5, iterations=1)
+    finally:
+        server.close()
+        loop.run_until_complete(server.wait_closed())
 
 
 # ---------------------------------------------------------------------------

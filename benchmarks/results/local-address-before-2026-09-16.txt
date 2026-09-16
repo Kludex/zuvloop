@@ -1,0 +1,15 @@
+Baseline: b1c1b47fe6f4b1d10d5c31d6bc9909366286d98f
+Environment: CPython 3.14.6, Darwin arm64
+
+Command:
+uv run --group bench pytest benchmarks/test_benchmarks.py -k concurrent_local_address_resolution --codspeed --codspeed-mode=walltime -q
+
+Workload: five concurrent connections to a loopback server, binding localhost.
+Model: inject a 20 ms delay into synchronous hostname binding or asynchronous
+local-address resolution. These are modeled slow-DNS results, not measurements
+of the operating system's resolver throughput. Only asyncio and zuvloop are
+included because the injected boundaries are Python methods.
+
+Five rounds, one iteration per round. Best round:
+asyncio: 21.8 ms (relative standard deviation 3.5%)
+zuvloop: 117.0 ms (relative standard deviation 3.2%)
