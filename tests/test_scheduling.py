@@ -9,8 +9,7 @@ import socket
 import threading
 import time
 import weakref
-from collections.abc import Coroutine
-from typing import Literal
+from collections.abc import Callable, Coroutine
 
 import pytest
 
@@ -18,6 +17,20 @@ import zuvloop
 from tests.conftest import collect_contexts, running_loop
 
 pytestmark = pytest.mark.anyio
+
+type ScheduleCallback = Callable[[functools.partial[None], *tuple[int, ...]], asyncio.Handle | zuvloop.Handle]
+
+
+@pytest.fixture(params=["soon", "later", "at", "threadsafe"])
+async def schedule_callback(request: pytest.FixtureRequest) -> ScheduleCallback:
+    loop = running_loop()
+    schedulers: dict[str, ScheduleCallback] = {
+        "soon": loop.call_soon,
+        "later": functools.partial(loop.call_later, 0.001),
+        "at": functools.partial(loop.call_at, loop.time()),
+        "threadsafe": loop.call_soon_threadsafe,
+    }
+    return schedulers[request.param]
 
 
 async def test_call_soon_runs_in_order() -> None:
@@ -167,14 +180,39 @@ async def test_cancelled_callback_does_not_run() -> None:
     assert seen == []
 
 
-@pytest.mark.parametrize("method", ["soon", "later", "at", "threadsafe"])
 @pytest.mark.parametrize("args", [(), (1,), (1, 2, 3), (1, 2, 3, 4, 5, 6)])
-@pytest.mark.parametrize("raises", [False, True])
 async def test_callback_can_cancel_its_own_handle_during_vectorcall(
-    method: Literal["soon", "later", "at", "threadsafe"], args: tuple[int, ...], raises: bool
+    schedule_callback: ScheduleCallback, args: tuple[int, ...]
 ) -> None:
     loop = running_loop()
-    handles: list[zuvloop.Handle | asyncio.Handle] = []
+    seen: list[tuple[bool, bool, tuple[int, ...]]] = []
+    done: asyncio.Future[None] = loop.create_future()
+
+    def callback(*received: int) -> None:
+        handle.cancel()
+        handle.cancel()
+        seen.append((reference() is not None, handle.cancelled(), received))
+        done.set_result(None)
+
+    wrapped = functools.partial(callback)
+    reference = weakref.ref(wrapped)
+    handle = schedule_callback(wrapped, *args)
+    del wrapped
+    try:
+        await asyncio.wait_for(done, 2)
+        assert seen == [(True, True, args)]
+        gc.collect()
+        assert reference() is None
+        assert handle.cancelled()
+    finally:
+        handle.cancel()
+
+
+@pytest.mark.parametrize("args", [(), (1,), (1, 2, 3), (1, 2, 3, 4, 5, 6)])
+async def test_self_cancelling_callback_releases_references_after_an_exception(
+    schedule_callback: ScheduleCallback, args: tuple[int, ...]
+) -> None:
+    loop = running_loop()
     seen: list[tuple[bool, bool, tuple[int, ...]]] = []
     done: asyncio.Future[None] = loop.create_future()
     error = RuntimeError("callback failed")
@@ -182,33 +220,25 @@ async def test_callback_can_cancel_its_own_handle_during_vectorcall(
     reported = collect_contexts(loop)
 
     def callback(*received: int) -> None:
-        handles[0].cancel()
-        handles[0].cancel()
-        seen.append((reference() is not None, handles[0].cancelled(), received))
+        handle.cancel()
+        handle.cancel()
+        seen.append((reference() is not None, handle.cancelled(), received))
         done.set_result(None)
-        if raises:
-            raise error
+        raise error
 
     wrapped = functools.partial(callback)
     reference = weakref.ref(wrapped)
-    if method == "soon":
-        handles.append(loop.call_soon(wrapped, *args))
-    elif method == "later":
-        handles.append(loop.call_later(0.001, wrapped, *args))
-    elif method == "at":
-        handles.append(loop.call_at(loop.time(), wrapped, *args))
-    else:
-        handles.append(loop.call_soon_threadsafe(wrapped, *args))
+    handle = schedule_callback(wrapped, *args)
     del wrapped
     try:
         await asyncio.wait_for(done, 2)
         assert seen == [(True, True, args)]
-        assert [context["exception"] for context in reported] == ([error] if raises else [])
+        assert [context["exception"] for context in reported] == [error]
         gc.collect()
         assert reference() is None
-        assert handles[0].cancelled()
+        assert handle.cancelled()
     finally:
-        handles[0].cancel()
+        handle.cancel()
         loop.set_exception_handler(previous)
 
 
