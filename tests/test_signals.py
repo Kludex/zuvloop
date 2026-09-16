@@ -228,6 +228,38 @@ def test_stale_cleanup_cannot_disable_a_wakeup_fd_during_attachment(monkeypatch:
         signal.signal(signal.SIGUSR1, original)
 
 
+def test_deferred_cleanup_preserves_an_owner_registered_during_the_reset(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = signal.getsignal(signal.SIGUSR1)
+    old = zuvloop.new_event_loop()
+    owner = zuvloop.new_event_loop()
+    received: list[str] = []
+    cleanup_fd = os.dup(old._csock.fileno())
+    old.add_signal_handler(signal.SIGUSR1, print)
+    real_signal = signal.signal
+
+    def reset_then_register(
+        sig: int, handler: int | Callable[[int, FrameType | None], object]
+    ) -> int | Callable[[int, FrameType | None], object] | None:
+        previous = real_signal(sig, handler)
+        monkeypatch.undo()
+        owner.add_signal_handler(sig, received.append, "delivered")
+        return previous
+
+    monkeypatch.setattr(signal, "signal", reset_then_register)
+    try:
+        _finish_deferred_signal_cleanup((signal.SIGUSR1,), cleanup_fd, old._signal_owner)
+        assert _signal_owners[signal.SIGUSR1] is owner._signal_owner
+        os.kill(os.getpid(), signal.SIGUSR1)
+        owner.run_until_complete(asyncio.sleep(0.01))
+        assert received == ["delivered"]
+    finally:
+        monkeypatch.undo()
+        owner.remove_signal_handler(signal.SIGUSR1)
+        old.close()
+        owner.close()
+        real_signal(signal.SIGUSR1, original)
+
+
 def test_failed_registration_does_not_resurrect_a_finalized_owner(monkeypatch: pytest.MonkeyPatch) -> None:
     original = signal.getsignal(signal.SIGUSR1)
     old = zuvloop.new_event_loop()
@@ -538,12 +570,19 @@ def test_close_attempts_all_signal_resets_after_a_failure(
         replacement = zuvloop.new_event_loop()
         try:
             replacement.add_signal_handler(signal.SIGUSR1, print)
+            replacement.add_signal_handler(signal.SIGUSR2, print)
             assert replacement.remove_signal_handler(signal.SIGUSR1) is True
+            assert replacement.remove_signal_handler(signal.SIGUSR2) is True
             assert signal.getsignal(signal.SIGUSR1) is signal.SIG_DFL
+            assert signal.getsignal(signal.SIGUSR2) is signal.SIG_DFL
+            assert signal.SIGUSR1 not in _signal_owners
+            assert signal.SIGUSR2 not in _signal_owners
         finally:
             replacement.close()
     finally:
         monkeypatch.undo()
+        _signal_owners.pop(signal.SIGUSR1, None)
+        _signal_owners.pop(signal.SIGUSR2, None)
         signal.set_wakeup_fd(-1)
         restore_signal(signal.SIGUSR1, original_usr1)
         restore_signal(signal.SIGUSR2, original_usr2)

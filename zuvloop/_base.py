@@ -509,7 +509,8 @@ def _finish_deferred_signal_cleanup(signals: tuple[int, ...], wakeup_fd: int, ow
                     # A failed reset keeps its owner, so a later reset cannot lose the signal.
                     failure = failure or exc
                 else:
-                    del _signal_owners[sig]
+                    if _signal_owners.get(sig) is owner:
+                        del _signal_owners[sig]
         if failure is not None:
             raise failure
     finally:
