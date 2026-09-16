@@ -10,7 +10,10 @@ import stat
 import subprocess
 import sys
 from asyncio import base_subprocess, sslproto, staggered, trsock
-from asyncio.base_events import _interleave_addrinfos  # type: ignore[attr-defined]  # private, not in typeshed
+from asyncio.base_events import (  # type: ignore[attr-defined]  # private CPython helpers
+    _interleave_addrinfos,
+    _ipaddr_info,
+)
 from asyncio.streams import StreamReaderProtocol
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Protocol
@@ -77,7 +80,7 @@ class ConnectionOperations(SendfileOperations):
         proto: int = 0,
         flags: int = 0,
         sock: socket.socket | None = None,
-        local_addr: tuple[str, int] | None = None,
+        local_addr: tuple[str, int] | tuple[str, int, int] | tuple[str, int, int, int] | None = None,
         server_hostname: str | None = None,
         ssl_handshake_timeout: float | None = None,
         ssl_shutdown_timeout: float | None = None,
@@ -165,7 +168,7 @@ class ConnectionOperations(SendfileOperations):
         family: int,
         proto: int,
         flags: int,
-        local_addr: tuple[str, int] | None,
+        local_addr: tuple[str, int] | tuple[str, int, int] | tuple[str, int, int, int] | None,
         happy_eyeballs_delay: float | None = None,
         interleave: int | None = None,
         all_errors: bool = False,
@@ -173,6 +176,19 @@ class ConnectionOperations(SendfileOperations):
         infos = await self.getaddrinfo(host, port, family=family, type=socket.SOCK_STREAM, proto=proto, flags=flags)
         if not infos:  # pragma: no cover - libuv reports an error rather than an empty list
             raise OSError(f"getaddrinfo({host!r}, {port!r}) returned no addresses")
+        local_infos: Sequence[_AddrInfo] | None = None
+        if local_addr is not None:
+            local_info: _AddrInfo | None = _ipaddr_info(
+                local_addr[0], local_addr[1], family, socket.SOCK_STREAM, proto, *local_addr[2:]
+            )
+            if local_info is not None:
+                local_infos = [local_info]
+            else:
+                local_infos = await self.getaddrinfo(
+                    local_addr[0], local_addr[1], family=family, type=socket.SOCK_STREAM, proto=proto, flags=flags
+                )
+            if not local_infos:
+                raise OSError("getaddrinfo() returned empty list")
         if interleave:
             infos = _interleave_addrinfos(infos, interleave)
 
@@ -182,7 +198,7 @@ class ConnectionOperations(SendfileOperations):
         if happy_eyeballs_delay is None:
             for info in infos:
                 try:
-                    winner = await self._connect_one(errors, info, local_addr)
+                    winner = await self._connect_one(errors, info, local_infos)
                     break
                 except OSError:
                     continue
@@ -192,7 +208,7 @@ class ConnectionOperations(SendfileOperations):
             # delay rather than a full connect timeout. RFC 8305.
             winner = (
                 await staggered.staggered_race(
-                    (self._attempt(errors, info, local_addr) for info in infos),
+                    (self._attempt(errors, info, local_infos) for info in infos),
                     happy_eyeballs_delay,
                     loop=self,
                 )
@@ -217,12 +233,12 @@ class ConnectionOperations(SendfileOperations):
         self,
         errors: list[list[OSError]],
         info: _AddrInfo,
-        local_addr: tuple[str, int] | None,
+        local_infos: Sequence[_AddrInfo] | None,
     ) -> Callable[[], Awaitable[socket.socket]]:
         """One attempt, bound to its address, for the race to start when it likes."""
 
         async def run() -> socket.socket:
-            return await self._connect_one(errors, info, local_addr)
+            return await self._connect_one(errors, info, local_infos)
 
         return run
 
@@ -230,7 +246,7 @@ class ConnectionOperations(SendfileOperations):
         self,
         errors: list[list[OSError]],
         info: _AddrInfo,
-        local_addr: tuple[str, int] | None,
+        local_infos: Sequence[_AddrInfo] | None,
     ) -> socket.socket:
         # The slot is taken before anything is awaited, so the failures come back
         # in the order the addresses were tried rather than the order they lost -
@@ -249,13 +265,21 @@ class ConnectionOperations(SendfileOperations):
 
         try:
             sock.setblocking(False)
-            if local_addr is not None:
-                try:
-                    sock.bind(local_addr)
-                except OSError as exc:
-                    # Which address was refused is the useful half of the report.
-                    message = f"error while attempting to bind on address {local_addr!r}: {str(exc).lower()}"
-                    raise OSError(exc.errno, message) from None
+            if local_infos is not None:
+                for local_family, _kind, _proto, _canon, local_address in local_infos:
+                    if local_family != af:
+                        continue
+                    try:
+                        sock.bind(local_address)
+                    except OSError as exc:
+                        message = f"error while attempting to bind on address {local_address!r}: {str(exc).lower()}"
+                        mine.append(OSError(exc.errno, message))
+                    else:
+                        break
+                else:
+                    if mine:
+                        raise mine.pop()
+                    raise OSError(f"no matching local address with family={af} found")
             await self.sock_connect(sock, address)
         except OSError as exc:
             sock.close()
