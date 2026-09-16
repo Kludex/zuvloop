@@ -3,17 +3,34 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextvars
+import functools
+import gc
 import socket
 import threading
 import time
-from collections.abc import Coroutine
+import weakref
+from collections.abc import Callable, Coroutine
 
 import pytest
 
 import zuvloop
-from tests.conftest import running_loop
+from tests.conftest import collect_contexts, running_loop
 
 pytestmark = pytest.mark.anyio
+
+type ScheduleCallback = Callable[[functools.partial[None], *tuple[int, ...]], asyncio.Handle | zuvloop.Handle]
+
+
+@pytest.fixture(params=["soon", "later", "at", "threadsafe"])
+async def schedule_callback(request: pytest.FixtureRequest) -> ScheduleCallback:
+    loop = running_loop()
+    schedulers: dict[str, ScheduleCallback] = {
+        "soon": loop.call_soon,
+        "later": functools.partial(loop.call_later, 0.001),
+        "at": functools.partial(loop.call_at, loop.time()),
+        "threadsafe": loop.call_soon_threadsafe,
+    }
+    return schedulers[request.param]
 
 
 async def test_call_soon_runs_in_order() -> None:
@@ -163,21 +180,66 @@ async def test_cancelled_callback_does_not_run() -> None:
     assert seen == []
 
 
-@pytest.mark.parametrize("args", [(1, 2, 3), (1, 2, 3, 4, 5, 6)])
-async def test_callback_can_cancel_its_own_handle_during_vectorcall(args: tuple[int, ...]) -> None:
+@pytest.mark.parametrize("args", [(), (1,), (1, 2, 3), (1, 2, 3, 4, 5, 6)])
+async def test_callback_can_cancel_its_own_handle_during_vectorcall(
+    schedule_callback: ScheduleCallback, args: tuple[int, ...]
+) -> None:
     loop = running_loop()
-    handles: list[zuvloop.Handle] = []
-    seen: list[tuple[int, ...]] = []
+    seen: list[tuple[bool, bool, tuple[int, ...]]] = []
+    done: asyncio.Future[None] = loop.create_future()
 
     def callback(*received: int) -> None:
-        handles[0].cancel()
-        seen.append(received)
+        handle.cancel()
+        handle.cancel()
+        seen.append((reference() is not None, handle.cancelled(), received))
+        done.set_result(None)
 
-    handles.append(loop.call_soon(callback, *args))
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-    assert seen == [args]
-    assert handles[0].cancelled()
+    wrapped = functools.partial(callback)
+    reference = weakref.ref(wrapped)
+    handle = schedule_callback(wrapped, *args)
+    del wrapped
+    try:
+        await asyncio.wait_for(done, 2)
+        assert seen == [(True, True, args)]
+        gc.collect()
+        assert reference() is None
+        assert handle.cancelled()
+    finally:
+        handle.cancel()
+
+
+@pytest.mark.parametrize("args", [(), (1,), (1, 2, 3), (1, 2, 3, 4, 5, 6)])
+async def test_self_cancelling_callback_releases_references_after_an_exception(
+    schedule_callback: ScheduleCallback, args: tuple[int, ...]
+) -> None:
+    loop = running_loop()
+    seen: list[tuple[bool, bool, tuple[int, ...]]] = []
+    done: asyncio.Future[None] = loop.create_future()
+    error = RuntimeError("callback failed")
+    previous = loop.get_exception_handler()
+    reported = collect_contexts(loop)
+
+    def callback(*received: int) -> None:
+        handle.cancel()
+        handle.cancel()
+        seen.append((reference() is not None, handle.cancelled(), received))
+        done.set_result(None)
+        raise error
+
+    wrapped = functools.partial(callback)
+    reference = weakref.ref(wrapped)
+    handle = schedule_callback(wrapped, *args)
+    del wrapped
+    try:
+        await asyncio.wait_for(done, 2)
+        assert seen == [(True, True, args)]
+        assert [context["exception"] for context in reported] == [error]
+        gc.collect()
+        assert reference() is None
+        assert handle.cancelled()
+    finally:
+        handle.cancel()
+        loop.set_exception_handler(previous)
 
 
 async def test_handle_repr_names_the_callback() -> None:
@@ -589,6 +651,43 @@ def test_threadsafe_cancel_inside_its_own_callback_completes_the_run() -> None:
     thread.join()
     loop.close()
     assert results == ["ran"]
+    assert observed == [True]
+
+
+async def test_threadsafe_callback_finalizer_can_wait_for_foreign_cancellation() -> None:
+    loop = running_loop()
+    done: asyncio.Future[None] = loop.create_future()
+    cancelled = threading.Event()
+    observed: list[bool] = []
+    threads: list[threading.Thread] = []
+
+    def cancel_from_worker() -> None:
+        handle.cancel()
+        cancelled.set()
+
+    def finalized() -> None:
+        thread = threading.Thread(target=cancel_from_worker)
+        threads.append(thread)
+        thread.start()
+        observed.append(cancelled.wait(2))
+
+    def callback() -> None:
+        handle.cancel()
+        done.set_result(None)
+
+    wrapped = functools.partial(callback)
+    finalizer = weakref.finalize(wrapped, finalized)
+    handle = loop.call_soon_threadsafe(wrapped)
+    del wrapped
+    try:
+        await asyncio.wait_for(done, 5)
+        gc.collect()
+    finally:
+        handle.cancel()
+        for thread in threads:
+            thread.join(2)
+            assert not thread.is_alive()
+    assert not finalizer.alive
     assert observed == [True]
 
 
