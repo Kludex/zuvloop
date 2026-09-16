@@ -1,0 +1,219 @@
+Matched-host investigation of the callback lifetime change - 2026-09-16
+
+Base: d04dbaac3dd4cba25d9fec383d4984c0d0db0e28
+Head: c7ccdb863047c689dd13904e027602dc0294fa1e
+Benchmark: benchmarks/compare.py (unchanged between base and head)
+Benchmark SHA-256: 528f0d177e7459bb848608a00f35a45388b847e92241f276a6e8f2e5210f5c9a
+
+Machine: Apple M3 Max, 16 logical CPUs, 64 GiB RAM.
+OS: macOS 26.6.2, build 25G83. Compiler: Zig 0.16.0.
+The wheel hook selects ReleaseFast and the build defaults to a baseline CPU.
+
+Reproduction, from a clone containing both commits:
+python=$(uv python find 3.14.6)
+work=$(mktemp -d /tmp/zuvloop-lifetime.XXXXXX)
+git worktree add --detach "$work/base" d04dbaac3dd4cba25d9fec383d4984c0d0db0e28
+git worktree add --detach "$work/head" c7ccdb863047c689dd13904e027602dc0294fa1e
+for arm in base head; do
+    uv sync --project "$work/$arm" --locked --group bench --python "$python" --reinstall-package zuvloop
+done
+for arm in base head head base base head; do
+    printf '\n=== %s ===\n' "$arm"
+    (
+        cd "$work/$arm"
+        PYTHONPATH="$PWD" .venv/bin/python benchmarks/compare.py \
+            echo timer_schedule_cancel timer_rounds call_soon_threadsafe
+    )
+done
+git worktree remove "$work/base"
+git worktree remove "$work/head"
+rmdir "$work"
+
+Order: base, head, head, base, base, head.
+Each workload warms up three times, then takes 40 samples per loop. The existing
+harness alternates zuvloop and uvloop, reversing their order each repetition,
+and disables GC during sampling. Base and head are separate processes; both
+use the same interpreter, dependencies, machine, and build configuration.
+
+Summary: median of the three per-run zuvloop medians. Negative duration change
+means faster. These selected workloads do not reproduce the reported 30.09%
+CodSpeed regression on this host. They do not establish zero overhead on every
+platform or validate a sub-percent change on this shared developer machine.
+No benchmark threshold or lifetime safeguard was changed.
+
+Workload                         Base ms   Head ms   Duration change
+echo                               35.826    35.658  -0.47%
+timer_schedule_cancel               1.190     1.186  -0.34%
+timer_rounds                        3.290     3.277  -0.40%
+call_soon_threadsafe                0.861     0.864  +0.35%
+
+Full output:
+
+[#184](https://github.com/Kludex/zuvloop/pull/184) matched-host investigation
+Base d04dbaac3dd4cba25d9fec383d4984c0d0db0e28
+Head c7ccdb863047c689dd13904e027602dc0294fa1e
+Apple M3 Max
+16
+68719476736
+ProductName:		macOS
+ProductVersion:		26.6.2
+BuildVersion:		25G83
+0.16.0
+Both builds: ReleaseFast, baseline CPU, same CPython executable and uv.lock.
+40 samples per workload, 3 warmups, GC disabled during sampling by benchmarks/compare.py.
+
+=== base ===
+3.14.6 (main, Aug  4 2026, 19:23:56) [Clang 22.1.3 ]
+GIL True PYTHONMALLOC None
+<base worktree>/zuvloop/_zuvloop.cpython-314-darwin.so
+uvloop 0.22.1
+
+echo
+  zuvloop  wall min   31.417ms  median   35.994ms  (+/- 15.0%)   cpu min   22.715ms
+  uvloop   wall min   33.061ms  median   40.966ms  (+/-  7.4%)   cpu min   24.481ms
+           zuvloop / uvloop  wall min 1.052x  median 1.138x  cpu 1.136x
+
+timer_schedule_cancel
+  zuvloop  wall min    1.147ms  median    1.198ms  (+/-  2.3%)   cpu min    1.128ms
+  uvloop   wall min    3.326ms  median    3.472ms  (+/-  2.7%)   cpu min    3.294ms
+           zuvloop / uvloop  wall min 2.900x  median 2.897x  cpu 2.921x
+
+timer_rounds
+  zuvloop  wall min    3.071ms  median    3.312ms  (+/-  2.5%)   cpu min    1.422ms
+  uvloop   wall min  126.867ms  median  132.124ms  (+/-  3.2%)   cpu min   16.433ms
+           zuvloop / uvloop  wall min 41.315x  median 39.887x  cpu 12.723x
+
+call_soon_threadsafe
+  zuvloop  wall min    0.819ms  median    0.862ms  (+/-  3.3%)   cpu min    0.819ms
+  uvloop   wall min    1.435ms  median    1.503ms  (+/-  3.0%)   cpu min    1.404ms
+           zuvloop / uvloop  wall min 1.753x  median 1.744x  cpu 1.702x
+
+=== head ===
+3.14.6 (main, Aug  4 2026, 19:23:56) [Clang 22.1.3 ]
+GIL True PYTHONMALLOC None
+<head worktree>/zuvloop/_zuvloop.cpython-314-darwin.so
+uvloop 0.22.1
+
+echo
+  zuvloop  wall min   31.025ms  median   35.493ms  (+/-  6.2%)   cpu min   22.826ms
+  uvloop   wall min   33.829ms  median   40.753ms  (+/-  6.6%)   cpu min   24.974ms
+           zuvloop / uvloop  wall min 1.090x  median 1.148x  cpu 1.144x
+
+timer_schedule_cancel
+  zuvloop  wall min    1.146ms  median    1.186ms  (+/-  8.0%)   cpu min    1.124ms
+  uvloop   wall min    3.292ms  median    3.463ms  (+/-  4.2%)   cpu min    3.262ms
+           zuvloop / uvloop  wall min 2.872x  median 2.921x  cpu 2.951x
+
+timer_rounds
+  zuvloop  wall min    3.113ms  median    3.277ms  (+/-  2.0%)   cpu min    1.385ms
+  uvloop   wall min  126.206ms  median  133.260ms  (+/-  2.3%)   cpu min   15.760ms
+           zuvloop / uvloop  wall min 40.546x  median 40.671x  cpu 13.656x
+
+call_soon_threadsafe
+  zuvloop  wall min    0.817ms  median    0.865ms  (+/-  3.8%)   cpu min    0.818ms
+  uvloop   wall min    1.461ms  median    1.508ms  (+/-  2.0%)   cpu min    1.426ms
+           zuvloop / uvloop  wall min 1.790x  median 1.743x  cpu 1.702x
+
+=== head ===
+3.14.6 (main, Aug  4 2026, 19:23:56) [Clang 22.1.3 ]
+GIL True PYTHONMALLOC None
+<head worktree>/zuvloop/_zuvloop.cpython-314-darwin.so
+uvloop 0.22.1
+
+echo
+  zuvloop  wall min   32.029ms  median   35.769ms  (+/-  4.3%)   cpu min   22.296ms
+  uvloop   wall min   34.414ms  median   40.980ms  (+/-  5.2%)   cpu min   25.133ms
+           zuvloop / uvloop  wall min 1.074x  median 1.146x  cpu 1.142x
+
+timer_schedule_cancel
+  zuvloop  wall min    1.161ms  median    1.182ms  (+/-  1.0%)   cpu min    1.138ms
+  uvloop   wall min    3.334ms  median    3.391ms  (+/-  1.6%)   cpu min    3.300ms
+           zuvloop / uvloop  wall min 2.871x  median 2.870x  cpu 2.891x
+
+timer_rounds
+  zuvloop  wall min    3.025ms  median    3.301ms  (+/-  2.2%)   cpu min    1.410ms
+  uvloop   wall min  126.803ms  median  131.719ms  (+/-  2.5%)   cpu min   16.224ms
+           zuvloop / uvloop  wall min 41.923x  median 39.908x  cpu 12.884x
+
+call_soon_threadsafe
+  zuvloop  wall min    0.833ms  median    0.864ms  (+/-  2.2%)   cpu min    0.834ms
+  uvloop   wall min    1.435ms  median    1.502ms  (+/-  1.8%)   cpu min    1.401ms
+           zuvloop / uvloop  wall min 1.723x  median 1.738x  cpu 1.690x
+
+=== base ===
+3.14.6 (main, Aug  4 2026, 19:23:56) [Clang 22.1.3 ]
+GIL True PYTHONMALLOC None
+<base worktree>/zuvloop/_zuvloop.cpython-314-darwin.so
+uvloop 0.22.1
+
+echo
+  zuvloop  wall min   31.270ms  median   33.929ms  (+/-  5.3%)   cpu min   22.484ms
+  uvloop   wall min   34.999ms  median   37.131ms  (+/-  5.6%)   cpu min   25.285ms
+           zuvloop / uvloop  wall min 1.119x  median 1.094x  cpu 1.103x
+
+timer_schedule_cancel
+  zuvloop  wall min    1.164ms  median    1.190ms  (+/-  1.5%)   cpu min    1.142ms
+  uvloop   wall min    3.293ms  median    3.388ms  (+/-  1.8%)   cpu min    3.261ms
+           zuvloop / uvloop  wall min 2.830x  median 2.847x  cpu 2.869x
+
+timer_rounds
+  zuvloop  wall min    3.053ms  median    3.283ms  (+/-  2.9%)   cpu min    1.403ms
+  uvloop   wall min  127.471ms  median  133.618ms  (+/-  3.3%)   cpu min   16.379ms
+           zuvloop / uvloop  wall min 41.753x  median 40.702x  cpu 13.612x
+
+call_soon_threadsafe
+  zuvloop  wall min    0.819ms  median    0.854ms  (+/-  2.9%)   cpu min    0.823ms
+  uvloop   wall min    1.442ms  median    1.489ms  (+/-  1.6%)   cpu min    1.409ms
+           zuvloop / uvloop  wall min 1.761x  median 1.743x  cpu 1.698x
+
+=== base ===
+3.14.6 (main, Aug  4 2026, 19:23:56) [Clang 22.1.3 ]
+GIL True PYTHONMALLOC None
+<base worktree>/zuvloop/_zuvloop.cpython-314-darwin.so
+uvloop 0.22.1
+
+echo
+  zuvloop  wall min   31.922ms  median   35.826ms  (+/-  4.3%)   cpu min   22.884ms
+  uvloop   wall min   35.820ms  median   40.931ms  (+/-  5.5%)   cpu min   25.737ms
+           zuvloop / uvloop  wall min 1.122x  median 1.142x  cpu 1.137x
+
+timer_schedule_cancel
+  zuvloop  wall min    1.157ms  median    1.188ms  (+/-  1.3%)   cpu min    1.136ms
+  uvloop   wall min    3.259ms  median    3.356ms  (+/-  1.4%)   cpu min    3.224ms
+           zuvloop / uvloop  wall min 2.817x  median 2.825x  cpu 2.849x
+
+timer_rounds
+  zuvloop  wall min    3.166ms  median    3.290ms  (+/-  1.7%)   cpu min    1.429ms
+  uvloop   wall min  127.015ms  median  132.546ms  (+/-  3.8%)   cpu min   15.990ms
+           zuvloop / uvloop  wall min 40.123x  median 40.293x  cpu 13.133x
+
+call_soon_threadsafe
+  zuvloop  wall min    0.828ms  median    0.861ms  (+/-  3.3%)   cpu min    0.830ms
+  uvloop   wall min    1.467ms  median    1.509ms  (+/-  2.3%)   cpu min    1.429ms
+           zuvloop / uvloop  wall min 1.772x  median 1.752x  cpu 1.708x
+
+=== head ===
+3.14.6 (main, Aug  4 2026, 19:23:56) [Clang 22.1.3 ]
+GIL True PYTHONMALLOC None
+<head worktree>/zuvloop/_zuvloop.cpython-314-darwin.so
+uvloop 0.22.1
+
+echo
+  zuvloop  wall min   32.240ms  median   35.658ms  (+/-  3.8%)   cpu min   22.653ms
+  uvloop   wall min   32.459ms  median   40.103ms  (+/-  6.4%)   cpu min   24.080ms
+           zuvloop / uvloop  wall min 1.007x  median 1.125x  cpu 1.131x
+
+timer_schedule_cancel
+  zuvloop  wall min    1.152ms  median    1.186ms  (+/-  1.5%)   cpu min    1.131ms
+  uvloop   wall min    3.350ms  median    3.430ms  (+/-  1.8%)   cpu min    3.319ms
+           zuvloop / uvloop  wall min 2.907x  median 2.892x  cpu 2.923x
+
+timer_rounds
+  zuvloop  wall min    3.131ms  median    3.260ms  (+/-  2.2%)   cpu min    1.410ms
+  uvloop   wall min  127.270ms  median  131.827ms  (+/-  2.5%)   cpu min   16.401ms
+           zuvloop / uvloop  wall min 40.646x  median 40.432x  cpu 13.288x
+
+call_soon_threadsafe
+  zuvloop  wall min    0.826ms  median    0.857ms  (+/-  2.3%)   cpu min    0.826ms
+  uvloop   wall min    1.439ms  median    1.495ms  (+/-  1.9%)   cpu min    1.406ms
+           zuvloop / uvloop  wall min 1.741x  median 1.744x  cpu 1.707x
