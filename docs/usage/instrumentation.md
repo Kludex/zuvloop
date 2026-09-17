@@ -14,19 +14,26 @@ within one interval.
 
 **The measurement happens in Zig. Python only records it.**
 
-Unhandled exceptions are also reported through the standard `asyncio` logger,
-whether or not an OpenTelemetry provider exists. Telemetry is an additional
-signal, never the only error path. A broken exporter or provider is contained:
-its exception is not allowed to escape the loop's exception handler or suppress
-the normal log record.
+Unhandled exceptions are reported through the standard `asyncio` logger,
+whether or not an OpenTelemetry provider exists. Telemetry only counts them. A
+broken exporter or provider is contained: its exception is not allowed to escape
+the loop's exception handler or suppress the normal log record.
+
+!!! note "Unhandled exceptions do not produce spans"
+    Most of what reaches the loop's exception handler is not a failure of your
+    code. A peer that disconnects mid-keepalive, or an exception landing in a
+    shielded future whose waiter was cancelled, both arrive there. A span per
+    event made them look like errors. The `zuvloop.unhandled_exceptions` counter
+    carries the exception class in `error.type`, so you can alert on the classes
+    you care about. The traceback is in the `asyncio` log record.
 
 ## Signals
 
 | Signal | Kind | Measured by |
 | --- | --- | --- |
 | `zuvloop.slow_callback` | span, with real start and end timestamps | `uv_hrtime()` around the callback |
-| `zuvloop.unhandled_exception` | span, with the exception recorded | the loop's error path |
-| `zuvloop.slow_callbacks`, `zuvloop.unhandled_exceptions` | counters | as above |
+| `zuvloop.slow_callbacks` | counter | as above |
+| `zuvloop.unhandled_exceptions` | counter, with `error.type` | the loop's error path |
 | `zuvloop.callback_duration` | histogram | `uv_hrtime()` |
 | `zuvloop.loop_count`, `events`, `events_waiting`, `idle_time_ns`, `callbacks_run`, `ready`, `timers`, `watchers` | gauges | native counters and `uv_metrics_info()`, sampled on a dedicated `uv_timer_t` |
 

@@ -4,13 +4,12 @@ import asyncio
 import functools
 import threading
 import time
-import traceback
 from collections.abc import Mapping
 from types import CodeType
 
 from opentelemetry import metrics, trace
 from opentelemetry.metrics import NoOpMeterProvider
-from opentelemetry.trace import NoOpTracerProvider, ProxyTracerProvider, Status, StatusCode
+from opentelemetry.trace import NoOpTracerProvider, ProxyTracerProvider
 from opentelemetry.util.types import AttributeValue
 
 _NAMESPACE = "zuvloop"
@@ -89,27 +88,9 @@ class Instrumentation:
 
     def report_exception(self, context: Mapping[str, object]) -> None:
         try:
-            _counter("unhandled_exceptions", "Exceptions routed to the loop exception handler").add(1)
             exception = context.get("exception")
-            message = context.get("message") or "Unhandled exception in event loop"
-            attributes = {
-                key: _safe_repr(value) for key, value in context.items() if key not in ("message", "exception")
-            }
-
-            span = _tracer().start_span(f"{_NAMESPACE}.unhandled_exception", attributes=attributes)
-            if isinstance(exception, BaseException):
-                span.record_exception(
-                    exception,
-                    attributes={
-                        "exception.type": _bounded(type(exception).__name__),
-                        "exception.message": _bounded(str(exception)),
-                        "exception.stacktrace": _bounded("".join(traceback.format_exception(exception))),
-                        "exception.escaped": False,
-                    },
-                    escaped=False,
-                )
-            span.set_status(Status(StatusCode.ERROR, _bounded(str(message))))
-            span.end()
+            attributes = {"error.type": type(exception).__name__} if isinstance(exception, BaseException) else {}
+            _counter("unhandled_exceptions", "Exceptions routed to the loop exception handler").add(1, attributes)
         except SystemExit, KeyboardInterrupt:
             raise
         except BaseException:

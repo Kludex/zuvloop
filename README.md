@@ -155,7 +155,8 @@ You get:
   `False`, avoiding a thread CPU clock read on every monitored callback. A low CPU/wall
   ratio can reflect synchronous waiting or scheduling delays; it does not distinguish
   them. GC CPU time is included in callback CPU time.
-- **`zuvloop.unhandled_exception`** spans — with the exception recorded.
+- **`zuvloop.unhandled_exceptions`** counter, with the exception class in `error.type`. The exception
+  itself goes to the standard `asyncio` logger, not to a span.
 - Counters, a callback-duration histogram, and live loop gauges (`loop_count`, `events`,
   `idle_time_ns`, `ready`, `timers`, `watchers`, ...).
 

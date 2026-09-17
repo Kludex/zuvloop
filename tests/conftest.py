@@ -4,7 +4,7 @@ import asyncio
 import socket
 import ssl
 import subprocess
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import TypedDict
 
@@ -68,6 +68,7 @@ class Telemetry:
         self._exporter = exporter
         self._reader = reader
         self._collected: dict[str, float] | None = None
+        self._attributes: dict[str, list[Mapping[str, AttributeValue]]] = {}
 
     def spans(self, name: str | None = None) -> list[ReadableSpan]:
         found = self._exporter.get_finished_spans()
@@ -84,6 +85,7 @@ class Telemetry:
                     for metric in scope.metrics:
                         points: Sequence[NumberDataPoint | HistogramDataPoint] = getattr(metric.data, "data_points", ())
                         for point in points:
+                            self._attributes.setdefault(metric.name, []).append(point.attributes or {})
                             # Histograms report a count rather than a single value.
                             if isinstance(point, HistogramDataPoint):
                                 self._collected[metric.name] = point.count
@@ -96,6 +98,10 @@ class Telemetry:
         value = self.metric(name)
         assert value is not None, f"{name} was never recorded"
         return value
+
+    def attributes(self, name: str) -> list[Mapping[str, AttributeValue]]:
+        self.counted(name)
+        return self._attributes[name]
 
 
 def attribute(span: ReadableSpan, key: str) -> AttributeValue:
