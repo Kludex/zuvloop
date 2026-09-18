@@ -21,7 +21,7 @@ The key features are:
 - **Fast**: Scheduling, timers, sockets, and DNS run in native code, driven by [libuv](https://libuv.org) - the same engine behind Node.js. Over **20x faster than asyncio** at thread-safe scheduling. Compare it with [uvloop](https://github.com/MagicStack/uvloop) and [rloop](https://github.com/gi0baro/rloop) in the benchmarks below.
 - **Drop-in**: One line to switch. Everything is standard `asyncio` — same `Task` objects, same protocols, same APIs.
 - **Fully typed**: Ships type hints for everything and passes **strict mypy**. Your editor will love it. ✨
-- **Observable**: Built-in [OpenTelemetry](https://opentelemetry.io) instrumentation — slow-callback spans, unhandled-exception spans, loop metrics. Zero cost until you turn it on.
+- **Observable**: Built-in [OpenTelemetry](https://opentelemetry.io) instrumentation — slow-callback spans, loop metrics, an unhandled-exception counter. Zero cost until you turn it on.
 - **Modern**: Built for Python 3.14, including the new asyncio introspection tools (`python -m asyncio ps`, call graphs, and friends).
 
 ## Performance
@@ -155,7 +155,8 @@ You get:
   `False`, avoiding a thread CPU clock read on every monitored callback. A low CPU/wall
   ratio can reflect synchronous waiting or scheduling delays; it does not distinguish
   them. GC CPU time is included in callback CPU time.
-- **`zuvloop.unhandled_exception`** spans — with the exception recorded.
+- **`zuvloop.unhandled_exceptions`** counter, with the exception class in `error.type`. The exception
+  itself goes to the standard `asyncio` logger, not to a span.
 - Counters, a callback-duration histogram, and live loop gauges (`loop_count`, `events`,
   `idle_time_ns`, `ready`, `timers`, `watchers`, ...).
 
