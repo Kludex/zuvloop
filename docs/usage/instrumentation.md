@@ -73,7 +73,7 @@ Slow-callback spans carry the awaiting call graph, captured with
 `asyncio.format_call_graph()`, so you see *why* the callback was running rather
 than just its repr.
 
-Callback reprs, call graphs and exception messages can contain application data.
+Callback reprs and call graphs can contain application data.
 Each string attribute is truncated to 4 KiB before it is handed to a provider,
 and repr failures are replaced with a safe type description. zuvloop does not
 attach callback arguments, network payloads or environment variables. Treat the
