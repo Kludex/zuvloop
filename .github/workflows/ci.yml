@@ -223,7 +223,7 @@ jobs:
       - name: Test under musl
         run: |
           docker run --rm -v "$PWD:/src" -w /src python:3.14-alpine sh -euc '
-            apk add --no-cache curl xz build-base openssl
+            apk add --no-cache curl xz build-base linux-headers openssl
 
             # Checked against the digest ziglang.org publishes for this exact
             # tarball, because nothing else here verifies what the pipe carries -
