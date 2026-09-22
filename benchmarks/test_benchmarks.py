@@ -192,7 +192,7 @@ def test_threadsafe_flood_timer_fairness(benchmark: BenchmarkFixture, loop: asyn
         accepted_samples.append(sum(flood.accepted))
 
     latency = benchmark.pedantic(measure, setup=setup, teardown=teardown, rounds=10)
-    assert latency >= delay
+    assert latency >= delay or math.isclose(latency, delay, abs_tol=1e-9)
     assert accepted_samples
     assert all(0 < accepted <= producers * limit_per_producer for accepted in accepted_samples)
 

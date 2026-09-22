@@ -1,7 +1,8 @@
 diff --git a/include/uv.h b/include/uv.h
+index da06345..0bac288 100644
 --- a/include/uv.h
 +++ b/include/uv.h
-@@ -727,6 +727,8 @@ struct uv_udp_s {
+@@ -730,6 +730,8 @@ struct uv_udp_s {
     * Number of send requests currently in the queue awaiting to be processed.
     */
    size_t send_queue_count;
@@ -10,7 +11,7 @@ diff --git a/include/uv.h b/include/uv.h
    UV_UDP_PRIVATE_FIELDS
  };
  
-@@ -773,10 +775,22 @@ UV_EXTERN int uv_udp_send(uv_udp_send_t* req,
+@@ -779,10 +781,22 @@ UV_EXTERN int uv_udp_send(uv_udp_send_t* req,
                            unsigned int nbufs,
                            const struct sockaddr* addr,
                            uv_udp_send_cb send_cb);
@@ -33,7 +34,7 @@ diff --git a/include/uv.h b/include/uv.h
  UV_EXTERN int uv_udp_try_send2(uv_udp_t* handle,
                                 unsigned int count,
                                 uv_buf_t* bufs[/*count*/],
-@@ -790,6 +804,7 @@ UV_EXTERN int uv_udp_using_recvmmsg(const uv_udp_t* handle);
+@@ -796,6 +810,7 @@ UV_EXTERN int uv_udp_using_recvmmsg(const uv_udp_t* handle);
  UV_EXTERN int uv_udp_recv_stop(uv_udp_t* handle);
  UV_EXTERN size_t uv_udp_get_send_queue_size(const uv_udp_t* handle);
  UV_EXTERN size_t uv_udp_get_send_queue_count(const uv_udp_t* handle);
@@ -42,9 +43,10 @@ diff --git a/include/uv.h b/include/uv.h
  
  /*
 diff --git a/include/uv/unix.h b/include/uv/unix.h
+index c6ba419..b4e8cd0 100644
 --- a/include/uv/unix.h
 +++ b/include/uv/unix.h
-@@ -275,6 +275,7 @@ typedef struct {
+@@ -272,6 +272,7 @@ typedef struct {
      struct sockaddr addr;                                                     \
      struct sockaddr_storage storage;                                          \
    } u;                                                                        \
@@ -53,9 +55,10 @@ diff --git a/include/uv/unix.h b/include/uv/unix.h
    uv_buf_t* bufs;                                                             \
    ssize_t status;                                                             \
 diff --git a/src/unix/udp.c b/src/unix/udp.c
+index 0a41391..7079973 100644
 --- a/src/unix/udp.c
 +++ b/src/unix/udp.c
-@@ -50,7 +50,8 @@ static int uv__udp_maybe_deferred_bind(uv_udp_t* handle,
+@@ -53,7 +53,8 @@ static int uv__udp_maybe_deferred_bind(uv_udp_t* handle,
  static int uv__udp_sendmsg1(int fd,
                              const uv_buf_t* bufs,
                              unsigned int nbufs,
@@ -65,23 +68,28 @@ diff --git a/src/unix/udp.c b/src/unix/udp.c
  
  
  void uv__udp_close(uv_udp_t* handle) {
-@@ -203,6 +204,7 @@ static int uv__udp_recvmmsg(uv_udp_t* handle, uv_buf_t* buf) {
-         flags |= UV_UDP_PARTIAL;
- 
-       chunk_buf = uv_buf_init(iov[k].iov_base, iov[k].iov_len);
+@@ -265,6 +266,7 @@ static int uv__udp_recvmmsg(uv_udp_t* handle, uv_buf_t* buf, int flag) {
+         continue;
+       }
+ #endif
 +      handle->recv_addrlen = msgs[k].msg_hdr.msg_namelen;
        handle->recv_cb(handle,
                        msgs[k].msg_len,
                        &chunk_buf,
-@@ -275,6 +277,7 @@ static void uv__udp_recvmsg(uv_udp_t* handle) {
-       if (h.msg_flags & MSG_TRUNC)
-         flags |= UV_UDP_PARTIAL;
- 
-+      handle->recv_addrlen = h.msg_namelen;
-       handle->recv_cb(handle, nread, &buf, (const struct sockaddr*) &peer, flags);
+@@ -347,9 +349,10 @@ static void uv__udp_recvmsg(uv_udp_t* handle, int flag) {
      }
-     count--;
-@@ -602,6 +605,7 @@ int uv__udp_send(uv_udp_send_t* req,
+ #endif
+ 
+-    if (nread != -1)
++    if (nread != -1) {
++      handle->recv_addrlen = h.msg_namelen;
+       handle->recv_cb(handle, nread, &buf, (void*) &peer, flags);
+-    else if (errno == EAGAIN || errno == EWOULDBLOCK)
++    } else if (errno == EAGAIN || errno == EWOULDBLOCK)
+       handle->recv_cb(handle, 0, &buf, NULL, 0);
+     else
+       handle->recv_cb(handle, UV__ERR(errno), &buf, NULL, 0);
+@@ -678,6 +681,7 @@ int uv__udp_send(uv_udp_send_t* req,
      req->u.storage.ss_family = AF_UNSPEC;
    else
      memcpy(&req->u.storage, addr, addrlen);
@@ -89,7 +97,7 @@ diff --git a/src/unix/udp.c b/src/unix/udp.c
    req->send_cb = send_cb;
    req->handle = handle;
    req->nbufs = nbufs;
-@@ -660,7 +664,11 @@ int uv__udp_try_send(uv_udp_t* handle,
+@@ -736,7 +740,11 @@ int uv__udp_try_send(uv_udp_t* handle,
      assert(handle->flags & UV_HANDLE_UDP_CONNECTED);
    }
  
@@ -99,10 +107,10 @@ diff --git a/src/unix/udp.c b/src/unix/udp.c
 +                         nbufs,
 +                         addr,
 +                         addrlen);
-   if (err > 0)
-     return uv__count_bufs(bufs, nbufs);
+   if (err)
+     return err;
  
-@@ -1246,13 +1254,18 @@ int uv__udp_recv_stop(uv_udp_t* handle) {
+@@ -1343,13 +1351,18 @@ int uv__udp_recv_stop(uv_udp_t* handle) {
  static int uv__udp_prep_pkt(struct msghdr* h,
                              const uv_buf_t* bufs,
                              const unsigned int nbufs,
@@ -122,7 +130,7 @@ diff --git a/src/unix/udp.c b/src/unix/udp.c
    switch (addr->sa_family) {
    case AF_INET:
      h->msg_namelen = sizeof(struct sockaddr_in);
-@@ -1274,11 +1287,12 @@ static int uv__udp_prep_pkt(struct msghdr* h,
+@@ -1371,11 +1384,12 @@ static int uv__udp_prep_pkt(struct msghdr* h,
  static int uv__udp_sendmsg1(int fd,
                              const uv_buf_t* bufs,
                              unsigned int nbufs,
@@ -137,7 +145,7 @@ diff --git a/src/unix/udp.c b/src/unix/udp.c
      return r;
  
    do
-@@ -1303,7 +1317,8 @@ static int uv__udp_sendmsgv(int fd,
+@@ -1400,7 +1414,8 @@ static int uv__udp_sendmsgv(int fd,
                              unsigned int count,
                              uv_buf_t* bufs[/*count*/],
                              unsigned int nbufs[/*count*/],
@@ -147,7 +155,7 @@ diff --git a/src/unix/udp.c b/src/unix/udp.c
    unsigned int i;
    int nsent;
    int r;
-@@ -1319,7 +1334,11 @@ static int uv__udp_sendmsgv(int fd,
+@@ -1416,7 +1431,11 @@ static int uv__udp_sendmsgv(int fd,
        unsigned int n;
  
        for (n = 0; i < count && n < ARRAY_SIZE(m); i++, n++)
@@ -160,7 +168,7 @@ diff --git a/src/unix/udp.c b/src/unix/udp.c
            goto exit;
  
        do
-@@ -1344,7 +1363,11 @@ static int uv__udp_sendmsgv(int fd,
+@@ -1441,7 +1460,11 @@ static int uv__udp_sendmsgv(int fd,
  	 */
  
    for (i = 0; i < count; i++, nsent++)
@@ -173,15 +181,15 @@ diff --git a/src/unix/udp.c b/src/unix/udp.c
        goto exit;  /* goto to avoid unused label warning. */
  
  exit:
-@@ -1365,6 +1388,7 @@ exit:
+@@ -1462,6 +1485,7 @@ exit:
  static void uv__udp_sendmsg(uv_udp_t* handle) {
-   static const int N = 20;
+   enum { N = 20 };
    struct sockaddr* addrs[N];
 +  unsigned int addrlens[N];
    unsigned int nbufs[N];
    uv_buf_t* bufs[N];
    struct uv__queue* q;
-@@ -1380,13 +1404,19 @@ again:
+@@ -1477,13 +1501,19 @@ again:
    do {
      req = uv__queue_data(q, uv_udp_send_t, queue);
      addrs[n] = &req->u.addr;
@@ -202,39 +210,15 @@ diff --git a/src/unix/udp.c b/src/unix/udp.c
    while (n > 0) {
      q = uv__queue_head(&handle->write_queue);
      req = uv__queue_data(q, uv_udp_send_t, queue);
-@@ -1430,5 +1460,5 @@ int uv__udp_try_send2(uv_udp_t* handle,
+@@ -1527,5 +1557,5 @@ int uv__udp_try_send2(uv_udp_t* handle,
    if (fd == -1)
      return UV_EINVAL;
  
 -  return uv__udp_sendmsgv(fd, count, bufs, nbufs, addrs);
 +  return uv__udp_sendmsgv(fd, count, bufs, nbufs, addrs, NULL);
  }
-diff --git a/src/win/udp.c b/src/win/udp.c
---- a/src/win/udp.c
-+++ b/src/win/udp.c
-@@ -437,6 +437,7 @@ void uv__process_udp_recv_req(uv_loop_t* loop, uv_udp_t* handle,
-   if (!(handle->flags & UV_HANDLE_ZERO_READ)) {
-     /* Successful read */
-     partial = !REQ_SUCCESS(req);
-+    handle->recv_addrlen = handle->recv_from_len;
-     handle->recv_cb(handle,
-                     req->u.io.overlapped.InternalHigh,
-                     &handle->recv_buffer,
-@@ -479,10 +480,12 @@ void uv__process_udp_recv_req(uv_loop_t* loop, uv_udp_t* handle,
- 
-         /* Message received */
-         err = ERROR_SUCCESS;
-+        handle->recv_addrlen = from_len;
-         handle->recv_cb(handle, bytes, &buf, (const struct sockaddr*) &from, 0);
-       } else {
-         err = WSAGetLastError();
-         if (err == WSAEMSGSIZE) {
-           /* Message truncated */
-+          handle->recv_addrlen = from_len;
-           handle->recv_cb(handle,
-                           bytes,
-                           &buf,
 diff --git a/src/uv-common.c b/src/uv-common.c
+index e5a7632..cd46fa2 100644
 --- a/src/uv-common.c
 +++ b/src/uv-common.c
 @@ -484,6 +484,27 @@ int uv__udp_check_before_send(uv_udp_t* handle, const struct sockaddr* addr) {
@@ -318,6 +302,7 @@ diff --git a/src/uv-common.c b/src/uv-common.c
                       unsigned int count,
                       uv_buf_t* bufs[/*count*/],
 diff --git a/src/uv-data-getter-setters.c b/src/uv-data-getter-setters.c
+index 0bd0448..62186ae 100644
 --- a/src/uv-data-getter-setters.c
 +++ b/src/uv-data-getter-setters.c
 @@ -86,6 +86,10 @@ size_t uv_udp_get_send_queue_count(const uv_udp_t* handle) {
@@ -331,3 +316,29 @@ diff --git a/src/uv-data-getter-setters.c b/src/uv-data-getter-setters.c
  uv_pid_t uv_process_get_pid(const uv_process_t* proc) {
    return proc->pid;
  }
+diff --git a/src/win/udp.c b/src/win/udp.c
+index 08e358a..6e27afb 100644
+--- a/src/win/udp.c
++++ b/src/win/udp.c
+@@ -438,6 +438,7 @@ void uv__process_udp_recv_req(uv_loop_t* loop, uv_udp_t* handle,
+   if (!(handle->flags & UV_HANDLE_ZERO_READ)) {
+     /* Successful read */
+     partial = !REQ_SUCCESS(req);
++    handle->recv_addrlen = handle->recv_from_len;
+     handle->recv_cb(handle,
+                     req->u.io.overlapped.InternalHigh,
+                     &handle->recv_buffer,
+@@ -479,11 +480,13 @@ void uv__process_udp_recv_req(uv_loop_t* loop, uv_udp_t* handle,
+ 
+         /* Message received */
+         err = ERROR_SUCCESS;
++        handle->recv_addrlen = from_len;
+         handle->recv_cb(handle, bytes, &buf, (const struct sockaddr*) &from, 0);
+       } else {
+         err = WSAGetLastError();
+         if (err == WSAEMSGSIZE) {
+           /* Message truncated */
++          handle->recv_addrlen = from_len;
+           handle->recv_cb(handle,
+                           bytes,
+                           &buf,

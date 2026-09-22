@@ -443,6 +443,19 @@ async def test_address_reuse_is_not_enabled_during_adoption() -> None:
         transport.close()
 
 
+@pytest.mark.parametrize("reuse", [0, 1])
+async def test_adoption_preserves_existing_address_reuse(reuse: int) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, reuse)
+        sock.bind(("127.0.0.1", 0))
+        transport, _ = await running_loop().create_datagram_endpoint(Collector, sock=sock)
+        try:
+            adopted = transport.get_extra_info("socket")
+            assert bool(adopted.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR)) == bool(reuse)
+        finally:
+            transport.close()
+
+
 @pytest.mark.skipif(not hasattr(socket, "SO_REUSEPORT"), reason="Platform has no SO_REUSEPORT")
 async def test_port_reuse_is_not_enabled_during_adoption() -> None:
     transport, _ = await running_loop().create_datagram_endpoint(Collector, local_addr=("127.0.0.1", 0))

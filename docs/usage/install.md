@@ -40,6 +40,16 @@ The build is driven by a hatchling hook that runs `zig build` with
 `-Doptimize=ReleaseFast`. libuv's C sources are compiled as part of the same Zig
 module, so they get the same optimization level.
 
+/// note | Alpine Linux source builds
+
+```console
+$ apk add --no-cache linux-headers
+```
+
+Install Linux headers before building from source on Alpine. libuv's UDP error
+reporting requires `linux/errqueue.h`, which `build-base` does not include.
+///
+
 Direct native development commands such as `python scripts/build.py` do require
 Zig 0.16 on `PATH`.
 
@@ -50,7 +60,7 @@ you are unsure what you have, ask:
 
 ```console
 $ python -c "import zuvloop; print(zuvloop.libuv_version())"
-1.51.0
+1.52.1
 ```
 ///
 

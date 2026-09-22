@@ -2,9 +2,9 @@
 
 ## libuv
 
-- Version: **1.51.0**
-- Source: <https://dist.libuv.org/dist/v1.51.0/libuv-v1.51.0.tar.gz>
-- SHA-256: `5f0557b90b1106de71951a3c3931de5e0430d78da1d9a10287ebc7a3f78ef8eb`
+- Version: **1.52.1**
+- Source: <https://dist.libuv.org/dist/v1.52.1/libuv-v1.52.1.tar.gz>
+- SHA-256: `66d511b9e6e334c0e62279eb234fbfb2b3110b1479c09b95b44c7afca8cff9e7`
 
 The tree under `libuv/` is the upstream release with the patches under `patches/libuv/` applied.
 **Never edit it directly.** Update the corresponding patch instead. `build.zig` compiles the vendored
@@ -15,9 +15,9 @@ caller-supplied destination length through libuv's UDP paths. Linux needs those 
 abstract UNIX names whose bytes differ only by trailing NULs. The updater applies the patch before
 replacing the existing tree and fails if a future libuv release no longer accepts it cleanly.
 
-`0002-preserve-adopted-udp-reuse-options.patch` keeps `uv_udp_open()` from enabling address reuse on
-an existing socket. Asyncio enables port reuse only when you pass `reuse_port=True`; changing the
-option during adoption would let another local process bind the endpoint's address.
+Socket adoption uses upstream's `uv_udp_open_ex()` with no flags to preserve existing reuse options.
+Asyncio enables port reuse only when you pass `reuse_port=True`; changing the option during adoption
+would let another local process bind the endpoint's address.
 
 A weekly workflow checks for a new signed release, verifies its signer against
 `libuv-maintainer-keys.txt`, tests every supported target, and opens an update pull request. For a
