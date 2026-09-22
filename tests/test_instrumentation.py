@@ -11,11 +11,7 @@ from collections.abc import Mapping
 from types import MethodType
 from typing import Literal, Never
 
-import logfire
 import pytest
-from logfire.types import ExceptionCallbackHelper
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
 
 import zuvloop
@@ -60,6 +56,23 @@ async def test_slow_callbacks_are_reported_without_debug_mode(telemetry: Telemet
     assert "cpu_time" not in span.attributes
     assert "Handle" in str(attribute(span, "code.callback"))
     assert telemetry.counted("zuvloop.slow_callbacks") >= 1
+
+
+async def test_slow_callback_attributes_are_bounded(telemetry: Telemetry) -> None:
+    loop = running_loop()
+    loop.slow_callback_duration = 0.01
+
+    async def slow() -> None:
+        time.sleep(0.05)
+        await asyncio.sleep(0.05)
+
+    try:
+        await loop.create_task(slow(), name="x" * 10_000)
+    finally:
+        loop.slow_callback_duration = 0.1
+
+    spans = telemetry.spans("zuvloop.slow_callback")
+    assert 4096 in [len(str(span.attributes.get("asyncio.call_graph"))) for span in spans if span.attributes]
 
 
 async def test_an_infinite_threshold_disables_slow_callback_reports(telemetry: Telemetry) -> None:
@@ -164,62 +177,8 @@ async def test_unhandled_exceptions_are_reported(telemetry: Telemetry) -> None:
     finally:
         loop.set_exception_handler(previous)
 
-    span = telemetry.spans("zuvloop.unhandled_exception")[0]
-    assert span.status.status_code is StatusCode.ERROR
-    assert span.status.description == "Exception in callback"
-    assert "Handle" in str(attribute(span, "handle"))
-    assert span.events[0].name == "exception"
-    assert span.events[0].attributes is not None
-    assert span.events[0].attributes["exception.type"] == "ValueError"
-    assert telemetry.counted("zuvloop.unhandled_exceptions") >= 1
-
-
-async def test_logfire_exception_callback_can_drop_shielded_future_exceptions(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    exception = ConnectionResetError("peer went away")
-    callback_calls: list[BaseException] = []
-
-    def exception_callback(helper: ExceptionCallbackHelper) -> None:
-        callback_calls.append(helper.exception)
-        helper.no_record_exception()
-
-    exporter = InMemorySpanExporter()
-    instance = logfire.configure(
-        local=True,
-        send_to_logfire=False,
-        console=False,
-        metrics=False,
-        additional_span_processors=[SimpleSpanProcessor(exporter)],
-        advanced=logfire.AdvancedOptions(exception_callback=exception_callback),
-    )
-    tracer = instance.config.get_tracer_provider().get_tracer("zuvloop")
-    monkeypatch.setattr("zuvloop._instrumentation._tracer", lambda: tracer)
-    loop = running_loop()
-    inner: asyncio.Future[None] = loop.create_future()
-
-    async def waiter() -> None:
-        await asyncio.shield(inner)
-
-    previous = loop.get_exception_handler()
-    loop.set_exception_handler(None)
-    try:
-        task = asyncio.create_task(waiter())
-        await asyncio.sleep(0)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        inner.set_exception(exception)
-        await asyncio.sleep(0)
-
-        assert callback_calls == [exception]
-        spans = [span for span in exporter.get_finished_spans() if span.name == "zuvloop.unhandled_exception"]
-        assert len(spans) == 1
-        assert spans[0].status.status_code is StatusCode.ERROR
-        assert spans[0].events == ()
-    finally:
-        loop.set_exception_handler(previous)
-        instance.config.shutdown()
+    assert {"error.type": "ValueError"} in telemetry.attributes("zuvloop.unhandled_exceptions")
+    assert telemetry.spans("zuvloop.unhandled_exception") == []
 
 
 def test_default_exception_reporting_survives_telemetry_failure(
@@ -240,44 +199,6 @@ def test_default_exception_reporting_survives_telemetry_failure(
 
     assert "sentinel production error" in caplog.text
     assert "RuntimeError: application failed" in caplog.text
-
-
-def test_exception_telemetry_bounds_attributes_and_survives_a_broken_repr(telemetry: Telemetry) -> None:
-    class BrokenRepr:
-        def __repr__(self) -> str:
-            raise RuntimeError("repr failed")
-
-    class LongNamedBrokenRepr:
-        def __repr__(self) -> str:
-            raise RuntimeError("repr failed")
-
-    LongNamedBrokenRepr.__name__ = "X" * 10_000
-
-    zuvloop.Instrumentation().report_exception(
-        {
-            "message": "bounded",
-            "large": "x" * 10_000,
-            "broken": BrokenRepr(),
-            "long_broken": LongNamedBrokenRepr(),
-        }
-    )
-
-    span = telemetry.spans("zuvloop.unhandled_exception")[0]
-    assert len(str(attribute(span, "large"))) == 4096
-    assert attribute(span, "broken") == "<BrokenRepr repr failed>"
-    assert len(str(attribute(span, "long_broken"))) == 4096
-
-
-def test_exception_telemetry_bounds_the_recorded_exception(telemetry: Telemetry) -> None:
-    exception = RuntimeError("x" * 10_000)
-    exception.add_note("y" * 10_000)
-    zuvloop.Instrumentation().report_exception({"message": "bounded", "exception": exception})
-
-    event = telemetry.spans("zuvloop.unhandled_exception")[0].events[0]
-    assert event.attributes is not None
-    assert event.attributes["exception.type"] == "RuntimeError"
-    assert len(str(event.attributes["exception.message"])) == 4096
-    assert len(str(event.attributes["exception.stacktrace"])) == 4096
 
 
 @pytest.mark.parametrize("failure", [SystemExit(7), KeyboardInterrupt()])
@@ -452,23 +373,13 @@ async def test_a_failing_exception_handler_falls_back(telemetry: Telemetry) -> N
     finally:
         loop.set_exception_handler(previous)
 
-    descriptions = [span.status.description for span in telemetry.spans("zuvloop.unhandled_exception")]
-    assert "Unhandled error in exception handler" in descriptions
+    assert {"error.type": "RuntimeError"} in telemetry.attributes("zuvloop.unhandled_exceptions")
 
 
 async def test_a_context_without_an_exception_is_still_reported(telemetry: Telemetry) -> None:
     loop = running_loop()
     loop.default_exception_handler({"message": "just a note", "detail": 42})
-    span = telemetry.spans("zuvloop.unhandled_exception")[0]
-    assert span.status.description == "just a note"
-    assert attribute(span, "detail") == "42"
-    assert span.events == ()
-
-
-async def test_a_context_without_a_message_gets_a_default(telemetry: Telemetry) -> None:
-    loop = running_loop()
-    loop.default_exception_handler({})
-    assert telemetry.spans("zuvloop.unhandled_exception")[0].status.description == "Unhandled exception in event loop"
+    assert {} in telemetry.attributes("zuvloop.unhandled_exceptions")
 
 
 async def test_metrics_are_published_as_gauges(telemetry: Telemetry) -> None:
