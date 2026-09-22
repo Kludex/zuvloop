@@ -50,7 +50,7 @@ you are unsure what you have, ask:
 
 ```console
 $ python -c "import zuvloop; print(zuvloop.libuv_version())"
-1.51.0
+1.52.1
 ```
 ///
 

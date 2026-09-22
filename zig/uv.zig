@@ -321,7 +321,7 @@ pub extern fn uv_pipe_getsockname(handle: *const Pipe, buffer: [*]u8, size: *usi
 pub extern fn uv_pipe_getpeername(handle: *const Pipe, buffer: [*]u8, size: *usize) c_int;
 
 pub extern fn uv_udp_init_ex(loop: *Loop, handle: *Udp, flags: c_uint) c_int;
-pub extern fn uv_udp_open(handle: *Udp, sock: OsSock) c_int;
+pub extern fn uv_udp_open_ex(handle: *Udp, sock: OsSock, flags: c_uint) c_int;
 pub extern fn uv_udp_bind(handle: *Udp, addr: *const std.posix.sockaddr, flags: c_uint) c_int;
 pub extern fn uv_udp_connect(handle: *Udp, addr: ?*const std.posix.sockaddr) c_int;
 pub extern fn uv_udp_getsockname(handle: *const Udp, name: *std.posix.sockaddr, namelen: *c_int) c_int;
