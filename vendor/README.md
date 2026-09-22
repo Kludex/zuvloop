@@ -20,7 +20,12 @@ Asyncio enables port reuse only when you pass `reuse_port=True`; changing the op
 would let another local process bind the endpoint's address.
 
 A weekly workflow checks for a new signed release, verifies its signer against
-`libuv-maintainer-keys.txt`, tests every supported target, and opens an update pull request. For a
-manual update, verify the checksum through an independent channel, then run
+`libuv-maintainer-keys.txt`, runs Linux tests and cross-compilation, and opens an update pull request.
+After creating or updating the pull request, it explicitly dispatches CI, compatibility, and native
+hardening on the update branch. Pushes made with `GITHUB_TOKEN` do not trigger workflows, and its
+pull-request events can require manual approval. Explicit dispatch starts the required merge checks
+automatically.
+
+For a manual update, verify the checksum through an independent channel, then run
 `./vendor/update-libuv.sh <version> <sha256>` and re-check the file lists at the top of `build.zig`
 against the new `CMakeLists.txt`.
