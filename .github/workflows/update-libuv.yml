@@ -95,6 +95,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      actions: write # dispatch checks suppressed by GITHUB_TOKEN pushes
       contents: write # push the verified vendor update branch
       pull-requests: write # open the update pull request
 
@@ -142,3 +143,11 @@ jobs:
               --title "Update libuv to ${version}" \
               --body-file "$body"
           fi
+
+      - name: Run the required checks on the update branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for workflow in ci.yml compatibility.yml hardening.yml; do
+            gh workflow run "$workflow" --ref automation/update-libuv
+          done
