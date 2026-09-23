@@ -664,8 +664,11 @@ fn scheduleAt(
     p: Parsed,
 ) py.Error!*py.Object {
     const st = self.state();
+    try checkClosed(st);
+    try checkThread(st);
     const h = try timermod.create(@ptrCast(self), callback, p.positional, p.context, when, original_when);
     errdefer py.decref(h);
+    // Free-threaded allocation can suspend this critical section on CPython's GC lock.
     try checkClosed(st);
     try checkThread(st);
     py.incref(h);

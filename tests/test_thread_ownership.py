@@ -54,8 +54,10 @@ def test_debug_scheduling_during_loop_startup(method: str) -> None:
                 try:
                     schedule(callback)
                 except RuntimeError as exc:
+                    assert phase != "idle"
                     assert "Non-thread-safe operation" in str(exc)
                 else:
+                    assert phase != "running"
                     accepted += 1
             assert started.wait(5)
             with pytest.raises(RuntimeError, match="Non-thread-safe operation"):
