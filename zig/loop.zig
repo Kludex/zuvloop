@@ -664,16 +664,16 @@ fn scheduleAt(
     p: Parsed,
 ) py.Error!*py.Object {
     const st = self.state();
+    const h = try timermod.create(@ptrCast(self), callback, p.positional, p.context, when, original_when);
+    errdefer py.decref(h);
     try checkClosed(st);
     try checkThread(st);
-    const h = try timermod.create(@ptrCast(self), callback, p.positional, p.context, when, original_when);
     py.incref(h);
     if (already_due) {
         const can_bypass_heap = if (st.timers.peek()) |entry| when < entry.when else true;
         if (can_bypass_heap) {
             timermod.markReady(h);
             st.ready.push(h) catch {
-                py.decref(h);
                 py.decref(h);
                 return py.errNoMemory();
             };
@@ -682,7 +682,6 @@ fn scheduleAt(
         }
     }
     st.timers.push(when, h) catch {
-        py.decref(h);
         py.decref(h);
         return py.errNoMemory();
     };
@@ -713,26 +712,35 @@ fn time(self_obj: *py.Object) py.Error!*py.Object {
 fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
     const self = asLoop(self_obj);
     const st = self.state();
-    try checkClosed(st);
-    if (st.running) return py.errRuntime("This event loop is already running");
-
-    st.running = true;
-    st.stopping = false;
-    @atomicStore(c_ulong, &st.thread_id, c.PyThread_get_thread_ident(), .release);
-    startIdle(st);
-    armTimer(self);
+    // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
+    var critical_section: py.CriticalSection = undefined;
+    {
+        py.beginCriticalSection(&critical_section, self_obj);
+        defer py.endCriticalSection(&critical_section);
+        try checkClosed(st);
+        if (@atomicLoad(c_ulong, &st.thread_id, .acquire) != 0) {
+            return py.errRuntime("This event loop is already running");
+        }
+        st.running = true;
+        st.stopping = false;
+        @atomicStore(c_ulong, &st.thread_id, c.PyThread_get_thread_ident(), .release);
+        startIdle(st);
+        armTimer(self);
+    }
 
     st.pythonExit();
     _ = uv.uv_run(st.uvloop, .default);
     st.pythonResume();
 
+    py.beginCriticalSection(&critical_section, self_obj);
+    defer py.endCriticalSection(&critical_section);
     st.running = false;
     st.stopping = false;
-    @atomicStore(c_ulong, &st.thread_id, 0, .release);
     // A write from the callback that stopped the loop has had no iteration left
     // to flush it. Draining after clearing `running` sends anything those
     // callbacks write in turn.
     drainFlushList(st);
+    @atomicStore(c_ulong, &st.thread_id, 0, .release);
 
     if (st.fatal) |exc| {
         st.fatal = null;
