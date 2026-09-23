@@ -590,6 +590,14 @@ pub inline fn checkClosed(st: *State) py.Error!void {
     if (st.closed) return py.errRuntime("Event loop is closed");
 }
 
+fn checkThread(st: *State) py.Error!void {
+    if (!st.debug) return;
+    const thread_id = @atomicLoad(c_ulong, &st.thread_id, .acquire);
+    if (thread_id != 0 and thread_id != c.PyThread_get_thread_ident()) {
+        return py.errRuntime("Non-thread-safe operation invoked on an event loop other than the current one");
+    }
+}
+
 fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py.Object {
     const st = self.state();
     const h = try handlemod.create(handlemod.handle_type.?, @ptrCast(self), callback, p.positional, p.context);
@@ -599,6 +607,7 @@ fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py
     py.beginCriticalSection(&critical_section, @ptrCast(self));
     defer py.endCriticalSection(&critical_section);
     try checkClosed(st);
+    try checkThread(st);
     drainThreadsafe(st) catch return py.errNoMemory();
     py.incref(h);
     st.ready.push(@as(*py.Object, @ptrCast(h))) catch {
@@ -656,6 +665,7 @@ fn scheduleAt(
 ) py.Error!*py.Object {
     const st = self.state();
     try checkClosed(st);
+    try checkThread(st);
     const h = try timermod.create(@ptrCast(self), callback, p.positional, p.context, when, original_when);
     py.incref(h);
     if (already_due) {
