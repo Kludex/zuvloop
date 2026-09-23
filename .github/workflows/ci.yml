@@ -149,6 +149,13 @@ jobs:
           done
           exit $rc
 
+      - name: Validate buffered reads and TLS upgrades with debug allocation
+        if: runner.os == 'Windows'
+        env:
+          PYTHONDEVMODE: "1"
+          PYTHONMALLOC: debug
+        run: uv run pytest tests/test_buffered_tls.py --timeout=120 --timeout-method=thread
+
 
   # A normal `uv sync` does not cover cibuildwheel's environment handling. Keep
   # this separate from `test`: an ARM64 wheel takes several minutes to compile,
