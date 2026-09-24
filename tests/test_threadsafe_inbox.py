@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import contextvars
+import gc
+import os
+import subprocess
 import sys
 import threading
 import time
@@ -15,6 +18,22 @@ import zuvloop
 def test_inbox_drain_rechecks_loop_state_after_handle_contention(
     transition: str,
 ) -> None:  # pragma: no cover - free-threaded CI
+    if __name__ != "__main__":
+        # Tracing can suspend the handle lock that this scenario must keep held.
+        env = os.environ.copy()
+        env.pop("COVERAGE_PROCESS_START", None)
+        subprocess.run(
+            [sys.executable, "-I", "-X", "gil=0", os.path.abspath(__file__), transition],
+            check=True,
+            timeout=60,
+            env=env,
+        )
+        return
+
+    assert not sys._is_gil_enabled()
+    gc.disable()
+    thread_errors: list[threading.ExceptHookArgs] = []
+    threading.excepthook = thread_errors.append
     for _ in range(10):
         loop = zuvloop.new_event_loop()
         loop.set_debug(True)
@@ -80,3 +99,8 @@ def test_inbox_drain_rechecks_loop_state_after_handle_contention(
                     thread.join(5)
                 assert not thread.is_alive()
             loop.close()
+    assert not thread_errors
+
+
+if __name__ == "__main__":  # pragma: no cover - untraced subprocess workload
+    test_inbox_drain_rechecks_loop_state_after_handle_contention(sys.argv[1])
