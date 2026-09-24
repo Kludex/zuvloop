@@ -243,7 +243,6 @@ fn onWake(waker: ?*uv.Async) callconv(.c) void {
     defer py.endCriticalSection(&critical_section);
     st.waker_pending = false;
     drainThreadsafe(st) catch {
-        py.errNoMemory() catch {};
         captureFatal(self);
         return;
     };
@@ -376,9 +375,12 @@ fn clearThreadsafeCandidate(st: *State, untrack_queue_only: bool) void {
     py.decref(candidate);
 }
 
-fn drainThreadsafe(st: *State) error{OutOfMemory}!void {
-    try st.ready.ensureUnusedCapacity(st.threadsafe_ready.len);
+fn drainThreadsafe(st: *State) py.Error!void {
     clearThreadsafeCandidate(st, true);
+    // Taking the candidate's lock can suspend the loop's critical section.
+    try checkClosed(st);
+    try checkThread(st);
+    st.ready.ensureUnusedCapacity(st.threadsafe_ready.len) catch return py.errNoMemory();
     while (st.threadsafe_ready.pop()) |handle| st.ready.pushAssumeCapacity(handle);
 }
 
@@ -608,7 +610,7 @@ fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py
     defer py.endCriticalSection(&critical_section);
     try checkClosed(st);
     try checkThread(st);
-    drainThreadsafe(st) catch return py.errNoMemory();
+    try drainThreadsafe(st);
     py.incref(h);
     st.ready.push(@as(*py.Object, @ptrCast(h))) catch {
         py.decref(h);
