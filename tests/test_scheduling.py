@@ -33,6 +33,70 @@ async def schedule_callback(request: pytest.FixtureRequest) -> ScheduleCallback:
     return schedulers[request.param]
 
 
+@pytest.mark.parametrize("method", ["soon", "later", "at", "threadsafe"])
+@pytest.mark.parametrize("debug", [False, True])
+def test_scheduling_checks_thread_affinity(method: str, debug: bool) -> None:
+    loop = zuvloop.new_event_loop()
+    loop.set_debug(debug)
+    started = threading.Event()
+    release = threading.Event()
+    seen: list[str] = []
+    schedulers: dict[str, Callable[[Callable[[], None]], asyncio.Handle | zuvloop.Handle]] = {
+        "soon": loop.call_soon,
+        "later": functools.partial(loop.call_later, 0),
+        "at": functools.partial(loop.call_at, loop.time()),
+        "threadsafe": loop.call_soon_threadsafe,
+    }
+    schedule = schedulers[method]
+
+    def hold_loop() -> None:
+        started.set()
+        assert release.wait(5)
+        schedule(lambda: seen.append("owner"))
+
+    schedule(lambda: seen.append("before"))
+    loop.call_soon(hold_loop)
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    try:
+        assert started.wait(5)
+        if debug and method != "threadsafe":
+            with pytest.raises(RuntimeError, match="Non-thread-safe operation invoked on an event loop"):
+                schedule(lambda: seen.append("foreign"))
+        else:
+            schedule(lambda: seen.append("foreign"))
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        release.set()
+        thread.join(5)
+        assert not thread.is_alive()
+        loop.close()
+
+    assert "before" in seen
+    assert "owner" in seen
+    assert ("foreign" in seen) == (not debug or method == "threadsafe")
+
+
+def test_debug_loop_can_move_between_threads() -> None:
+    loop = zuvloop.new_event_loop()
+    loop.set_debug(True)
+    seen: list[int] = []
+    try:
+        for _ in range(2):
+            loop.call_soon(lambda: seen.append(threading.get_ident()))
+            loop.call_later(0, lambda: None)
+            loop.call_at(loop.time(), loop.stop)
+            thread = threading.Thread(target=loop.run_forever)
+            thread.start()
+            thread.join(5)
+            assert not thread.is_alive()
+        loop.call_soon(loop.stop)
+        loop.run_forever()
+        assert len(seen) == 2
+    finally:
+        loop.close()
+
+
 async def test_call_soon_runs_in_order() -> None:
     loop = running_loop()
     seen: list[int] = []

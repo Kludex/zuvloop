@@ -243,7 +243,6 @@ fn onWake(waker: ?*uv.Async) callconv(.c) void {
     defer py.endCriticalSection(&critical_section);
     st.waker_pending = false;
     drainThreadsafe(st) catch {
-        py.errNoMemory() catch {};
         captureFatal(self);
         return;
     };
@@ -376,9 +375,12 @@ fn clearThreadsafeCandidate(st: *State, untrack_queue_only: bool) void {
     py.decref(candidate);
 }
 
-fn drainThreadsafe(st: *State) error{OutOfMemory}!void {
-    try st.ready.ensureUnusedCapacity(st.threadsafe_ready.len);
+fn drainThreadsafe(st: *State) py.Error!void {
     clearThreadsafeCandidate(st, true);
+    // Taking the candidate's lock can suspend the loop's critical section.
+    try checkClosed(st);
+    try checkThread(st);
+    st.ready.ensureUnusedCapacity(st.threadsafe_ready.len) catch return py.errNoMemory();
     while (st.threadsafe_ready.pop()) |handle| st.ready.pushAssumeCapacity(handle);
 }
 
@@ -590,6 +592,14 @@ pub inline fn checkClosed(st: *State) py.Error!void {
     if (st.closed) return py.errRuntime("Event loop is closed");
 }
 
+fn checkThread(st: *State) py.Error!void {
+    if (!st.debug) return;
+    const thread_id = @atomicLoad(c_ulong, &st.thread_id, .acquire);
+    if (thread_id != 0 and thread_id != c.PyThread_get_thread_ident()) {
+        return py.errRuntime("Non-thread-safe operation invoked on an event loop other than the current one");
+    }
+}
+
 fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py.Object {
     const st = self.state();
     const h = try handlemod.create(handlemod.handle_type.?, @ptrCast(self), callback, p.positional, p.context);
@@ -599,7 +609,8 @@ fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py
     py.beginCriticalSection(&critical_section, @ptrCast(self));
     defer py.endCriticalSection(&critical_section);
     try checkClosed(st);
-    drainThreadsafe(st) catch return py.errNoMemory();
+    try checkThread(st);
+    try drainThreadsafe(st);
     py.incref(h);
     st.ready.push(@as(*py.Object, @ptrCast(h))) catch {
         py.decref(h);
@@ -656,14 +667,18 @@ fn scheduleAt(
 ) py.Error!*py.Object {
     const st = self.state();
     try checkClosed(st);
+    try checkThread(st);
     const h = try timermod.create(@ptrCast(self), callback, p.positional, p.context, when, original_when);
+    errdefer py.decref(h);
+    // Free-threaded allocation can suspend this critical section on CPython's GC lock.
+    try checkClosed(st);
+    try checkThread(st);
     py.incref(h);
     if (already_due) {
         const can_bypass_heap = if (st.timers.peek()) |entry| when < entry.when else true;
         if (can_bypass_heap) {
             timermod.markReady(h);
             st.ready.push(h) catch {
-                py.decref(h);
                 py.decref(h);
                 return py.errNoMemory();
             };
@@ -672,7 +687,6 @@ fn scheduleAt(
         }
     }
     st.timers.push(when, h) catch {
-        py.decref(h);
         py.decref(h);
         return py.errNoMemory();
     };
@@ -703,26 +717,35 @@ fn time(self_obj: *py.Object) py.Error!*py.Object {
 fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
     const self = asLoop(self_obj);
     const st = self.state();
-    try checkClosed(st);
-    if (st.running) return py.errRuntime("This event loop is already running");
-
-    st.running = true;
-    st.stopping = false;
-    @atomicStore(c_ulong, &st.thread_id, c.PyThread_get_thread_ident(), .release);
-    startIdle(st);
-    armTimer(self);
+    // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
+    var critical_section: py.CriticalSection = undefined;
+    {
+        py.beginCriticalSection(&critical_section, self_obj);
+        defer py.endCriticalSection(&critical_section);
+        try checkClosed(st);
+        if (@atomicLoad(c_ulong, &st.thread_id, .acquire) != 0) {
+            return py.errRuntime("This event loop is already running");
+        }
+        st.running = true;
+        st.stopping = false;
+        @atomicStore(c_ulong, &st.thread_id, c.PyThread_get_thread_ident(), .release);
+        startIdle(st);
+        armTimer(self);
+    }
 
     st.pythonExit();
     _ = uv.uv_run(st.uvloop, .default);
     st.pythonResume();
 
+    py.beginCriticalSection(&critical_section, self_obj);
+    defer py.endCriticalSection(&critical_section);
     st.running = false;
     st.stopping = false;
-    @atomicStore(c_ulong, &st.thread_id, 0, .release);
     // A write from the callback that stopped the loop has had no iteration left
     // to flush it. Draining after clearing `running` sends anything those
     // callbacks write in turn.
     drainFlushList(st);
+    @atomicStore(c_ulong, &st.thread_id, 0, .release);
 
     if (st.fatal) |exc| {
         st.fatal = null;
@@ -949,7 +972,9 @@ fn timerHandleCancelled(self_obj: *py.Object, _: *py.Object) py.Error!*py.Object
 fn closeLoop(self_obj: *py.Object) py.Error!*py.Object {
     const self = asLoop(self_obj);
     const st = self.state();
-    if (st.running) return py.errRuntime("Cannot close a running event loop");
+    if (st.running or @atomicLoad(c_ulong, &st.thread_id, .acquire) != 0) {
+        return py.errRuntime("Cannot close a running event loop");
+    }
     if (st.closed) return py.noneRef();
     st.closed = true;
 
