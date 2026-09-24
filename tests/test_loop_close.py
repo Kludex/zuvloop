@@ -16,6 +16,7 @@ def test_close_is_rejected_until_final_flushing_finishes(debug: bool) -> None:
     loop.set_debug(debug)
     flushing = threading.Event()
     release = threading.Event()
+    callback_result: concurrent.futures.Future[None] = concurrent.futures.Future()
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="retained-executor")
     loop.set_default_executor(executor)
 
@@ -30,12 +31,19 @@ def test_close_is_rejected_until_final_flushing_finishes(debug: bool) -> None:
             loop.stop()
 
         def resume_writing(self) -> None:
-            assert not loop.is_running()
-            with pytest.raises(RuntimeError, match="Cannot close a running event loop"):
-                loop.close()
-            flushing.set()
-            assert release.wait(5)
-            self.transport.write(b"alive")
+            try:
+                assert not loop.is_running()
+                with pytest.raises(RuntimeError, match="Cannot close a running event loop"):
+                    loop.close()
+                flushing.set()
+                assert release.wait(5)
+                self.transport.write(b"alive")
+            except BaseException as exc:  # pragma: no cover - assertion diagnostic
+                callback_result.set_exception(exc)
+            else:
+                callback_result.set_result(None)
+            finally:
+                flushing.set()
 
     local, peer = socket.socketpair()
     peer.settimeout(5)
@@ -45,6 +53,8 @@ def test_close_is_rejected_until_final_flushing_finishes(debug: bool) -> None:
     try:
         peer.sendall(b"flush")
         assert flushing.wait(5)
+        if callback_result.done():  # pragma: no cover - callback failed before the foreign close attempt
+            callback_result.result()
         with pytest.raises(RuntimeError, match="Cannot close a running event loop"):
             loop.close()
         assert not loop.is_closed()
@@ -52,6 +62,7 @@ def test_close_is_rejected_until_final_flushing_finishes(debug: bool) -> None:
         release.set()
         thread.join(5)
         assert not thread.is_alive()
+        callback_result.result(timeout=5)
         with peer.makefile("rb") as stream:
             assert stream.read(10) == b"flushalive"
         worker = loop.run_until_complete(loop.run_in_executor(None, threading.current_thread))
