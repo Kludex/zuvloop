@@ -972,7 +972,9 @@ fn timerHandleCancelled(self_obj: *py.Object, _: *py.Object) py.Error!*py.Object
 fn closeLoop(self_obj: *py.Object) py.Error!*py.Object {
     const self = asLoop(self_obj);
     const st = self.state();
-    if (st.running) return py.errRuntime("Cannot close a running event loop");
+    if (st.running or @atomicLoad(c_ulong, &st.thread_id, .acquire) != 0) {
+        return py.errRuntime("Cannot close a running event loop");
+    }
     if (st.closed) return py.noneRef();
     st.closed = true;
 
