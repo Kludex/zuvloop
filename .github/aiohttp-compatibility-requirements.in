@@ -1,5 +1,5 @@
 -r aiohttp-upstream-test-requirements.txt
 
 aiohttp==3.14.3
-opentelemetry-api>=1.23
+opentelemetry-api>=1.45.1
 typing-extensions>=4.15
