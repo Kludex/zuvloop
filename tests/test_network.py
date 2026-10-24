@@ -2376,3 +2376,114 @@ async def test_binding_a_unix_path_twice_names_the_path() -> None:
             with pytest.raises(OSError, match="already in use") as caught:
                 await loop.create_unix_server(Echo, path)
             assert str(path) in str(caught.value)
+
+
+def _fill_write_buffer(transport: asyncio.WriteTransport, target: int) -> int:
+    """Queue writes until `target` bytes are waiting, and return how many there are.
+
+    How much a kernel absorbs before a write starts backing up differs by platform, so the
+    marks in these tests are set relative to what is actually queued rather than to a size
+    picked in advance.
+    """
+    chunk = 64 * 1024
+    written = 0
+    while transport.get_write_buffer_size() < target and written < 32 * target:
+        transport.write(b"z" * chunk)
+        written += chunk
+    buffered = transport.get_write_buffer_size()
+    assert buffered >= target, "nothing stayed queued to exercise the marks with"
+    return buffered
+
+
+async def test_the_write_buffer_marks_are_hysteretic() -> None:
+    """Between the two marks the protocol is left as it is: not paused going up, not resumed coming down.
+
+    One mark would thrash - a protocol writing near the limit would be paused and resumed
+    again on every write. Two mean a busy buffer does not pause a running protocol, and a
+    draining one does not resume a paused protocol until it has genuinely emptied. Nothing
+    else here pins that: collapsing the pair either way passes the rest of this suite.
+
+    The buffer is held still and the marks are moved around it, rather than the other way
+    round. `set_write_buffer_limits` re-takes the pause decision, so that makes every step
+    below exact - where writing towards a fixed mark depends on how much the kernel absorbs
+    and on a decision that is only taken when a batch is flushed.
+    """
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    events: list[str] = []
+    resumed = asyncio.Event()
+
+    class Watcher(asyncio.Protocol):
+        def pause_writing(self) -> None:
+            events.append("pause")
+
+        def resume_writing(self) -> None:
+            events.append("resume")
+            resumed.set()
+
+    try:
+        transport, _protocol = await loop.connect_accepted_socket(Watcher, left)
+        transport.set_write_buffer_limits(high=1 << 30, low=1 << 29)
+        buffered = _fill_write_buffer(transport, 1 << 20)
+
+        # Going up, between the marks: a busy buffer is not a full one.
+        transport.set_write_buffer_limits(high=buffered + 1, low=buffered // 2)
+        assert events == [], "a buffer between the marks paused the protocol"
+
+        # And past the high mark.
+        transport.set_write_buffer_limits(high=buffered - 1, low=buffered // 2)
+        assert events == ["pause"]
+
+        # Coming down. The buffer sits between the marks again, with the low one at a single
+        # byte so that any drain short of empty leaves it there.
+        transport.set_write_buffer_limits(high=buffered * 4, low=1)
+        assert events == ["pause"], "moving the marks re-paused an already paused protocol"
+
+        # One completed write is what takes the resume decision.
+        await asyncio.to_thread(right.recv, 64 * 1024)
+        await asyncio.sleep(0)
+        assert transport.get_write_buffer_size() > 1, "the buffer emptied before it could be checked"
+        assert events == ["pause"], "the protocol resumed with its buffer between the marks"
+
+        # Then all the way to the low mark, where it does resume.
+        async def drain_until_resumed() -> None:
+            while not resumed.is_set():
+                await asyncio.to_thread(right.recv, 1 << 20)
+
+        await asyncio.wait_for(drain_until_resumed(), 10)
+        assert events == ["pause", "resume"]
+    finally:
+        right.close()
+
+
+async def test_a_buffer_exactly_on_the_high_water_mark_is_not_past_it() -> None:
+    """`<=`, not `<`. Setting the mark to what is already buffered must not pause.
+
+    Reached by moving the mark to the buffer, because an exact byte count is not something a
+    caller can arrange by writing.
+    """
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    events: list[str] = []
+
+    class Watcher(asyncio.Protocol):
+        def pause_writing(self) -> None:
+            events.append("pause")
+
+        def resume_writing(self) -> None:
+            events.append("resume")  # pragma: no cover - the buffer never drains here
+
+    try:
+        transport, _protocol = await loop.connect_accepted_socket(Watcher, left)
+        transport.set_write_buffer_limits(high=1 << 30, low=1 << 29)
+        buffered = _fill_write_buffer(transport, 1 << 20)
+
+        transport.set_write_buffer_limits(high=buffered, low=buffered // 2)
+        assert events == [], "a buffer exactly on the high-water mark was treated as past it"
+
+        transport.set_write_buffer_limits(high=buffered - 1, low=buffered // 2)
+        assert events == ["pause"]
+    finally:
+        right.close()
