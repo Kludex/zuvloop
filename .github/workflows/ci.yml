@@ -388,12 +388,28 @@ jobs:
 
       # Walltime, not simulation: an event loop spends its time in syscalls and
       # polling, which instruction counting does not model.
+      #
+      # The cost of walltime is that a benchmark has to be quiet enough for a real
+      # change to stand out from the machine. Three of these are not, on the two cores
+      # a hosted runner has. Measured, twelve samples a sitting, spread as a share of
+      # the median:
+      #
+      #                        two cores          cores to spare
+      #   process_spawn        10%, 97%, 28%      1%, 3%, 1%
+      #   process_pipe         61%, 83%, 34%      4%, 5%, 4%
+      #   timer_due_batch      about 12%          -
+      #
+      # Contention, then, rather than anything in the code: the same benchmarks are
+      # steady when nothing is competing with them. Between them they were most of every
+      # CodSpeed regression reported across seven pull requests, none of which touched a
+      # hot path. Deselected for the same reason as the two before them.
       - uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
         with:
           mode: walltime
           run: >-
             uv run --no-sync pytest benchmarks/ --codspeed
-            -k "not parallel_event_loops and not ready_chain_with_idle_connections"
+            -k "not parallel_event_loops and not ready_chain_with_idle_connections
+            and not process_spawn and not process_pipe and not timer_due_batch"
 
   docs:
     runs-on: ubuntu-latest
