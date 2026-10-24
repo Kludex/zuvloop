@@ -116,6 +116,19 @@ jobs:
         if: runner.os == 'Linux'
         run: ./scripts/check-zig
 
+      # The test binary is pinned to Debug, so the bounds and overflow checks are
+      # on - which is where the defects in this layer have been. Both of the ones
+      # this suite was written against are index arithmetic that a `ReleaseFast`
+      # wheel runs without complaint.
+      #
+      # Not on Windows yet. `scripts/build.py` already passes the import library
+      # build.zig needs there, so it is only that nobody has confirmed the test
+      # binary links against a Windows interpreter; `windows-11-arm` additionally
+      # compiles x86-64 Zig under emulation.
+      - name: Test Zig
+        if: runner.os != 'Windows'
+        run: uv run python scripts/build.py --test
+
       - name: Type check
         if: runner.os != 'Windows'
         run: |

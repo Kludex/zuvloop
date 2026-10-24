@@ -1350,3 +1350,67 @@ pub fn register(module: *py.Object) py.Error!void {
     loop_type = @ptrCast(c.PyType_FromModuleAndSpec(module, &spec, null) orelse return py.Error.Python);
     if (c.PyModule_AddObjectRef(module, "Loop", @ptrCast(loop_type)) < 0) return py.Error.Python;
 }
+
+// Tests for the helpers above that are decidable without a loop. Colocated because
+// `timerMilliseconds` is private, and widening it to `pub` for a test would be a worse
+// trade than a test block. Nothing here starts a loop or touches the interpreter.
+
+test "a delay is rounded up, so a callback never runs before its deadline" {
+    // libuv's clock is whole milliseconds, so the choice is to wake early or late, and
+    // asyncio callers are entitled to late. Half a millisecond has to wait a whole one.
+    try std.testing.expectEqual(@as(u64, 1), timerMilliseconds(0.0005, 0));
+    try std.testing.expectEqual(@as(u64, 1), timerMilliseconds(0.000_001, 0));
+    try std.testing.expectEqual(@as(u64, 500), timerMilliseconds(0.5, 0));
+    try std.testing.expectEqual(@as(u64, 1001), timerMilliseconds(1.0, 1));
+    try std.testing.expectEqual(@as(u64, 1000), timerMilliseconds(1.0, 0));
+}
+
+test "a delay that has already passed becomes an immediate timer" {
+    for ([_]f64{ 0.0, -0.0, -0.001, -1.0, -1e300, -std.math.inf(f64) }) |seconds| {
+        try std.testing.expectEqual(@as(u64, 0), timerMilliseconds(seconds, 1));
+    }
+}
+
+test "a NaN delay becomes an immediate timer rather than trapping" {
+    // This is what `!(seconds > 0)` buys over `seconds <= 0`: every comparison with NaN
+    // is false, so the readable form would let NaN through to the cast below, and
+    // `@intFromFloat` on a NaN is illegal behaviour. `loop.call_later(float("nan"), ...)`
+    // is reachable from Python, and asyncio itself raises from deep inside `selectors`.
+    try std.testing.expectEqual(@as(u64, 0), timerMilliseconds(std.math.nan(f64), 1));
+    try std.testing.expectEqual(@as(u64, 0), timerMilliseconds(-std.math.nan(f64), 0));
+}
+
+test "a delay too large for the clock saturates rather than trapping" {
+    const forever = std.math.maxInt(u64);
+    try std.testing.expectEqual(forever, timerMilliseconds(std.math.inf(f64), 1));
+    try std.testing.expectEqual(forever, timerMilliseconds(1e300, 1));
+    try std.testing.expectEqual(forever, timerMilliseconds(std.math.floatMax(f64), 0));
+    // Just inside the clock's range, so saturation is a ceiling and not a shortcut: a
+    // delay this side of the limit still converts to its own value.
+    try std.testing.expect(timerMilliseconds(1.8e16, 0) < forever);
+
+    // Exactly on the boundary, which is why that comparison is `>=` and not `>`. The
+    // limit is one past what a u64 holds, so converting it is the very trap being
+    // guarded, and this delay lands on it precisely rather than near it.
+    const limit: f64 = @floatFromInt(std.math.maxInt(u64));
+    try std.testing.expectEqual(forever, timerMilliseconds(limit / 1000.0, 0));
+    try std.testing.expectEqual(forever, timerMilliseconds(limit / 1000.0, 1));
+
+    // The finite check is belt to those braces. Neither call site can hand this a NaN
+    // guard, but the check is what keeps the function total over its own signature
+    // rather than over the two arguments it happens to be called with.
+    try std.testing.expectEqual(forever, timerMilliseconds(1.0, std.math.nan(f64)));
+}
+
+test "a longer delay never converts to a shorter one" {
+    // Rounding, the guard and the ceiling all have to agree on direction, and a sweep
+    // says so across the ranges where each of them is the one deciding.
+    var previous: u64 = 0;
+    var seconds: f64 = 1e-9;
+    while (seconds < 1e30) : (seconds *= 3.7) {
+        const ms = timerMilliseconds(seconds, 1);
+        try std.testing.expect(ms >= previous);
+        previous = ms;
+    }
+    try std.testing.expectEqual(std.math.maxInt(u64), previous);
+}

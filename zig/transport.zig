@@ -1424,3 +1424,78 @@ pub fn register(module: *py.Object) py.Error!void {
     if (c.PyModule_AddIntConstant(module, "KIND_PIPE", KIND_PIPE) < 0) return py.Error.Python;
     if (c.PyModule_AddIntConstant(module, "KIND_PIPE_WRITE", KIND_PIPE_WRITE) < 0) return py.Error.Python;
 }
+
+// Tests for the read-size heuristic above. Colocated because it and the constants it
+// moves between are private, and a `Transport` is only a carrier for two integer fields
+// here: nothing below reads a Python object or touches a stream.
+
+/// Just the fields `adjustReadSize` looks at. Zeroing the rest is safe because it reads
+/// nothing else, and a test that filled them in would be claiming otherwise.
+fn sizing(read_size: usize) Transport {
+    var transport = std.mem.zeroes(Transport);
+    transport.read_size = read_size;
+    return transport;
+}
+
+test "a full read grows the buffer" {
+    var transport = sizing(read_size_min);
+    adjustReadSize(&transport, read_size_min);
+    try std.testing.expectEqual(read_size_min * 2, transport.read_size);
+    adjustReadSize(&transport, read_size_min * 2);
+    try std.testing.expectEqual(read_size_min * 4, transport.read_size);
+}
+
+test "a short read straight after a full one is a message boundary, not a smaller shape" {
+    // The hysteresis this flag exists for: a request that ends mid-buffer says nothing
+    // about how much the peer has to send next, so the size holds. Only a second short
+    // read is evidence of a smaller shape.
+    var transport = sizing(read_size_min * 4);
+    adjustReadSize(&transport, read_size_min * 4);
+    const grown = transport.read_size;
+
+    adjustReadSize(&transport, 1);
+    try std.testing.expectEqual(grown, transport.read_size);
+
+    adjustReadSize(&transport, 1);
+    try std.testing.expectEqual(grown / 2, transport.read_size);
+}
+
+test "a read that fills neither the buffer nor a quarter of it leaves the size alone" {
+    var transport = sizing(read_size_max);
+    // Above a quarter, below full: too big to shrink on, too small to grow on.
+    for ([_]usize{ read_size_max / 4 + 1, read_size_max / 2, read_size_max - 1 }) |nread| {
+        transport.read_size = read_size_max;
+        transport.flags = 0;
+        adjustReadSize(&transport, nread);
+        try std.testing.expectEqual(read_size_max, transport.read_size);
+    }
+}
+
+test "growth stops at the ceiling and shrinking stops at the floor" {
+    var transport = sizing(read_size_min);
+    for (0..40) |_| adjustReadSize(&transport, read_size_max);
+    try std.testing.expectEqual(read_size_max, transport.read_size);
+
+    // Clear the flag the full reads left, so the first small read counts as a shape.
+    transport.flags = 0;
+    for (0..40) |_| {
+        adjustReadSize(&transport, 1);
+        transport.flags = 0;
+    }
+    try std.testing.expectEqual(read_size_min, transport.read_size);
+}
+
+test "the read size never leaves its bounds, whatever the traffic does" {
+    // The bounds are what the buffer is allocated against, so they hold over any
+    // sequence rather than only the ones written out above.
+    var prng = std.Random.DefaultPrng.init(0x5eed);
+    const random = prng.random();
+    var transport = sizing(read_size_min);
+    for (0..20_000) |_| {
+        adjustReadSize(&transport, random.uintLessThan(usize, read_size_max * 2));
+        try std.testing.expect(transport.read_size >= read_size_min);
+        try std.testing.expect(transport.read_size <= read_size_max);
+        try std.testing.expect(std.math.isPowerOfTwo(transport.read_size / read_size_min) or
+            transport.read_size == read_size_min);
+    }
+}

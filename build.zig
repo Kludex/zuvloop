@@ -213,4 +213,50 @@ pub fn build(b: *std.Build) void {
         .{ .custom = "../zuvloop" },
         b.fmt("_zuvloop{s}", .{ext_suffix}),
     ).step);
+
+    // The tests get modules of their own rather than sharing `mod`, because what they
+    // cover is the parts of the Zig that are decidable without a loop: they need the
+    // Python headers for `PyObject` and nothing else - no libuv, and no interpreter to
+    // link against, because Zig analyses only what a root file reaches and these reach
+    // nothing that calls into CPython, bar the one release that
+    // `zig/collections_test.zig` stands in for.
+    //
+    // One root per module rather than one shared root, so that the stand-in exports
+    // one of them needs cannot end up in another's binary.
+    //
+    // Debug is pinned rather than taken from `-Doptimize`, because the safety checks are
+    // what make a failure here worth reading. With the ring mask deliberately broken,
+    // Debug reports `index out of bounds: index 64, len 64` and ReleaseFast reports
+    // `SIGSEGV`: both fail, but only one says why.
+    const test_step = b.step("test", "Run the Zig unit tests");
+    for ([_][]const u8{
+        "zig/collections_test.zig",
+        "zig/addr_test.zig",
+        "zig/loop.zig",
+        "zig/transport.zig",
+        "zig/pending_test.zig",
+    }) |test_root| {
+        const tests = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(test_root),
+                .target = target,
+                .optimize = .Debug,
+                .link_libc = true,
+            }),
+        });
+        tests.root_module.addIncludePath(.{ .cwd_relative = python_include });
+        tests.root_module.addIncludePath(b.path("zig"));
+        // `loop.zig` and `transport.zig` are test roots of their own, for the helpers
+        // there that are private. They reach uv.zig's headers while being analysed,
+        // though nothing they test calls into libuv, so no library is linked.
+        //
+        // Zig runs the tests of every file a root imports, so roots that import one another
+        // repeat each other's tests and the reported counts add up to more than there are
+        // tests. That is the price of a root per module, and worth paying: each binary links
+        // only what its own module needs, so a module that started reaching for the
+        // interpreter would fail here rather than quietly borrow another root's stand-in.
+        tests.root_module.addIncludePath(b.path("vendor/libuv/include"));
+        tests.root_module.addIncludePath(b.path("vendor/libuv/src"));
+        test_step.dependOn(&b.addRunArtifact(tests).step);
+    }
 }
