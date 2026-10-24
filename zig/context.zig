@@ -51,8 +51,9 @@ pub fn materialize(loop: ?*py.Object, context: *?*py.Object) py.Error!*py.Object
 pub fn release(loop: ?*py.Object, context: *?*py.Object, flags: u32) void {
     const current = context.* orelse return;
     context.* = null;
-    if (flags & captured_flag != 0 and c.Py_REFCNT(current) == 1) {
-        const context_obj: *ContextObject = @ptrCast(@alignCast(current));
+    const context_obj: *ContextObject = @ptrCast(@alignCast(current));
+    // Cyclic GC may have cleared the context before clearing its handle.
+    if (flags & captured_flag != 0 and c.Py_REFCNT(current) == 1 and context_obj.variables != null) {
         const size = c.PyObject_Size(current);
         if (size == 0 and context_obj.weakrefs == null and context_obj.entered == 0) {
             if (loop) |loop_obj| {

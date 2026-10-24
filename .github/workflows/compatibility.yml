@@ -90,6 +90,18 @@ jobs:
           uv run --no-sync python -c "import sys; assert not sys._is_gil_enabled()"
           uv run --no-sync pytest -q
 
+      - name: Stress callback context collection
+        env:
+          PYTHONDEVMODE: "1"
+          PYTHONMALLOC: debug
+        run: |
+          files=()
+          for _ in {1..20}; do
+            files+=(tests/test_scheduling.py tests/test_lifecycle.py)
+          done
+          uv run --no-sync pytest -q --keep-duplicates "${files[@]}" -k thread \
+            --timeout=60 --timeout-method=thread
+
   aiohttp:
     name: aiohttp 3.14.3 full suite
     runs-on: ubuntu-latest
