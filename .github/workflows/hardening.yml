@@ -53,18 +53,49 @@ jobs:
           PYTHONMALLOC: debug
         run: uv run --no-sync python scripts/soak.py --cycles 500
 
+  # No Zig and no interpreter here: TLC is a model checker, and what it checks is
+  # a TLA+ spec of the `ThreadSafeHandle` cancel protocol. It belongs in this
+  # workflow because it guards the same free-threaded concurrency the sanitizer
+  # job is here for, and it reaches interleavings no test can schedule. Seconds.
+  model-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The runner image ships a JDK, so the jar is the whole install. Pinned to
+      # v1.7.4 by digest: `v1.8.0` is a rolling development build whose asset is
+      # replaced in place, which nothing could pin.
+      - name: Install TLC
+        run: |
+          curl -fsSL --retry 4 --retry-all-errors \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar \
+            -o /tmp/tla2tools.jar
+          printf '%s  %s\n' \
+            936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88 \
+            /tmp/tla2tools.jar | sha256sum -c -
+
+      - name: Model-check the cancel protocol
+        env:
+          TLA_TOOLS_JAR: /tmp/tla2tools.jar
+        run: ./scripts/check-model
+
   hardening-gate:
     name: Native hardening gate
     if: always()
-    needs: soak
+    needs: [soak, model-check]
     runs-on: ubuntu-latest
 
     steps:
-      - name: Require the sanitizer and soak job
+      - name: Require the sanitizer, soak and model-check jobs
         env:
           SOAK: ${{ needs.soak.result }}
+          MODEL: ${{ needs.model-check.result }}
         run: |
-          if [ "$SOAK" != success ]; then
-            echo "::error::Native hardening ended with: $SOAK"
+          if [ "$SOAK" != success ] || [ "$MODEL" != success ]; then
+            echo "::error::Native hardening ended with: soak=$SOAK model-check=$MODEL"
             exit 1
           fi

@@ -27,6 +27,11 @@ the loop thread. Thread-safe handles use their own critical sections. Independen
 loops can run concurrently. Blocking Python calls suspend a critical section, as
 CPython requires.
 
+The cancel protocol behind those handles is modelled in TLA+ under
+`verification/`, where `scripts/check-model` checks it. That suspension is the
+whole reason the protocol needs a waiter list: it is the only way a cancelling
+thread can observe a callback mid-run.
+
 ## Scheduling
 
 `call_soon(cb, a, b)` allocates no tuple. Up to three arguments live inside the
