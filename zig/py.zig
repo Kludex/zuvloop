@@ -78,7 +78,15 @@ pub inline fn incref(o: anytype) void {
 }
 
 pub inline fn decref(o: anytype) void {
-    if (@hasDecl(c, "Py_GIL_DISABLED")) c.zuvloop_Py_DECREF(@ptrCast(o)) else c.Py_DECREF(@ptrCast(o));
+    // A `--with-pydebug` interpreter spells `Py_DECREF` as `(filename, lineno, op)`, so that a
+    // refcount going negative can name where it happened, and hides that behind a macro
+    // supplying `__FILE__` and `__LINE__`. Zig's C translation keeps the function and drops the
+    // macro, so the direct call does not compile there. The shim goes through C, where the macro
+    // applies, and costs a call in a configuration that is already slow deliberately.
+    if (@hasDecl(c, "Py_GIL_DISABLED") or @hasDecl(c, "Py_REF_DEBUG"))
+        c.zuvloop_Py_DECREF(@ptrCast(o))
+    else
+        c.Py_DECREF(@ptrCast(o));
 }
 
 pub inline fn xdecref(o: ?*Object) void {

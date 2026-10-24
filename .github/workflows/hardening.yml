@@ -53,18 +53,82 @@ jobs:
           PYTHONMALLOC: debug
         run: uv run --no-sync python scripts/soak.py --cycles 500
 
+  # A `--with-pydebug` interpreter turns C-API misuse into an abort where it happens, rather
+  # than undefined behaviour that happens to work. Two checks it adds that a release build has
+  # no equivalent of: nothing may be raised when the extension calls back into the interpreter,
+  # and a refcount may not go negative. `PYTHONDEVMODE` and `PYTHONMALLOC=debug` check neither,
+  # which is how the `context.release` abort this job covers stayed invisible.
+  #
+  # Nobody publishes a debug build of 3.14, so it is compiled here. Only the first run on a
+  # given version pays for that; afterwards the cache makes this job about a minute.
+  debug-interpreter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: debug-interpreter-cache
+        with:
+          path: ~/cpython-debug
+          key: cpython-debug-3.14.7-${{ runner.os }}
+
+      - name: Build the interpreter
+        if: steps.debug-interpreter-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential libssl-dev zlib1g-dev libffi-dev
+          curl -fsSL --retry 4 --retry-all-errors \
+            https://www.python.org/ftp/python/3.14.7/Python-3.14.7.tar.xz -o python.tar.xz
+          printf '%s  %s\n' \
+            3b48dac8fb59f62eaa67ac83c1eb12bda1b7a08406dd286e252c11a66be27f81 \
+            python.tar.xz | sha256sum -c -
+          tar -xf python.tar.xz
+          cd Python-3.14.7
+          # `--enable-shared` as well, because it makes the launcher position independent.
+          # That is also what a ThreadSanitizer run needs in order to start at all, so this
+          # interpreter is the groundwork for #199.
+          ./configure --prefix="$HOME/cpython-debug" --with-pydebug --enable-shared \
+            --with-ensurepip=install LDFLAGS="-Wl,-rpath,$HOME/cpython-debug/lib" > /dev/null
+          make -j"$(nproc)" > /dev/null
+          make install > /dev/null
+
+      - name: Build the extension against it
+        run: |
+          "$HOME/cpython-debug/bin/python3.14d" -m venv .venv-debug
+          # A cp314d interpreter cannot load a cp314 extension wheel, so everything here is
+          # pure Python; the suite needs nothing else.
+          .venv-debug/bin/pip install -q pytest pytest-timeout anyio hypothesis \
+            opentelemetry-api opentelemetry-sdk
+          HATCH_ZIG_PYTHON_INCLUDE="$(.venv-debug/bin/python -c 'import sysconfig; print(sysconfig.get_path("include"))')" \
+          HATCH_ZIG_EXT_SUFFIX="$(.venv-debug/bin/python -c 'import sysconfig; print(sysconfig.get_config_var("EXT_SUFFIX"))')" \
+            zig build
+
+      - name: Test under it
+        run: .venv-debug/bin/python -X faulthandler -m pytest -q
+
   hardening-gate:
     name: Native hardening gate
     if: always()
-    needs: soak
+    needs: [soak, debug-interpreter]
     runs-on: ubuntu-latest
 
     steps:
-      - name: Require the sanitizer and soak job
+      - name: Require the sanitizer, soak and debug-interpreter jobs
         env:
           SOAK: ${{ needs.soak.result }}
+          DEBUG_INTERPRETER: ${{ needs.debug-interpreter.result }}
         run: |
-          if [ "$SOAK" != success ]; then
-            echo "::error::Native hardening ended with: $SOAK"
+          if [ "$SOAK" != success ] || [ "$DEBUG_INTERPRETER" != success ]; then
+            echo "::error::Native hardening ended with: soak=$SOAK" \
+                 "debug-interpreter=$DEBUG_INTERPRETER"
             exit 1
           fi
