@@ -445,6 +445,7 @@ async def test_write_eof_is_seen_as_eof_by_the_peer() -> None:
     assert seen == [True]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows loopback takes any write whole; none is left in flight")
 async def test_write_buffer_size_shrinks_as_a_large_write_drains() -> None:
     loop = running_loop()
     left, right = socket.socketpair()
