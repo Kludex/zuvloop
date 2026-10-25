@@ -445,6 +445,35 @@ async def test_write_eof_is_seen_as_eof_by_the_peer() -> None:
     assert seen == [True]
 
 
+async def test_write_buffer_size_shrinks_as_a_large_write_drains() -> None:
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+    right.setblocking(False)
+    payload = b"x" * (4 << 20)
+
+    transport, protocol = await loop.connect_accepted_socket(Collector, left)
+    try:
+        transport.write(payload)
+        await asyncio.sleep(0)
+        queued = transport.get_write_buffer_size()
+
+        received = 0
+        while received < len(payload) // 2:
+            received += len(await loop.sock_recv(right, 65536))
+        # The peer is reading, so the queue must shrink before the single write completes.
+        assert 0 < transport.get_write_buffer_size() < queued
+
+        while received < len(payload):
+            received += len(await loop.sock_recv(right, 65536))
+    finally:
+        transport.close()
+        right.close()
+
+    assert protocol.done is not None
+    await protocol.done
+
+
 async def test_write_eof_waits_for_buffered_writes() -> None:
     loop = running_loop()
     left, right = socket.socketpair()
