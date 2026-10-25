@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Model-check the ThreadSafeHandle cancel protocol with TLC.
+#
+# Four models run against the one spec. One is the protocol as zig/tshandle.zig has
+# it and must hold. Two stand in for a change that would break it and must fail in a
+# named way. The fourth is a coverage check that must also report a violation, because
+# its invariant only holds of a state space that never reaches the waiter list.
+#
+# Every outcome is asserted rather than merely tolerated: a spec that has quietly
+# stopped being able to catch the bug it was written for would otherwise go on
+# passing, which is exactly what an earlier draft of this one did.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root/verification"
+
+if ! command -v java >/dev/null; then
+    echo "a Java runtime is required to run TLC; any JDK 11 or newer will do" >&2
+    exit 2
+fi
+jar="${TLA_TOOLS_JAR:-}"
+if [[ ! -f "$jar" ]]; then
+    echo "TLA_TOOLS_JAR must point at tla2tools.jar; download it from" >&2
+    echo "  https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar" >&2
+    echo "CI pins that asset to SHA-256 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88" >&2
+    exit 2
+fi
+
+# TLC keeps its fingerprint set and state queue beside the spec unless told
+# otherwise, and one run would then clobber the last.
+metadir="$(mktemp -d)"
+trap 'rm -rf "$metadir"' EXIT
+
+failed=0
+check() {
+    local config=$1 expected=$2 output explored
+    # TLC exits 12 on a violated invariant, which is the wanted result for two of
+    # the three models, so its exit status cannot be what decides this.
+    output="$(java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers auto \
+        -metadir "$metadir/$config" -config "$config.cfg" ThreadSafeHandle.tla 2>&1)" || true
+    if ! grep -qF "$expected" <<<"$output"; then
+        printf '%s\n' "$output" >&2
+        echo "::error::$config did not report: $expected" >&2
+        failed=1
+        return
+    fi
+    explored="$(grep -Eo '[0-9]+ distinct states found' <<<"$output" | tail -1)"
+    printf '  %-38s %s  (%s)\n' "$config" "$expected" "$explored"
+}
+
+check ThreadSafeHandle "Model checking completed. No error has been found."
+check ThreadSafeHandle_witness "Invariant WaiterPathUnreached is violated."
+check ThreadSafeHandle_unlocked "Invariant MutualExclusion is violated."
+check ThreadSafeHandle_unlocked_strand "Invariant NoStrandedWaiter is violated."
+
+exit "$failed"
