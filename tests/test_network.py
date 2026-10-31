@@ -726,6 +726,80 @@ async def test_pause_writing_cannot_overfill_a_reentrant_batch() -> None:
         await server.wait_closed()
 
 
+class Stalled(asyncio.Protocol):
+    """Server protocol that stops reading at its first read, so the client's
+    writes back up. A pause from `connection_made` would not hold: reading
+    starts after it returns."""
+
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        self.transport: asyncio.Transport = transport  # type: ignore[assignment]
+
+    def data_received(self, data: bytes) -> None:
+        self.transport.pause_reading()
+
+
+class RecordsPause(Collector):
+    def __init__(self) -> None:
+        super().__init__()
+        self.paused = False
+
+    def pause_writing(self) -> None:
+        self.paused = True
+
+
+async def test_a_batched_write_past_the_high_water_mark_pauses_at_once() -> None:
+    """asyncio pauses inside `write()`, which is what makes `drain()` wait.
+
+    Holding the write in the end-of-turn batch without pausing would let a
+    `write(); await drain()` loop buffer several chunks past the limit.
+    """
+    loop = running_loop()
+    server = await loop.create_server(Stalled, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    transport, client = await loop.create_connection(RecordsPause, "127.0.0.1", port)
+    try:
+        transport.write(b"x" * (1 << 20))
+        assert client.paused
+    finally:
+        transport.abort()
+        assert client.done is not None
+        await client.done
+        # The server side stopped reading, so it never sees the abort.
+        server.abort_clients()
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; nothing backs up libuv's queue"
+)
+async def test_a_small_write_onto_a_backed_up_queue_pauses_at_once() -> None:
+    """The batch alone may be under the limit while libuv's queue is not."""
+    loop = running_loop()
+    server = await loop.create_server(Stalled, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    transport, client = await loop.create_connection(RecordsPause, "127.0.0.1", port)
+    try:
+        transport.set_write_buffer_limits(high=1 << 30)
+        transport.write(b"x" * (32 << 20))
+        await asyncio.sleep(0)
+        queued = transport.get_write_buffer_size()
+        assert queued > 0
+
+        transport.set_write_buffer_limits(high=queued + 1024)
+        assert not client.paused
+        transport.write(b"y" * 2048)
+        assert client.paused
+    finally:
+        transport.abort()
+        assert client.done is not None
+        await client.done
+        # The server side stopped reading, so it never sees the abort.
+        server.abort_clients()
+        server.close()
+        await server.wait_closed()
+
+
 async def test_write_buffer_limits_validate_their_arguments() -> None:
     server, port, _ = await start_echo()
     loop = running_loop()
