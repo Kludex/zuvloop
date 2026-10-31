@@ -727,10 +727,15 @@ async def test_pause_writing_cannot_overfill_a_reentrant_batch() -> None:
 
 
 class Stalled(asyncio.Protocol):
-    """Server protocol that never reads, so the client's writes back up."""
+    """Server protocol that stops reading at its first read, so the client's
+    writes back up. A pause from `connection_made` would not hold: reading
+    starts after it returns."""
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        transport.pause_reading()  # type: ignore[attr-defined]
+        self.transport: asyncio.Transport = transport  # type: ignore[assignment]
+
+    def data_received(self, data: bytes) -> None:
+        self.transport.pause_reading()
 
 
 class RecordsPause(Collector):
@@ -740,9 +745,6 @@ class RecordsPause(Collector):
 
     def pause_writing(self) -> None:
         self.paused = True
-
-    def resume_writing(self) -> None:
-        self.paused = False
 
 
 async def test_a_batched_write_past_the_high_water_mark_pauses_at_once() -> None:
@@ -762,6 +764,8 @@ async def test_a_batched_write_past_the_high_water_mark_pauses_at_once() -> None
         transport.abort()
         assert client.done is not None
         await client.done
+        # The server side stopped reading, so it never sees the abort.
+        server.abort_clients()
         server.close()
         await server.wait_closed()
 
@@ -790,6 +794,8 @@ async def test_a_small_write_onto_a_backed_up_queue_pauses_at_once() -> None:
         transport.abort()
         assert client.done is not None
         await client.done
+        # The server side stopped reading, so it never sees the abort.
+        server.abort_clients()
         server.close()
         await server.wait_closed()
 
