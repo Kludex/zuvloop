@@ -74,6 +74,10 @@ toggle = { icon = "material/brightness-4", name = "Switch to light mode" }
 [project.markdown_extensions.toc]
 permalink = true
 [project.markdown_extensions.pymdownx.betterem]
+[project.markdown_extensions.pymdownx.blocks.admonition]
+[project.markdown_extensions.pymdownx.blocks.tab]
+alternate_style = true
+combine_header_slug = true
 [project.markdown_extensions.pymdownx.caret]
 [project.markdown_extensions.pymdownx.details]
 [project.markdown_extensions.pymdownx.highlight]
