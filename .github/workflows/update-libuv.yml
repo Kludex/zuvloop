@@ -46,7 +46,7 @@ jobs:
 
       - if: steps.update.outputs.changed == 'true'
         name: Install
-        run: uv sync --locked --python 3.14 --group dev
+        run: uv sync --locked --managed-python --python 3.14 --group dev
 
       - if: steps.update.outputs.changed == 'true'
         name: Test the updated native extension
