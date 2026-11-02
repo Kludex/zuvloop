@@ -718,7 +718,11 @@ fn submitWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!
 /// What `write()` has accepted and not yet handed back to the socket, whether
 /// it is sitting in the pending batch or in libuv's queue.
 inline fn bufferedBytes(self: *Transport) usize {
-    return self.write_buffer_size + self.pending_size;
+    // `write_buffer_size` only drops when a whole request completes, while libuv's
+    // count drops as each request drains, so a slow reader still shows progress.
+    // It is zero once nothing is outstanding, including right after an abort.
+    const queued = if (self.write_buffer_size == 0) 0 else uv.uv_stream_get_write_queue_size(self.stream());
+    return queued + self.pending_size;
 }
 
 fn maybePauseProtocol(self: *Transport) void {
