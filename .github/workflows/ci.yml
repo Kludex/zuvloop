@@ -278,8 +278,9 @@ jobs:
           enable-cache: true
           version: 0.12.3
 
+      # Debian's `pyconfig.h` includes a multiarch path Zig only searches on native builds.
       - name: Install
-        run: uv sync --locked --python 3.14 --group dev
+        run: uv sync --locked --managed-python --python 3.14 --group dev
 
       # The headers are the host's, which is enough: this compiles the Zig, and
       # what differs between targets is `std.c`, not `Python.h`.
@@ -383,8 +384,9 @@ jobs:
           enable-cache: true
           version: 0.12.3
 
+      # The baseline was recorded on uv's CPython; the runner's system Python is a different interpreter.
       - name: Install
-        run: uv sync --locked --python 3.14 --group dev --group bench
+        run: uv sync --locked --managed-python --python 3.14 --group dev --group bench
 
       # Walltime, not simulation: an event loop spends its time in syscalls and
       # polling, which instruction counting does not model.
