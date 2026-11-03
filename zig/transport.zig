@@ -713,6 +713,10 @@ fn submitWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!
     // caller outside the loop may block reading the peer before the flush could
     // ever run, so writes from a stopped loop go straight out.
     if (!self.loopState().running) flushPending(self);
+    // Like asyncio, pause as soon as the accepted write crosses the high-water
+    // mark. Waiting for the end-of-turn flush would let `drain()` return while
+    // the batch and libuv's queue together hold far more than the limit.
+    maybePauseProtocol(self);
 }
 
 /// What `write()` has accepted and not yet handed back to the socket, whether
