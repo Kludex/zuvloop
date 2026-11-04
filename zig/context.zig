@@ -52,14 +52,20 @@ pub fn release(loop: ?*py.Object, context: *?*py.Object, flags: u32) void {
     const current = context.* orelse return;
     context.* = null;
     if (flags & captured_flag != 0 and c.Py_REFCNT(current) == 1) {
+        // Releasing happens on cleanup paths, which arrive here with the caller's exception
+        // already raised - a failed `_make_transport` is one. `PyObject_Size` calls a slot, and
+        // the interpreter requires nothing be pending when it does: a debug build aborts on it,
+        // and clearing the size's own failure would discard what the caller was raising. So the
+        // exception is set aside across the call and put back afterwards.
+        const pending = c.PyErr_GetRaisedException();
         const context_obj: *ContextObject = @ptrCast(@alignCast(current));
         const size = c.PyObject_Size(current);
+        if (size < 0) c.PyErr_Clear();
+        c.PyErr_SetRaisedException(pending);
         if (size == 0 and context_obj.weakrefs == null and context_obj.entered == 0) {
             if (loop) |loop_obj| {
                 if (loopmod.isRunningThread(loop_obj) and loopmod.recycleEmptyContext(loop_obj, current)) return;
             }
-        } else if (size < 0) {
-            c.PyErr_Clear();
         }
     }
     py.decref(current);
