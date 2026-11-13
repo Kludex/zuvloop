@@ -19,6 +19,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     # A single hung test would otherwise hold the job for the 6-hour default.
     timeout-minutes: 20
+    # compiler_rt and libc land here; rebuilding them dominates the Windows ARM64 install.
+    env:
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
     strategy:
       fail-fast: false
       matrix:
@@ -51,7 +54,9 @@ jobs:
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: .zig-cache
+          path: |
+            .zig-cache
+            .zig-global-cache
           key: >-
             zig-test-0.16.0-${{ matrix.os }}-${{ matrix.python-version }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: zig-test-0.16.0-${{ matrix.os }}-${{ matrix.python-version }}-
@@ -65,6 +70,7 @@ jobs:
         env:
           HATCH_ZIG_TARGET: ${{ matrix.os == 'windows-11-arm' && 'aarch64-windows' || '' }}
           PYTHON_VERSION: ${{ matrix.python-version }}
+        shell: bash
         run: uv sync --locked --python "$PYTHON_VERSION" --group dev --group bench
 
       - name: Verify the hashed build constraints
@@ -160,6 +166,8 @@ jobs:
     # standard and free-threaded wheels; leave room for both while the per-test
     # timeout still catches an actual hang quickly.
     timeout-minutes: 60
+    env:
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
     strategy:
       fail-fast: false
       matrix:
@@ -193,6 +201,14 @@ jobs:
           path: ${{ runner.temp }}/cibw-cache
           key: cibuildwheel-4.2.0-${{ matrix.os }}-${{ hashFiles('pyproject.toml') }}
           restore-keys: cibuildwheel-4.2.0-${{ matrix.os }}-
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .zig-cache
+            .zig-global-cache
+          key: zig-release-0.16.0-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: zig-release-0.16.0-${{ matrix.os }}-
 
       - name: Build and test the release wheel
         uses: pypa/cibuildwheel@e090b81e30c4d855ea63bf4b6e59204c09a101ae # v4.2.1
