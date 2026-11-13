@@ -357,10 +357,6 @@ pub fn wrapDealloc(comptime f: anytype) fn (?*Object) callconv(.c) void {
 pub fn wrapTraverse(comptime f: anytype) fn (?*Object, c.visitproc, ?*anyopaque) callconv(.c) c_int {
     const Inner = struct {
         fn call(self: ?*Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv(.c) c_int {
-            // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
-            var critical_section: CriticalSection = undefined;
-            beginCriticalSection(&critical_section, self.?);
-            defer endCriticalSection(&critical_section);
             return f(self, visitproc, arg);
         }
     };
