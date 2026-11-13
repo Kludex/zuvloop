@@ -78,11 +78,7 @@ pub inline fn incref(o: anytype) void {
 }
 
 pub inline fn decref(o: anytype) void {
-    // A `--with-pydebug` interpreter spells `Py_DECREF` as `(filename, lineno, op)`, so that a
-    // refcount going negative can name where it happened, and hides that behind a macro
-    // supplying `__FILE__` and `__LINE__`. Zig's C translation keeps the function and drops the
-    // macro, so the direct call does not compile there. The shim goes through C, where the macro
-    // applies, and costs a call in a configuration that is already slow deliberately.
+    // Under `Py_REF_DEBUG`, `Py_DECREF` is a macro over `(filename, lineno, op)` that Zig cannot translate.
     if (@hasDecl(c, "Py_GIL_DISABLED") or @hasDecl(c, "Py_REF_DEBUG"))
         c.zuvloop_Py_DECREF(@ptrCast(o))
     else
@@ -365,10 +361,6 @@ pub fn wrapDealloc(comptime f: anytype) fn (?*Object) callconv(.c) void {
 pub fn wrapTraverse(comptime f: anytype) fn (?*Object, c.visitproc, ?*anyopaque) callconv(.c) c_int {
     const Inner = struct {
         fn call(self: ?*Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv(.c) c_int {
-            // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
-            var critical_section: CriticalSection = undefined;
-            beginCriticalSection(&critical_section, self.?);
-            defer endCriticalSection(&critical_section);
             return f(self, visitproc, arg);
         }
     };

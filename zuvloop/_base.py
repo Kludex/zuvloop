@@ -12,6 +12,7 @@ import traceback
 import warnings
 import weakref
 from asyncio import events as _events
+from asyncio.base_events import _run_until_complete_cb  # type: ignore[attr-defined]
 from collections.abc import Callable
 from contextvars import Context
 from dataclasses import dataclass
@@ -139,7 +140,8 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         task = asyncio.ensure_future(future, loop=self)
         if new_task:
             task._log_destroy_pending = False
-        task.add_done_callback(_stop_when_done)
+        # AnyIO identifies the root task by this exact done callback.
+        task.add_done_callback(_run_until_complete_cb)
         try:
             self.run_forever()
         except BaseException:
@@ -147,7 +149,7 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
                 task.exception()
             raise
         finally:
-            task.remove_done_callback(_stop_when_done)
+            task.remove_done_callback(_run_until_complete_cb)
         if not task.done():
             raise RuntimeError("Event loop stopped before Future completed.")
         return task.result()
@@ -486,10 +488,6 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
             return
         callback, args, context = entry
         self.call_soon(callback, *args, context=context)
-
-
-def _stop_when_done(future: asyncio.Future[Any]) -> None:
-    asyncio.futures._get_loop(future).stop()  # type: ignore[attr-defined]
 
 
 def _finish_deferred_signal_cleanup(signals: tuple[int, ...], wakeup_fd: int, owner: SignalOwner) -> None:
