@@ -39,11 +39,18 @@ pub fn capture(explicit: ?*py.Object, flags: *u32) py.Error!?*py.Object {
 /// Returns the context in `context`, allocating or borrowing an empty one.
 pub fn materialize(loop: ?*py.Object, context: *?*py.Object) py.Error!*py.Object {
     if (context.*) |existing| return existing;
-    const created = if (loop) |loop_obj|
+    const pooled = if (loop) |loop_obj|
         if (loopmod.isRunningThread(loop_obj)) loopmod.takeEmptyContext(loop_obj) else null
     else
         null;
-    context.* = created orelse c.PyContext_New() orelse return py.Error.Python;
+    if (pooled) |reused| {
+        if (!clearedByGC(reused)) {
+            context.* = reused;
+            return reused;
+        }
+        py.decref(reused);
+    }
+    context.* = c.PyContext_New() orelse return py.Error.Python;
     return context.*.?;
 }
 
@@ -51,7 +58,7 @@ pub fn materialize(loop: ?*py.Object, context: *?*py.Object) py.Error!*py.Object
 pub fn release(loop: ?*py.Object, context: *?*py.Object, flags: u32) void {
     const current = context.* orelse return;
     context.* = null;
-    if (flags & captured_flag != 0 and c.Py_REFCNT(current) == 1) {
+    if (flags & captured_flag != 0 and c.Py_REFCNT(current) == 1 and !clearedByGC(current)) {
         const context_obj: *ContextObject = @ptrCast(@alignCast(current));
         const size = c.PyObject_Size(current);
         if (size == 0 and context_obj.weakrefs == null and context_obj.entered == 0) {
@@ -63,4 +70,11 @@ pub fn release(loop: ?*py.Object, context: *?*py.Object, flags: u32) void {
         }
     }
     py.decref(current);
+}
+
+/// A context cleared by the GC has no variables, and any read of it dereferences NULL.
+/// The GC can clear it before its handle, or after the handle moved it into the pool.
+fn clearedByGC(context: *py.Object) bool {
+    const context_obj: *ContextObject = @ptrCast(@alignCast(context));
+    return context_obj.variables == null;
 }
