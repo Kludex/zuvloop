@@ -53,8 +53,7 @@ static int uv__udp_maybe_deferred_bind(uv_udp_t* handle,
 static int uv__udp_sendmsg1(int fd,
                             const uv_buf_t* bufs,
                             unsigned int nbufs,
-                            const struct sockaddr* addr,
-                            unsigned int addrlen);
+                            const struct sockaddr* addr);
 
 
 void uv__udp_close(uv_udp_t* handle) {
@@ -179,7 +178,11 @@ void uv__udp_io(uv_loop_t* loop, uv__io_t* w, unsigned int revents) {
   handle = container_of(w, uv_udp_t, io_watcher);
   assert(handle->type == UV_UDP);
 
-  if (revents & POLLIN)
+  /* Trigger a recv and send to find out what POLLERR occurred. */
+  if (revents & POLLERR)
+    revents |= POLLIN | POLLOUT;
+
+  if (revents & (POLLIN | POLLERR))
     uv__udp_recvmsg(handle, 0);
 
   /* Just Linux support for now. */
@@ -188,7 +191,7 @@ void uv__udp_io(uv_loop_t* loop, uv__io_t* w, unsigned int revents) {
    * uv_udp_recv_stop + uv_close) already cleared recv_cb in the same
    * revents iteration.  uv__udp_recvmsg asserts recv_cb != NULL, so
    * calling it with a NULL recv_cb would be wrong regardless of POLLERR. */
-  if ((revents & POLLERR) && uv__is_active(handle))
+  if ((revents & POLLERR) && uv__is_active(handle) && handle->recv_cb != NULL)
     uv__udp_recvmsg(handle, MSG_ERRQUEUE);
 #endif
 
@@ -214,6 +217,8 @@ static int uv__udp_recvmmsg(uv_udp_t* handle, uv_buf_t* buf, int flag) {
 
   /* prepare structures for recvmmsg */
   chunks = buf->len / UV__UDP_DGRAM_MAXSIZE;
+  if (chunks == 0)
+    return UV_EINVAL;
   if (chunks > ARRAY_SIZE(iov))
     chunks = ARRAY_SIZE(iov);
   for (k = 0; k < chunks; ++k) {
@@ -247,37 +252,41 @@ static int uv__udp_recvmmsg(uv_udp_t* handle, uv_buf_t* buf, int flag) {
 #endif
 
   if (nread < 1) {
-    if (nread == 0 || errno == EAGAIN || errno == EWOULDBLOCK)
-      handle->recv_cb(handle, 0, buf, NULL, 0);
-    else
-      handle->recv_cb(handle, UV__ERR(errno), buf, NULL, 0);
-  } else {
-    /* pass each chunk to the application */
-    for (k = 0; k < (size_t) nread && handle->recv_cb != NULL; k++) {
-      flags = UV_UDP_MMSG_CHUNK;
-      if (msgs[k].msg_hdr.msg_flags & MSG_TRUNC)
-        flags |= UV_UDP_PARTIAL;
+    /* uv__udp_recvmsg() emits the terminal callback for nread <= 0. */
+    if (errno == EAGAIN || errno == EWOULDBLOCK)
+      return 0;
 
-      chunk_buf = uv_buf_init(iov[k].iov_base, iov[k].iov_len);
-#if defined(__linux__)
-      if ((flag & MSG_ERRQUEUE) &&
-          uv__udp_recvmsg_errqueue(handle, &msgs[k].msg_hdr, &chunk_buf,
-                                   (const struct sockaddr*) &peers[k], flags)) {
-        continue;
-      }
-#endif
-      handle->recv_addrlen = msgs[k].msg_hdr.msg_namelen;
-      handle->recv_cb(handle,
-                      msgs[k].msg_len,
-                      &chunk_buf,
-                      msgs[k].msg_hdr.msg_name,
-                      flags);
-    }
-
-    /* one last callback so the original buffer is freed */
-    if (handle->recv_cb != NULL)
-      handle->recv_cb(handle, 0, buf, NULL, UV_UDP_MMSG_FREE);
+    return UV__ERR(errno);
   }
+
+  /* pass each chunk to the application */
+  for (k = 0; k < (size_t) nread && handle->recv_cb != NULL; k++) {
+    flags = UV_UDP_MMSG_CHUNK;
+    if (msgs[k].msg_hdr.msg_flags & MSG_TRUNC)
+      flags |= UV_UDP_PARTIAL;
+
+    chunk_buf = uv_buf_init(iov[k].iov_base, iov[k].iov_len);
+#if defined(__linux__)
+    if ((flag & MSG_ERRQUEUE) &&
+        uv__udp_recvmsg_errqueue(handle, &msgs[k].msg_hdr, &chunk_buf,
+                                 (const struct sockaddr*) &peers[k], flags)) {
+      continue;
+    }
+#endif
+    handle->recv_addrlen = msgs[k].msg_hdr.msg_namelen;
+    handle->recv_cb(handle,
+                    msgs[k].msg_len,
+                    &chunk_buf,
+                    msgs[k].msg_hdr.msg_namelen > 0 ?
+                        msgs[k].msg_hdr.msg_name :
+                        NULL,
+                    flags);
+  }
+
+  /* one last callback so the original buffer is freed */
+  if (handle->recv_cb != NULL)
+    handle->recv_cb(handle, 0, buf, NULL, UV_UDP_MMSG_FREE);
+
   return nread;
 #else  /* __linux__ || ____FreeBSD__ || __APPLE__ */
   return UV_ENOSYS;
@@ -314,8 +323,11 @@ static void uv__udp_recvmsg(uv_udp_t* handle, int flag) {
 
     if (uv_udp_using_recvmmsg(handle)) {
       nread = uv__udp_recvmmsg(handle, &buf, flag);
-      if (nread > 0)
-        count -= nread;
+      if (nread <= 0) {
+        handle->recv_cb(handle, nread, &buf, NULL, 0);
+        return;
+      }
+      count -= nread;
       continue;
     }
 
@@ -681,7 +693,6 @@ int uv__udp_send(uv_udp_send_t* req,
     req->u.storage.ss_family = AF_UNSPEC;
   else
     memcpy(&req->u.storage, addr, addrlen);
-  req->addrlen = addrlen;
   req->send_cb = send_cb;
   req->handle = handle;
   req->nbufs = nbufs;
@@ -725,9 +736,6 @@ int uv__udp_try_send(uv_udp_t* handle,
                      unsigned int addrlen) {
   int err;
 
-  if (nbufs < 1)
-    return UV_EINVAL;
-
   /* already sending a message */
   if (handle->send_queue_count != 0)
     return UV_EAGAIN;
@@ -740,11 +748,7 @@ int uv__udp_try_send(uv_udp_t* handle,
     assert(handle->flags & UV_HANDLE_UDP_CONNECTED);
   }
 
-  err = uv__udp_sendmsg1(handle->io_watcher.fd,
-                         bufs,
-                         nbufs,
-                         addr,
-                         addrlen);
+  err = uv__udp_sendmsg1(handle->io_watcher.fd, bufs, nbufs, addr);
   if (err)
     return err;
 
@@ -1351,18 +1355,13 @@ int uv__udp_recv_stop(uv_udp_t* handle) {
 static int uv__udp_prep_pkt(struct msghdr* h,
                             const uv_buf_t* bufs,
                             const unsigned int nbufs,
-                            const struct sockaddr* addr,
-                            unsigned int addrlen) {
+                            const struct sockaddr* addr) {
   memset(h, 0, sizeof(*h));
   h->msg_name = (void*) addr;
   h->msg_iov = (void*) bufs;
   h->msg_iovlen = nbufs;
   if (addr == NULL)
     return 0;
-  if (addrlen != 0) {
-    h->msg_namelen = addrlen;
-    return 0;
-  }
   switch (addr->sa_family) {
   case AF_INET:
     h->msg_namelen = sizeof(struct sockaddr_in);
@@ -1384,12 +1383,11 @@ static int uv__udp_prep_pkt(struct msghdr* h,
 static int uv__udp_sendmsg1(int fd,
                             const uv_buf_t* bufs,
                             unsigned int nbufs,
-                            const struct sockaddr* addr,
-                            unsigned int addrlen) {
+                            const struct sockaddr* addr) {
   struct msghdr h;
   int r;
 
-  if ((r = uv__udp_prep_pkt(&h, bufs, nbufs, addr, addrlen)))
+  if ((r = uv__udp_prep_pkt(&h, bufs, nbufs, addr)))
     return r;
 
   do
@@ -1414,8 +1412,7 @@ static int uv__udp_sendmsgv(int fd,
                             unsigned int count,
                             uv_buf_t* bufs[/*count*/],
                             unsigned int nbufs[/*count*/],
-                            struct sockaddr* addrs[/*count*/],
-                            unsigned int addrlens[/*count*/]) {
+                            struct sockaddr* addrs[/*count*/]) {
   unsigned int i;
   int nsent;
   int r;
@@ -1431,11 +1428,7 @@ static int uv__udp_sendmsgv(int fd,
       unsigned int n;
 
       for (n = 0; i < count && n < ARRAY_SIZE(m); i++, n++)
-        if ((r = uv__udp_prep_pkt(&m[n].msg_hdr,
-                                  bufs[i],
-                                  nbufs[i],
-                                  addrs[i],
-                                  addrlens == NULL ? 0 : addrlens[i])))
+        if ((r = uv__udp_prep_pkt(&m[n].msg_hdr, bufs[i], nbufs[i], addrs[i])))
           goto exit;
 
       do
@@ -1460,11 +1453,7 @@ static int uv__udp_sendmsgv(int fd,
 	 */
 
   for (i = 0; i < count; i++, nsent++)
-    if ((r = uv__udp_sendmsg1(fd,
-                              bufs[i],
-                              nbufs[i],
-                              addrs[i],
-                              addrlens == NULL ? 0 : addrlens[i])))
+    if ((r = uv__udp_sendmsg1(fd, bufs[i], nbufs[i], addrs[i])))
       goto exit;  /* goto to avoid unused label warning. */
 
 exit:
@@ -1485,7 +1474,6 @@ exit:
 static void uv__udp_sendmsg(uv_udp_t* handle) {
   enum { N = 20 };
   struct sockaddr* addrs[N];
-  unsigned int addrlens[N];
   unsigned int nbufs[N];
   uv_buf_t* bufs[N];
   struct uv__queue* q;
@@ -1501,19 +1489,13 @@ again:
   do {
     req = uv__queue_data(q, uv_udp_send_t, queue);
     addrs[n] = &req->u.addr;
-    addrlens[n] = req->addrlen;
     nbufs[n] = req->nbufs;
     bufs[n] = req->bufs;
     q = uv__queue_next(q);
     n++;
   } while (n < N && q != &handle->write_queue);
 
-  n = uv__udp_sendmsgv(handle->io_watcher.fd,
-                       n,
-                       bufs,
-                       nbufs,
-                       addrs,
-                       addrlens);
+  n = uv__udp_sendmsgv(handle->io_watcher.fd, n, bufs, nbufs, addrs);
   while (n > 0) {
     q = uv__queue_head(&handle->write_queue);
     req = uv__queue_data(q, uv_udp_send_t, queue);
@@ -1557,5 +1539,5 @@ int uv__udp_try_send2(uv_udp_t* handle,
   if (fd == -1)
     return UV_EINVAL;
 
-  return uv__udp_sendmsgv(fd, count, bufs, nbufs, addrs, NULL);
+  return uv__udp_sendmsgv(fd, count, bufs, nbufs, addrs);
 }
