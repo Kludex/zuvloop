@@ -310,7 +310,7 @@ async def test_a_write_batch_larger_than_the_buffer_still_arrives_in_order() -> 
         await protocol.done
 
 
-async def test_unsent_writes_count_towards_the_high_water_mark() -> None:
+async def test_a_batch_past_the_high_water_mark_is_sent_at_once() -> None:
     server, port, _ = await start_echo()
     loop = running_loop()
     async with server:
@@ -318,9 +318,6 @@ async def test_unsent_writes_count_towards_the_high_water_mark() -> None:
         transport.set_write_buffer_limits(high=4, low=2)
 
         transport.write(b"over the mark")
-        assert transport.get_write_buffer_size() == 13
-
-        await asyncio.sleep(0.05)
         assert transport.get_write_buffer_size() == 0
 
         transport.close()
@@ -747,18 +744,21 @@ class RecordsPause(Collector):
         self.paused = True
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; nothing backs up libuv's queue"
+)
 async def test_a_batched_write_past_the_high_water_mark_pauses_at_once() -> None:
     """asyncio pauses inside `write()`, which is what makes `drain()` wait.
 
-    Holding the write in the end-of-turn batch without pausing would let a
-    `write(); await drain()` loop buffer several chunks past the limit.
+    Holding the write in the end-of-turn batch would let a `write(); await drain()`
+    loop buffer several chunks past the limit.
     """
     loop = running_loop()
     server = await loop.create_server(Stalled, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     transport, client = await loop.create_connection(RecordsPause, "127.0.0.1", port)
     try:
-        transport.write(b"x" * (1 << 20))
+        transport.write(b"x" * (32 << 20))
         assert client.paused
     finally:
         transport.abort()

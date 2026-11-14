@@ -712,11 +712,11 @@ fn submitWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!
     // Batching pays off only for consecutive writes from one callback, and a
     // caller outside the loop may block reading the peer before the flush could
     // ever run, so writes from a stopped loop go straight out.
-    if (!self.loopState().running) flushPending(self);
-    // Like asyncio, pause as soon as the accepted write crosses the high-water
-    // mark. Waiting for the end-of-turn flush would let `drain()` return while
-    // the batch and libuv's queue together hold far more than the limit.
-    maybePauseProtocol(self);
+    //
+    // A batch past the high-water mark goes out too. Only the socket can tell
+    // whether the protocol has to pause, and holding the batch until the end of
+    // the turn would let `drain()` return with all of it still buffered.
+    if (!self.loopState().running or bufferedBytes(self) > self.high_water) flushPending(self);
 }
 
 /// What `write()` has accepted and not yet handed back to the socket, whether
