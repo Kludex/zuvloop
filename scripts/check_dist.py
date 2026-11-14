@@ -32,7 +32,7 @@ def main() -> None:
     for path in sorted(path for path in arguments.dist.rglob("*") if path.is_file()):
         # The minimum OS version and any legacy alias tags are the builder's choice, not what a release must ship.
         slot = re.sub(
-            r"(manylinux|musllinux|macosx)_\d+_\d+_(\w+?)(\.\w+)*\.whl$",
+            r"(manylinux|musllinux|macosx)_\d+_\d+_(\w+?)(?:\.\1\w*_\2)*\.whl$",
             r"\1_\2.whl",
             path.name.removeprefix(prefix),
         )
