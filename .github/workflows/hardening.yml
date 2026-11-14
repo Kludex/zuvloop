@@ -1,6 +1,9 @@
 name: Native hardening
 
 on:
+  # A release requires this workflow to have passed on the tagged main commit.
+  push:
+    branches: [main]
   pull_request:
   schedule:
     - cron: "41 3 * * *"

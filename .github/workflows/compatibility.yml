@@ -1,6 +1,9 @@
 name: Compatibility
 
 on:
+  # A release requires this workflow to have passed on the tagged main commit.
+  push:
+    branches: [main]
   pull_request:
   schedule:
     - cron: "17 4 * * 1"

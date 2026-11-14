@@ -19,6 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
+      actions: read # read the tagged commit's workflow runs
       contents: read
 
     steps:
@@ -34,6 +35,28 @@ jobs:
             echo "::error::Release tags must point to a commit on main."
             exit 1
           fi
+
+      # The pull request checks ran on a merge with an older main, so only the
+      # push runs prove this exact commit. A run still in progress is awaited.
+      - name: Require CI, compatibility and hardening to have passed on this commit
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for workflow in ci compatibility hardening; do
+            while true; do
+              run="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow.yml/runs?head_sha=$GITHUB_SHA&event=push" \
+                --jq '.workflow_runs[0] | "\(.status) \(.conclusion)"')"
+              case "$run" in
+                "completed success") break ;;
+                "completed "* | "null "*)
+                  echo "::error::$workflow.yml has no successful push run on $GITHUB_SHA (found: $run)."
+                  exit 1
+                  ;;
+              esac
+              sleep 30
+            done
+          done
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
@@ -192,6 +215,9 @@ jobs:
           path: dist
           pattern: "{wheels-*,sdist}"
           merge-multiple: true
+
+      - name: Require exactly the expected distributions, all at the tagged version
+        run: uv run --no-project python scripts/check_dist.py dist --version "${GITHUB_REF_NAME#v}"
 
       - name: Attest the released distributions
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
