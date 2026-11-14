@@ -351,12 +351,15 @@ pub fn takeEmptyContext(loop_obj: *py.Object) ?*py.Object {
     st.empty_contexts_len -= 1;
     const context = st.empty_contexts[st.empty_contexts_len];
     st.empty_contexts[st.empty_contexts_len] = null;
+    c.PyObject_GC_Track(context);
     return context;
 }
 
 pub fn recycleEmptyContext(loop_obj: *py.Object, context: *py.Object) bool {
     const st = asLoop(loop_obj).state();
     if (st.closed or st.empty_contexts_len == context_pool_capacity) return false;
+    // Untracked, so a collection already under way cannot clear it while it waits here.
+    c.PyObject_GC_UnTrack(context);
     st.empty_contexts[st.empty_contexts_len] = context;
     st.empty_contexts_len += 1;
     return true;
@@ -365,6 +368,8 @@ pub fn recycleEmptyContext(loop_obj: *py.Object, context: *py.Object) bool {
 fn clearEmptyContexts(st: *State) void {
     while (st.empty_contexts_len > 0) {
         st.empty_contexts_len -= 1;
+        // context_tp_dealloc untracks without checking, so it must be tracked to be freed.
+        c.PyObject_GC_Track(st.empty_contexts[st.empty_contexts_len]);
         py.clear(&st.empty_contexts[st.empty_contexts_len]);
     }
 }
@@ -377,8 +382,9 @@ fn clearThreadsafeCandidate(st: *State, untrack_queue_only: bool) void {
 }
 
 fn drainThreadsafe(st: *State) error{OutOfMemory}!void {
-    try st.ready.ensureUnusedCapacity(st.threadsafe_ready.len);
+    // Clearing the candidate can suspend the critical section and let producers grow the inbox.
     clearThreadsafeCandidate(st, true);
+    try st.ready.ensureUnusedCapacity(st.threadsafe_ready.len);
     while (st.threadsafe_ready.pop()) |handle| st.ready.pushAssumeCapacity(handle);
 }
 

@@ -78,7 +78,11 @@ pub inline fn incref(o: anytype) void {
 }
 
 pub inline fn decref(o: anytype) void {
-    if (@hasDecl(c, "Py_GIL_DISABLED")) c.zuvloop_Py_DECREF(@ptrCast(o)) else c.Py_DECREF(@ptrCast(o));
+    // Under `Py_REF_DEBUG`, `Py_DECREF` is a macro over `(filename, lineno, op)` that Zig cannot translate.
+    if (@hasDecl(c, "Py_GIL_DISABLED") or @hasDecl(c, "Py_REF_DEBUG"))
+        c.zuvloop_Py_DECREF(@ptrCast(o))
+    else
+        c.Py_DECREF(@ptrCast(o));
 }
 
 pub inline fn xdecref(o: ?*Object) void {
@@ -357,10 +361,6 @@ pub fn wrapDealloc(comptime f: anytype) fn (?*Object) callconv(.c) void {
 pub fn wrapTraverse(comptime f: anytype) fn (?*Object, c.visitproc, ?*anyopaque) callconv(.c) c_int {
     const Inner = struct {
         fn call(self: ?*Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv(.c) c_int {
-            // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
-            var critical_section: CriticalSection = undefined;
-            beginCriticalSection(&critical_section, self.?);
-            defer endCriticalSection(&critical_section);
             return f(self, visitproc, arg);
         }
     };

@@ -1,4 +1,5 @@
 .zig-cache/
+.zig-global-cache/
 zig-out/
 __pycache__/
 *.py[cod]

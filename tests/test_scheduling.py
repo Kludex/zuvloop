@@ -140,6 +140,26 @@ def test_call_soon_keeps_empty_contexts_independent() -> None:
     assert seen == ["default"]
 
 
+def test_call_soon_discards_a_pooled_context_the_gc_cleared() -> None:
+    loop = zuvloop.new_event_loop()
+    variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable", default="default")
+
+    async def main() -> str:
+        cycle: list[zuvloop.Handle | None] = []
+        cycle.append(loop.call_soon(cycle.append, None))
+        await asyncio.sleep(0)
+        del cycle
+        gc.collect()
+        future: asyncio.Future[str] = loop.create_future()
+        loop.call_soon(lambda: future.set_result(variable.get()))
+        return await future
+
+    try:
+        assert contextvars.Context().run(loop.run_until_complete, main()) == "default"
+    finally:
+        loop.close()
+
+
 def test_call_soon_exposes_its_context_before_running() -> None:
     loop = zuvloop.new_event_loop()
     variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable", default="default")
@@ -717,6 +737,57 @@ def test_threadsafe_cancel_before_the_loop_runs_it() -> None:
     loop.close()
     assert results == []
     assert observed == [True]
+
+
+def test_threadsafe_callbacks_queued_while_draining_waits_on_a_handle_all_run() -> None:
+    loop = zuvloop.new_event_loop()
+    finalizing = threading.Event()
+    draining = threading.Event()
+    drained = threading.Event()
+    flooded = threading.Event()
+    ran: list[None] = []
+    total = 1000
+
+    class SpinningFinalizer:
+        def __del__(self) -> None:
+            finalizing.set()
+            # Spinning keeps the thread attached, so `cancel` holds the handle's critical section.
+            while not flooded.is_set() and not drained.is_set():
+                pass
+
+    def cancel_with_a_slow_finalizer() -> None:
+        loop.call_soon_threadsafe(ran.append, None, SpinningFinalizer()).cancel()
+
+    def flood() -> None:
+        try:
+            draining.wait(5)
+            # A late loop thread lets this producer wait on the held handle instead, until `drained` frees it.
+            time.sleep(0.1)
+            for _ in range(total):
+                loop.call_soon_threadsafe(ran.append, None)
+            loop.call_soon_threadsafe(loop.stop)
+        finally:
+            flooded.set()
+
+    def drain_while_the_handle_is_held() -> None:
+        finalizing.wait(5)
+        draining.set()
+        try:
+            loop.call_soon(lambda: None)
+        finally:
+            drained.set()
+
+    loop.call_soon(drain_while_the_handle_is_held)
+    # Only a loop that lost the flood's own `stop` gets this far.
+    loop.call_later(5, loop.stop)
+    threads = [threading.Thread(target=cancel_with_a_slow_finalizer), threading.Thread(target=flood)]
+    for thread in threads:
+        thread.start()
+    loop.run_forever()
+    for thread in threads:
+        thread.join()
+    loop.close()
+    assert len(ran) == total
 
 
 def test_threadsafe_cancel_releases_every_waiting_thread() -> None:
