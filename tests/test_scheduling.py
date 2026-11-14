@@ -742,24 +742,29 @@ def test_threadsafe_cancel_before_the_loop_runs_it() -> None:
 def test_threadsafe_callbacks_queued_while_draining_waits_on_a_handle_all_run() -> None:
     loop = zuvloop.new_event_loop()
     finalizing = threading.Event()
+    draining = threading.Event()
     flooded = threading.Event()
+    released_by_flood: list[bool] = []
     ran: list[None] = []
     total = 1000
 
     class SpinningFinalizer:
         def __del__(self) -> None:
             finalizing.set()
+            deadline = time.monotonic() + 5
             # Spinning keeps the thread attached, so `cancel` holds the handle's critical section.
-            while not flooded.is_set():
+            while not flooded.is_set() and time.monotonic() < deadline:
                 pass
+            released_by_flood.append(flooded.is_set())
 
     def cancel_with_a_slow_finalizer() -> None:
         loop.call_soon_threadsafe(ran.append, None, SpinningFinalizer()).cancel()
 
     def flood() -> None:
         try:
-            finalizing.wait(5)
-            time.sleep(0.2)
+            # A producer that ran first would itself block on the held handle, so let the loop take it.
+            draining.wait(5)
+            time.sleep(0.1)
             for _ in range(total):
                 loop.call_soon_threadsafe(ran.append, None)
         finally:
@@ -767,7 +772,7 @@ def test_threadsafe_callbacks_queued_while_draining_waits_on_a_handle_all_run() 
 
     def drain_while_the_handle_is_held() -> None:
         finalizing.wait(5)
-        time.sleep(0.1)
+        draining.set()
         loop.call_soon(lambda: None)
         loop.call_later(0.5, loop.stop)
 
@@ -779,6 +784,7 @@ def test_threadsafe_callbacks_queued_while_draining_waits_on_a_handle_all_run() 
     for thread in threads:
         thread.join()
     loop.close()
+    assert released_by_flood == [True]
     assert len(ran) == total
 
 
