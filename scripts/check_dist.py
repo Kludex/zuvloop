@@ -30,8 +30,12 @@ def main() -> None:
     missing = {".tar.gz"} | {f"-{interpreter}-{platform}.whl" for interpreter in INTERPRETERS for platform in PLATFORMS}
     problems: list[str] = []
     for path in sorted(path for path in arguments.dist.rglob("*") if path.is_file()):
-        # The platform's minimum OS version is the builder's choice, not part of what a release must ship.
-        slot = re.sub(r"(manylinux|musllinux|macosx)_\d+_\d+_", r"\1_", path.name.removeprefix(prefix))
+        # The minimum OS version and any legacy alias tags are the builder's choice, not what a release must ship.
+        slot = re.sub(
+            r"(manylinux|musllinux|macosx)_\d+_\d+_(\w+?)(\.\w+)*\.whl$",
+            r"\1_\2.whl",
+            path.name.removeprefix(prefix),
+        )
         if not path.name.startswith(prefix) or slot not in missing:
             problems.append(f"{path.name} is unexpected, duplicated, or not version {arguments.version}")
             continue
