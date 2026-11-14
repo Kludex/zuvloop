@@ -29,7 +29,7 @@ def main() -> None:
     prefix = f"zuvloop-{arguments.version}"
     missing = {".tar.gz"} | {f"-{interpreter}-{platform}.whl" for interpreter in INTERPRETERS for platform in PLATFORMS}
     problems: list[str] = []
-    for path in sorted(arguments.dist.iterdir()):
+    for path in sorted(path for path in arguments.dist.rglob("*") if path.is_file()):
         # The platform's minimum OS version is the builder's choice, not part of what a release must ship.
         slot = re.sub(r"(manylinux|musllinux|macosx)_\d+_\d+_", r"\1_", path.name.removeprefix(prefix))
         if not path.name.startswith(prefix) or slot not in missing:
