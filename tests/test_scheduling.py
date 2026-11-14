@@ -757,11 +757,13 @@ def test_threadsafe_callbacks_queued_while_draining_waits_on_a_handle_all_run() 
         loop.call_soon_threadsafe(ran.append, None, SpinningFinalizer()).cancel()
 
     def flood() -> None:
-        finalizing.wait(5)
-        time.sleep(0.2)
-        for _ in range(total):
-            loop.call_soon_threadsafe(ran.append, None)
-        flooded.set()
+        try:
+            finalizing.wait(5)
+            time.sleep(0.2)
+            for _ in range(total):
+                loop.call_soon_threadsafe(ran.append, None)
+        finally:
+            flooded.set()
 
     def drain_while_the_handle_is_held() -> None:
         finalizing.wait(5)
