@@ -739,6 +739,47 @@ def test_threadsafe_cancel_before_the_loop_runs_it() -> None:
     assert observed == [True]
 
 
+def test_threadsafe_callbacks_queued_while_draining_waits_on_a_handle_all_run() -> None:
+    loop = zuvloop.new_event_loop()
+    finalizing = threading.Event()
+    flooded = threading.Event()
+    ran: list[None] = []
+    total = 1000
+
+    class SpinningFinalizer:
+        def __del__(self) -> None:
+            finalizing.set()
+            # Spinning keeps the thread attached, so `cancel` holds the handle's critical section.
+            while not flooded.is_set():
+                pass
+
+    def cancel_with_a_slow_finalizer() -> None:
+        loop.call_soon_threadsafe(ran.append, None, SpinningFinalizer()).cancel()
+
+    def flood() -> None:
+        finalizing.wait(5)
+        time.sleep(0.2)
+        for _ in range(total):
+            loop.call_soon_threadsafe(ran.append, None)
+        flooded.set()
+
+    def drain_while_the_handle_is_held() -> None:
+        finalizing.wait(5)
+        time.sleep(0.1)
+        loop.call_soon(lambda: None)
+        loop.call_later(0.5, loop.stop)
+
+    loop.call_soon(drain_while_the_handle_is_held)
+    threads = [threading.Thread(target=cancel_with_a_slow_finalizer), threading.Thread(target=flood)]
+    for thread in threads:
+        thread.start()
+    loop.run_forever()
+    for thread in threads:
+        thread.join()
+    loop.close()
+    assert len(ran) == total
+
+
 def test_threadsafe_cancel_releases_every_waiting_thread() -> None:
     loop = zuvloop.new_event_loop()
     started = threading.Event()
