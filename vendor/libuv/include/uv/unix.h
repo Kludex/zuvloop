@@ -280,6 +280,7 @@ struct uv__req_write_extra_s {
     struct sockaddr addr;                                                     \
     struct sockaddr_storage storage;                                          \
   } u;                                                                        \
+  unsigned int addrlen;                                                       \
   unsigned int nbufs;                                                         \
   uv_buf_t* bufs;                                                             \
   ssize_t status;                                                             \
