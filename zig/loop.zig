@@ -382,8 +382,9 @@ fn clearThreadsafeCandidate(st: *State, untrack_queue_only: bool) void {
 }
 
 fn drainThreadsafe(st: *State) error{OutOfMemory}!void {
-    try st.ready.ensureUnusedCapacity(st.threadsafe_ready.len);
+    // Clearing the candidate can suspend the critical section and let producers grow the inbox.
     clearThreadsafeCandidate(st, true);
+    try st.ready.ensureUnusedCapacity(st.threadsafe_ready.len);
     while (st.threadsafe_ready.pop()) |handle| st.ready.pushAssumeCapacity(handle);
 }
 
