@@ -481,6 +481,7 @@ async def test_write_eof_waits_for_buffered_writes() -> None:
 
     transport, protocol = await loop.connect_accepted_socket(Collector, left)
     try:
+        transport.set_write_buffer_limits(high=len(payload))
         transport.write(payload)
         assert transport.get_write_buffer_size() > 0
         transport.write_eof()
