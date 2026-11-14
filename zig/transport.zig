@@ -712,7 +712,13 @@ fn submitWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!
     // Batching pays off only for consecutive writes from one callback, and a
     // caller outside the loop may block reading the peer before the flush could
     // ever run, so writes from a stopped loop go straight out.
-    if (!self.loopState().running) flushPending(self);
+    //
+    // A batch that first crosses the high-water mark goes out too. Only the
+    // socket can tell whether the protocol has to pause, and holding the batch
+    // until the end of the turn would let `drain()` return with all of it still
+    // buffered. Once paused, writes batch again.
+    const crossed = self.flags & PROTOCOL_PAUSED == 0 and bufferedBytes(self) > self.high_water;
+    if (!self.loopState().running or crossed) flushPending(self);
 }
 
 /// What `write()` has accepted and not yet handed back to the socket, whether
