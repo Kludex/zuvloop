@@ -54,13 +54,15 @@ pub fn release(loop: ?*py.Object, context: *?*py.Object, flags: u32) void {
     const context_obj: *ContextObject = @ptrCast(@alignCast(current));
     // The GC may clear the context before its handle, and len() on a cleared one dereferences NULL.
     if (flags & captured_flag != 0 and c.Py_REFCNT(current) == 1 and context_obj.variables != null) {
+        // Cleanup paths arrive with the caller's exception raised, and slots must not run with one pending.
+        const pending = c.PyErr_GetRaisedException();
         const size = c.PyObject_Size(current);
+        if (size < 0) c.PyErr_Clear();
+        c.PyErr_SetRaisedException(pending);
         if (size == 0 and context_obj.weakrefs == null and context_obj.entered == 0) {
             if (loop) |loop_obj| {
                 if (loopmod.isRunningThread(loop_obj) and loopmod.recycleEmptyContext(loop_obj, current)) return;
             }
-        } else if (size < 0) {
-            c.PyErr_Clear();
         }
     }
     py.decref(current);

@@ -78,7 +78,11 @@ pub inline fn incref(o: anytype) void {
 }
 
 pub inline fn decref(o: anytype) void {
-    if (@hasDecl(c, "Py_GIL_DISABLED")) c.zuvloop_Py_DECREF(@ptrCast(o)) else c.Py_DECREF(@ptrCast(o));
+    // Under `Py_REF_DEBUG`, `Py_DECREF` is a macro over `(filename, lineno, op)` that Zig cannot translate.
+    if (@hasDecl(c, "Py_GIL_DISABLED") or @hasDecl(c, "Py_REF_DEBUG"))
+        c.zuvloop_Py_DECREF(@ptrCast(o))
+    else
+        c.Py_DECREF(@ptrCast(o));
 }
 
 pub inline fn xdecref(o: ?*Object) void {
