@@ -19,7 +19,8 @@ env:
   EDITABLE_UPSTREAM_EXCLUDE_NEWER: "2026-08-15T00:00:00Z"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Each main commit keeps its own run, so a later merge cannot cancel the one a release needs.
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

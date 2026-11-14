@@ -17,7 +17,8 @@ jobs:
   preflight:
     name: Release preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Long enough to await the slowest gate job, which may run for 60 minutes.
+    timeout-minutes: 90
     permissions:
       actions: read # read the tagged commit's workflow runs
       contents: read

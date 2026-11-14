@@ -32,7 +32,7 @@ def main() -> None:
     for path in sorted(arguments.dist.iterdir()):
         # The platform's minimum OS version is the builder's choice, not part of what a release must ship.
         slot = re.sub(r"(manylinux|musllinux|macosx)_\d+_\d+_", r"\1_", path.name.removeprefix(prefix))
-        if slot not in missing:
+        if not path.name.startswith(prefix) or slot not in missing:
             problems.append(f"{path.name} is unexpected, duplicated, or not version {arguments.version}")
             continue
         missing.remove(slot)
@@ -49,9 +49,10 @@ def main() -> None:
                     if member.name.count("/") == 1 and member.name.endswith("/PKG-INFO")
                     if (file := sdist.extractfile(member)) is not None
                 )
-        embedded = message_from_bytes(metadata)["Version"]
-        if embedded != arguments.version:
-            problems.append(f"{path.name} embeds version {embedded}, not {arguments.version}")
+        message = message_from_bytes(metadata)
+        embedded = f"{message['Name']} {message['Version']}"
+        if embedded != f"zuvloop {arguments.version}":
+            problems.append(f"{path.name} embeds {embedded}, not zuvloop {arguments.version}")
     problems.extend(f"{prefix}{slot} is missing" for slot in sorted(missing))
 
     if problems:
