@@ -17,10 +17,15 @@ const c = py.c;
 const handlemod = @import("handle.zig");
 const loopmod = @import("loop.zig");
 
-const CANCELLED: u32 = 1 << 0;
-const SCHEDULED: u32 = 1 << 1;
-const in_heap: u32 = 1 << 2;
-const running_flag: u32 = 1 << 3;
+const Flags = packed struct(u32) {
+    cancelled: bool = false,
+    /// What asyncio reports as `_scheduled`.
+    scheduled: bool = false,
+    in_heap: bool = false,
+    /// Vectorcall is borrowing the callback and its arguments.
+    running: bool = false,
+    _: u28 = 0,
+};
 
 const Payload = extern struct {
     loop: ?*py.Object,
@@ -29,7 +34,7 @@ const Payload = extern struct {
     when_obj: ?*py.Object,
     heap_args: ?[*]?*py.Object,
     nargs: c.Py_ssize_t,
-    flags: u32,
+    flags: Flags,
     when: f64,
     args: [3]?*py.Object,
 
@@ -50,7 +55,7 @@ pub inline fn owns(obj: *py.Object) bool {
 }
 
 pub fn isCancelled(obj: *py.Object) bool {
-    return payload(obj).flags & CANCELLED != 0;
+    return payload(obj).flags.cancelled;
 }
 
 pub fn deadline(obj: *py.Object) f64 {
@@ -59,13 +64,15 @@ pub fn deadline(obj: *py.Object) f64 {
 
 /// Marks an already-due timer as ready without losing its scheduled state.
 pub fn markReady(obj: *py.Object) void {
-    payload(obj).flags &= ~in_heap;
+    payload(obj).flags.in_heap = false;
 }
 
 /// Leaving the scheduler ends the scheduled state, whether by running, expiry,
 /// or compaction. Cancellation alone leaves the state set until retirement.
 pub fn clearScheduled(obj: *py.Object) void {
-    payload(obj).flags &= ~(SCHEDULED | in_heap);
+    const self = payload(obj);
+    self.flags.scheduled = false;
+    self.flags.in_heap = false;
 }
 
 pub fn create(
@@ -80,7 +87,7 @@ pub fn create(
     errdefer py.decref(obj);
     const self = payload(obj);
     self.when = at;
-    self.flags = SCHEDULED | in_heap;
+    self.flags = .{ .scheduled = true, .in_heap = true };
     if (original_when) |value| {
         py.incref(value);
         self.when_obj = value;
@@ -106,12 +113,12 @@ pub fn create(
 /// Runs the callback, deferring self-cancellation cleanup until it returns.
 pub fn run(obj: *py.Object) void {
     const self = payload(obj);
-    if (self.flags & CANCELLED != 0) return;
+    if (self.flags.cancelled) return;
     const callback = self.callback orelse return;
-    self.flags |= running_flag;
+    self.flags.running = true;
     defer {
-        self.flags &= ~running_flag;
-        if (self.flags & CANCELLED != 0) {
+        self.flags.running = false;
+        if (self.flags.cancelled) {
             handlemod.clearStoredArgs(self);
             py.clear(&self.callback);
         }
@@ -121,13 +128,13 @@ pub fn run(obj: *py.Object) void {
 
 fn cancel(self_obj: *py.Object) py.Error!*py.Object {
     const self = payload(self_obj);
-    if (self.flags & CANCELLED == 0) {
-        self.flags |= CANCELLED;
-        if (self.flags & running_flag == 0) {
+    if (!self.flags.cancelled) {
+        self.flags.cancelled = true;
+        if (!self.flags.running) {
             handlemod.clearStoredArgs(self);
             py.clear(&self.callback);
         }
-        if (self.flags & in_heap != 0) {
+        if (self.flags.in_heap) {
             if (self.loop) |l| loopmod.noteTimerCancelled(@ptrCast(@alignCast(l)));
         }
     }
@@ -135,7 +142,7 @@ fn cancel(self_obj: *py.Object) py.Error!*py.Object {
 }
 
 fn cancelled(self_obj: *py.Object) py.Error!*py.Object {
-    return py.boolRef(payload(self_obj).flags & CANCELLED != 0);
+    return py.boolRef(payload(self_obj).flags.cancelled);
 }
 
 fn when(self_obj: *py.Object) py.Error!*py.Object {
@@ -146,7 +153,7 @@ fn when(self_obj: *py.Object) py.Error!*py.Object {
 
 fn repr(obj: ?*py.Object) callconv(.c) ?*py.Object {
     const self = payload(obj.?);
-    return handlemod.describe(obj.?, self.flags & CANCELLED != 0, self.callback);
+    return handlemod.describe(obj.?, self.flags.cancelled, self.callback);
 }
 
 fn dealloc(obj: ?*py.Object) callconv(.c) void {
@@ -185,11 +192,11 @@ fn getCallback(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 
 fn getArgs(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
     const self = payload(self_obj.?);
-    return handlemod.argsTuple(self.flags & CANCELLED != 0, self.argv()[0..@intCast(self.nargs)]);
+    return handlemod.argsTuple(self.flags.cancelled, self.argv()[0..@intCast(self.nargs)]);
 }
 
 fn getCancelledSlot(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
-    return py.boolRef(payload(self_obj.?).flags & CANCELLED != 0);
+    return py.boolRef(payload(self_obj.?).flags.cancelled);
 }
 
 fn getLoop(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
@@ -207,7 +214,7 @@ fn getWhen(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 }
 
 fn getScheduled(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
-    return py.boolRef(payload(self_obj.?).flags & SCHEDULED != 0);
+    return py.boolRef(payload(self_obj.?).flags.scheduled);
 }
 
 // `_when` above all: the base's ordering and equality read it, and that ordering

@@ -7,9 +7,6 @@ const py = @import("py.zig");
 const c = py.c;
 const loopmod = @import("loop.zig");
 
-/// Marks a context as implicitly captured rather than explicitly supplied.
-pub const captured_flag: u32 = 1 << 1;
-
 const ContextObject = extern struct {
     ob_base: c.PyObject,
     previous: ?*ContextObject,
@@ -18,13 +15,13 @@ const ContextObject = extern struct {
     entered: c_int,
 };
 
-/// Captures a non-empty current context and defers allocating an empty one.
-pub fn capture(explicit: ?*py.Object, flags: *u32) py.Error!?*py.Object {
+/// Returns the supplied context, or captures a non-empty current one and
+/// defers allocating an empty one.
+pub fn capture(explicit: ?*py.Object) py.Error!?*py.Object {
     if (explicit) |context| {
         py.incref(context);
         return context;
     }
-    flags.* |= captured_flag;
     const thread_state = c.PyThreadState_Get();
     const current_slot: *?*py.Object = @ptrFromInt(
         @intFromPtr(thread_state) + c.ZUVLOOP_PYTHREADSTATE_CONTEXT_OFFSET,
@@ -48,14 +45,15 @@ pub fn materialize(loop: ?*py.Object, context: *?*py.Object) py.Error!*py.Object
 }
 
 /// Releases a context or moves an unused captured one into the loop pool.
-pub fn release(loop: ?*py.Object, context: *?*py.Object, flags: u32) void {
+/// `captured` says the context was not supplied by the caller.
+pub fn release(loop: ?*py.Object, context: *?*py.Object, captured: bool) void {
     const current = context.* orelse return;
     context.* = null;
     const context_obj: *ContextObject = @ptrCast(@alignCast(current));
     // `Py_REFCNT(o) == 1` proves nothing without the GIL: another thread can still take a
     // reference from the collector's view of the object while this one decides.
     // The GC may clear the context before its handle, and len() on a cleared one dereferences NULL.
-    if (flags & captured_flag != 0 and
+    if (captured and
         (if (@hasDecl(c, "Py_GIL_DISABLED"))
             c.PyUnstable_Object_IsUniquelyReferenced(current) != 0
         else

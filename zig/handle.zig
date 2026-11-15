@@ -14,28 +14,34 @@ const loopmod = @import("loop.zig");
 
 const arg_alloc = std.heap.c_allocator;
 
-pub const CANCELLED: u32 = 1 << 0;
-const RUNNING: u32 = 1 << 2;
-const args_cleared: u32 = 1 << 3;
+pub const Flags = packed struct(u32) {
+    cancelled: bool = false,
+    /// The context was captured implicitly rather than supplied by the caller.
+    captured: bool = false,
+    /// Vectorcall is borrowing the callback and its arguments.
+    running: bool = false,
+    args_cleared: bool = false,
+    _: u28 = 0,
+};
 
 pub const Handle = extern struct {
     ob_base: c.PyVarObject,
     loop: ?*py.Object,
     callback: ?*py.Object,
     context: ?*py.Object,
-    flags: u32,
+    flags: Flags,
 
     fn argv(self: *Handle) [*]?*py.Object {
         return @ptrCast(@alignCast(c.PyObject_GetItemData(@ptrCast(self))));
     }
 
     fn nargs(self: *const Handle) c.Py_ssize_t {
-        return if (self.flags & args_cleared != 0) 0 else self.ob_base.ob_size;
+        return if (self.flags.args_cleared) 0 else self.ob_base.ob_size;
     }
 
     /// Reports whether cancellation prevents this handle from running.
     pub fn isCancelled(self: *const Handle) bool {
-        return self.flags & CANCELLED != 0;
+        return self.flags.cancelled;
     }
 };
 
@@ -63,7 +69,8 @@ pub fn create(
     py.incref(callback);
     self.callback = callback;
 
-    self.context = contextmod.capture(context, &self.flags) catch {
+    if (context == null) self.flags.captured = true;
+    self.context = contextmod.capture(context) catch {
         py.decref(obj);
         return py.Error.Python;
     };
@@ -75,9 +82,9 @@ pub fn create(
 pub fn run(self: *Handle) void {
     if (self.isCancelled()) return;
     const callback = self.callback orelse return;
-    self.flags |= RUNNING;
+    self.flags.running = true;
     defer {
-        self.flags &= ~RUNNING;
+        self.flags.running = false;
         if (self.isCancelled()) {
             clearArgs(self);
             py.clear(&self.callback);
@@ -189,12 +196,12 @@ pub fn getNone(_: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 }
 
 fn clearArgs(self: *Handle) void {
-    if (self.flags & args_cleared != 0) return;
+    if (self.flags.args_cleared) return;
     const n: usize = @intCast(self.ob_base.ob_size);
     const dst = self.argv();
     var i: usize = 0;
     while (i < n) : (i += 1) py.clear(&dst[i]);
-    self.flags |= args_cleared;
+    self.flags.args_cleared = true;
 }
 
 fn dealloc(obj: ?*py.Object) callconv(.c) void {
@@ -204,7 +211,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     c.PyObject_ClearWeakRefs(obj);
     clearArgs(self);
     py.clear(&self.callback);
-    contextmod.release(self.loop, &self.context, self.flags);
+    contextmod.release(self.loop, &self.context, self.flags.captured);
     py.clear(&self.loop);
     tp.tp_free.?(obj);
     py.decref(tp);
@@ -220,7 +227,7 @@ fn clear_(obj: ?*py.Object) callconv(.c) c_int {
     const self: *Handle = @ptrCast(@alignCast(obj.?));
     clearArgs(self);
     py.clear(&self.callback);
-    contextmod.release(self.loop, &self.context, self.flags);
+    contextmod.release(self.loop, &self.context, self.flags.captured);
     py.clear(&self.loop);
     return 0;
 }
@@ -228,10 +235,10 @@ fn clear_(obj: ?*py.Object) callconv(.c) c_int {
 fn cancel(self_obj: *py.Object) py.Error!*py.Object {
     const self: *Handle = @ptrCast(@alignCast(self_obj));
     if (!self.isCancelled()) {
-        self.flags |= CANCELLED;
+        self.flags.cancelled = true;
         // Vectorcall borrows these references. A callback may cancel its own
         // handle, so release them when run() regains control instead.
-        if (self.flags & RUNNING == 0) {
+        if (!self.flags.running) {
             clearArgs(self);
             py.clear(&self.callback);
         }

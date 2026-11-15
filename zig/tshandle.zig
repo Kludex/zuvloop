@@ -14,11 +14,20 @@ const contextmod = @import("context.zig");
 const handlemod = @import("handle.zig");
 const loopmod = @import("loop.zig");
 
-const PENDING: u32 = 0;
-const RUNNING: u32 = 1;
-/// Ran, or cancelled before it could run; either way it never will again.
-const DONE: u32 = 2;
-const cancelled_flag: u32 = 1 << 0;
+/// The word `run` and a foreign `cancel` race for.
+const RunState = enum(u32) {
+    pending,
+    running,
+    /// Ran, or cancelled before it could run; either way it never will again.
+    done,
+};
+
+const Flags = packed struct(u32) {
+    cancelled: bool = false,
+    /// The context was captured implicitly rather than supplied by the caller.
+    captured: bool = false,
+    _: u30 = 0,
+};
 
 /// One blocked `cancel` or `cancelled` call, parked on a lock it acquired
 /// twice; the loop thread releases it when the callback finishes. Lives on the
@@ -40,8 +49,8 @@ const Payload = extern struct {
     heap_args: ?[*]?*py.Object,
     waiters: ?*Waiter,
     nargs: c.Py_ssize_t,
-    run_state: u32,
-    flags: u32,
+    run_state: RunState,
+    flags: Flags,
     args: [1]?*py.Object,
 
     pub inline fn argv(self: *Payload) [*]?*py.Object {
@@ -88,7 +97,8 @@ pub fn create(
     py.incref(callback);
     self.callback = callback;
 
-    self.context = try contextmod.capture(context, &self.flags);
+    if (context == null) self.flags.captured = true;
+    self.context = try contextmod.capture(context);
 
     c.PyObject_GC_Track(obj);
     return obj;
@@ -102,12 +112,12 @@ pub fn run(obj: *py.Object) void {
     py.beginCriticalSection(&critical_section, obj);
     defer py.endCriticalSection(&critical_section);
     const self = payload(obj);
-    if (@cmpxchgStrong(u32, &self.run_state, PENDING, RUNNING, .acq_rel, .acquire) != null) return;
+    if (@cmpxchgStrong(RunState, &self.run_state, .pending, .running, .acq_rel, .acquire) != null) return;
     const previous_running = running_payload;
     running_payload = self;
     defer {
         // Finalizers can wait for foreign cancellers, so publish completion before releasing references.
-        @atomicStore(u32, &self.run_state, DONE, .release);
+        @atomicStore(RunState, &self.run_state, .done, .release);
         var node = self.waiters;
         self.waiters = null;
         running_payload = previous_running;
@@ -115,7 +125,7 @@ pub fn run(obj: *py.Object) void {
             node = w.next;
             c.PyThread_release_lock(w.lock);
         }
-        if (self.flags & cancelled_flag != 0) {
+        if (self.flags.cancelled) {
             py.clear(&self.callback);
             handlemod.clearStoredArgs(self);
         }
@@ -137,7 +147,7 @@ pub fn run(obj: *py.Object) void {
 fn awaitCompletion(self: *Payload) void {
     const lock = c.PyThread_allocate_lock() orelse {
         const tstate = c.PyEval_SaveThread();
-        while (@atomicLoad(u32, &self.run_state, .acquire) != DONE) std.Thread.yield() catch {};
+        while (@atomicLoad(RunState, &self.run_state, .acquire) != .done) std.Thread.yield() catch {};
         c.PyEval_RestoreThread(tstate);
         return;
     };
@@ -155,24 +165,24 @@ fn awaitCompletion(self: *Payload) void {
 /// From the running thread itself there is nothing to wait for: that is the
 /// reentrant `cancel` a callback may issue on its own handle.
 fn mustWait(self: *Payload) bool {
-    if (@atomicLoad(u32, &self.run_state, .acquire) != RUNNING) return false;
+    if (@atomicLoad(RunState, &self.run_state, .acquire) != .running) return false;
     return running_payload != self;
 }
 
 fn cancel(self_obj: *py.Object) py.Error!*py.Object {
     const self = payload(self_obj);
     while (true) {
-        const s = @atomicLoad(u32, &self.run_state, .acquire);
-        if (s == PENDING) {
-            if (@cmpxchgStrong(u32, &self.run_state, PENDING, DONE, .acq_rel, .acquire) == null) break;
+        const s = @atomicLoad(RunState, &self.run_state, .acquire);
+        if (s == .pending) {
+            if (@cmpxchgStrong(RunState, &self.run_state, .pending, .done, .acq_rel, .acquire) == null) break;
             continue;
         }
-        if (s != DONE and running_payload != self) awaitCompletion(self);
+        if (s != .done and running_payload != self) awaitCompletion(self);
         break;
     }
-    if (self.flags & cancelled_flag == 0) {
-        self.flags |= cancelled_flag;
-        if (@atomicLoad(u32, &self.run_state, .acquire) != RUNNING) {
+    if (!self.flags.cancelled) {
+        self.flags.cancelled = true;
+        if (@atomicLoad(RunState, &self.run_state, .acquire) != .running) {
             py.clear(&self.callback);
             handlemod.clearStoredArgs(self);
         }
@@ -183,7 +193,7 @@ fn cancel(self_obj: *py.Object) py.Error!*py.Object {
 fn cancelled(self_obj: *py.Object) py.Error!*py.Object {
     const self = payload(self_obj);
     if (mustWait(self)) awaitCompletion(self);
-    return py.boolRef(self.flags & cancelled_flag != 0);
+    return py.boolRef(self.flags.cancelled);
 }
 
 fn runMethod(self_obj: *py.Object) py.Error!*py.Object {
@@ -193,7 +203,7 @@ fn runMethod(self_obj: *py.Object) py.Error!*py.Object {
 
 fn repr(obj: ?*py.Object) callconv(.c) ?*py.Object {
     const self = payload(obj.?);
-    return handlemod.describe(obj.?, self.flags & cancelled_flag != 0, self.callback);
+    return handlemod.describe(obj.?, self.flags.cancelled, self.callback);
 }
 
 fn dealloc(obj: ?*py.Object) callconv(.c) void {
@@ -203,7 +213,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     c.PyObject_ClearWeakRefs(obj);
     handlemod.clearStoredArgs(self);
     py.clear(&self.callback);
-    contextmod.release(self.loop, &self.context, self.flags);
+    contextmod.release(self.loop, &self.context, self.flags.captured);
     py.clear(&self.loop);
     tp.tp_free.?(obj);
     py.decref(tp);
@@ -229,7 +239,7 @@ fn clear_(obj: ?*py.Object) callconv(.c) c_int {
     const self = payload(obj.?);
     handlemod.clearStoredArgs(self);
     py.clear(&self.callback);
-    contextmod.release(self.loop, &self.context, self.flags);
+    contextmod.release(self.loop, &self.context, self.flags.captured);
     py.clear(&self.loop);
     return 0;
 }
@@ -240,11 +250,11 @@ fn getCallback(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 
 fn getArgs(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
     const self = payload(self_obj.?);
-    return handlemod.argsTuple(self.flags & cancelled_flag != 0, self.argv()[0..@intCast(self.nargs)]);
+    return handlemod.argsTuple(self.flags.cancelled, self.argv()[0..@intCast(self.nargs)]);
 }
 
 fn getCancelledSlot(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
-    return py.boolRef(payload(self_obj.?).flags & cancelled_flag != 0);
+    return py.boolRef(payload(self_obj.?).flags.cancelled);
 }
 
 fn getLoop(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {

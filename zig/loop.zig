@@ -72,9 +72,7 @@ pub const State = struct {
     sampler_active: bool = false,
     flusher_active: bool = false,
 
-    /// 0 = synchronous ownership, 1 = reaper running with a live LoopObject,
-    /// 2 = reaper running after LoopObject deallocation, 3 = reaper finished.
-    reap_state: u8 = 0,
+    reap_state: ReapState = .synchronous,
 
     thread_id: c_ulong = 0,
     slow_callback_duration: f64 = 0.1,
@@ -117,6 +115,18 @@ pub const State = struct {
     }
 };
 
+/// Who frees `State` once resolver requests outlive `close()`.
+const ReapState = enum(u8) {
+    /// No reaper thread: the loop object owns the state.
+    synchronous,
+    /// The reaper is running and the loop object is still alive.
+    reaping,
+    /// The reaper is running and the loop object is gone, so the reaper frees.
+    orphaned,
+    /// The reaper finished, so the loop object frees.
+    finished,
+};
+
 pub const LoopObject = extern struct {
     ob_base: c.PyObject,
     st: ?*State,
@@ -144,7 +154,7 @@ pub inline fn asLoop(obj: *py.Object) *LoopObject {
 }
 
 pub inline fn isReaping(st: *State) bool {
-    return @atomicLoad(u8, &st.reap_state, .acquire) != 0;
+    return @atomicLoad(ReapState, &st.reap_state, .acquire) != .synchronous;
 }
 
 /// True while the current thread owns and runs `loop_obj`.
@@ -281,7 +291,7 @@ fn dropFlushList(st: *State) void {
     while (node) |transport| {
         node = transport.flush_next;
         transport.flush_next = null;
-        transport.flags &= ~transportmod.FLUSH_QUEUED;
+        transport.flags.flush_queued = false;
         transportmod.discardPending(transport);
         py.decref(transport);
     }
@@ -293,7 +303,7 @@ fn drainFlushList(st: *State) void {
     while (node) |transport| {
         node = transport.flush_next;
         transport.flush_next = null;
-        transport.flags &= ~transportmod.FLUSH_QUEUED;
+        transport.flags.flush_queued = false;
         transportmod.flushPending(transport);
         py.decref(transport);
     }
@@ -310,8 +320,8 @@ pub fn scheduleFlush(st: *State, transport: *transportmod.Transport) void {
         transportmod.discardPending(transport);
         return;
     }
-    if (transport.flags & transportmod.FLUSH_QUEUED != 0) return;
-    transport.flags |= transportmod.FLUSH_QUEUED;
+    if (transport.flags.flush_queued) return;
+    transport.flags.flush_queued = true;
     py.incref(transport);
     transport.flush_next = st.flush_head;
     st.flush_head = transport;
@@ -1039,17 +1049,17 @@ fn freeStateStorage(st: *State) void {
 }
 
 fn releaseStateFromLoopObject(st: *State) void {
-    while (true) switch (@atomicLoad(u8, &st.reap_state, .acquire)) {
-        0, 3 => {
+    while (true) switch (@atomicLoad(ReapState, &st.reap_state, .acquire)) {
+        .synchronous, .finished => {
             freeStateStorage(st);
             return;
         },
-        1 => {
+        .reaping => {
             // Transfer final freeing to the reaper. If it just finished, retry
-            // and consume state 3 ourselves.
-            if (@cmpxchgStrong(u8, &st.reap_state, 1, 2, .acq_rel, .acquire) == null) return;
+            // and consume `finished` ourselves.
+            if (@cmpxchgStrong(ReapState, &st.reap_state, .reaping, .orphaned, .acq_rel, .acquire) == null) return;
         },
-        else => @panic("invalid DNS reaper ownership state"),
+        .orphaned => @panic("invalid DNS reaper ownership state"),
     };
 }
 
@@ -1058,18 +1068,18 @@ fn reapLoop(st: *State) void {
     if (uv.uv_loop_close(st.uvloop) != 0) @panic("libuv loop still owns requests after DNS reaping");
 
     // This must be the reaper's final access when the LoopObject still exists:
-    // deallocation may observe state 3 and immediately free the allocation.
-    if (@cmpxchgStrong(u8, &st.reap_state, 1, 3, .acq_rel, .acquire)) |current| {
-        if (current != 2) @panic("invalid DNS reaper ownership state");
+    // deallocation may observe `finished` and immediately free the allocation.
+    if (@cmpxchgStrong(ReapState, &st.reap_state, .reaping, .finished, .acq_rel, .acquire)) |current| {
+        if (current != .orphaned) @panic("invalid DNS reaper ownership state");
         freeStateStorage(st);
     }
 }
 
 fn startDnsReaper(st: *State) bool {
     dns.releaseFutures(st);
-    @atomicStore(u8, &st.reap_state, 1, .release);
+    @atomicStore(ReapState, &st.reap_state, .reaping, .release);
     const thread = std.Thread.spawn(.{}, reapLoop, .{st}) catch {
-        @atomicStore(u8, &st.reap_state, 0, .release);
+        @atomicStore(ReapState, &st.reap_state, .synchronous, .release);
         return false;
     };
     thread.detach();
