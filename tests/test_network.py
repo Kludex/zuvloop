@@ -2481,6 +2481,69 @@ def test_an_exit_from_a_flow_control_callback_reaches_the_caller(loop: zuvloop.E
         right.close()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; nothing pauses the protocol"
+)
+@pytest.mark.anyio(None)
+def test_an_exit_raised_while_the_loop_is_stopped_ends_the_next_run(loop: zuvloop.EventLoop) -> None:
+    """With no run in progress there is no caller to unwind to, so the exit is
+    held for the next run, which raises it before doing any work."""
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    ran: list[str] = []
+
+    class Interrupt(asyncio.Protocol):
+        def pause_writing(self) -> None:
+            raise KeyboardInterrupt("stop")
+
+    try:
+        transport, _protocol = loop.run_until_complete(loop.connect_accepted_socket(Interrupt, left))
+        transport.set_write_buffer_limits(high=1024, low=512)
+        transport.write(b"z" * (1 << 20))
+        loop.call_soon(ran.append, "callback")
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_forever()
+        assert ran == []
+        loop.run_until_complete(asyncio.sleep(0))
+        assert ran == ["callback"]
+    finally:
+        right.close()
+
+
+@pytest.mark.anyio(None)
+def test_an_exit_raised_once_the_loop_has_stopped_does_not_stall_the_next_run(loop: zuvloop.EventLoop) -> None:
+    """A write made by the callback that stops the loop is flushed after it has
+    stopped. An exit raised from there ends that run, and the next one must
+    still do its work rather than return at once."""
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+
+    class Interrupt(asyncio.Protocol):
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            assert isinstance(transport, asyncio.Transport)
+            self.transport = transport
+
+        def data_received(self, data: bytes) -> None:
+            self.transport.write(b"x" * 100)
+            # Past the new mark, so the protocol is paused with the write still batched.
+            self.transport.set_write_buffer_limits(high=10, low=5)
+            loop.stop()
+
+        def resume_writing(self) -> None:
+            raise KeyboardInterrupt("stop")
+
+    try:
+        loop.run_until_complete(loop.connect_accepted_socket(Interrupt, left))
+        right.send(b"go")
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_forever()
+        assert loop.run_until_complete(asyncio.sleep(0, "ran")) == "ran"
+    finally:
+        right.close()
+
+
 @pytest.mark.parametrize("keep_alive", [None, False, True])
 async def test_create_server_honours_keep_alive(keep_alive: bool | None) -> None:
     """asyncio sets SO_KEEPALIVE on each bound socket; this used to be a TypeError."""

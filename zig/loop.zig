@@ -509,12 +509,24 @@ pub fn noteTimerCancelled(self: *LoopObject) void {
     }
 }
 
+/// Holds the raised exception for `_run` to re-raise, and ends the run in
+/// progress. With no run in progress there is no caller to unwind to, so the
+/// exception waits for the next `_run`, which raises it before doing any work.
 pub fn captureFatal(self: *LoopObject) void {
     const st = self.state();
     const exc = c.PyErr_GetRaisedException();
     if (st.fatal == null) st.fatal = exc else py.xdecref(exc);
     st.stopping = true;
-    uv.uv_stop(st.uvloop);
+    // Only a `uv_run` in progress consumes the stop. Left set, it would make
+    // the next one - a later run, or the drain in `close` - return at once.
+    if (st.running) uv.uv_stop(st.uvloop);
+}
+
+fn raiseFatal(st: *State) py.Error!void {
+    const exc = st.fatal orelse return;
+    st.fatal = null;
+    c.PyErr_SetRaisedException(exc);
+    return py.Error.Python;
 }
 
 /// Routes the raised exception of a failed callback to `callExceptionHandler`.
@@ -718,6 +730,7 @@ fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
     const st = self.state();
     try checkClosed(st);
     if (st.running) return py.errRuntime("This event loop is already running");
+    try raiseFatal(st);
 
     st.running = true;
     st.stopping = false;
@@ -737,11 +750,7 @@ fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
     // callbacks write in turn.
     drainFlushList(st);
 
-    if (st.fatal) |exc| {
-        st.fatal = null;
-        c.PyErr_SetRaisedException(exc);
-        return py.Error.Python;
-    }
+    try raiseFatal(st);
     return py.noneRef();
 }
 
