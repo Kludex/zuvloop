@@ -39,25 +39,37 @@ jobs:
 
       # The pull request checks ran on a merge with an older main, so only the
       # push runs prove this exact commit. A run still in progress is awaited.
-      - name: Require CI, compatibility and hardening to have passed on this commit
+      # The gate jobs are required rather than the whole run, so a job outside
+      # them, such as a timed-out benchmark, does not block a release.
+      - name: Require the CI, compatibility and hardening gates to have passed on this commit
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          for workflow in ci compatibility hardening; do
+          while read -r workflow gate; do
             while true; do
-              run="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow.yml/runs?head_sha=$GITHUB_SHA&event=push" \
-                --jq '.workflow_runs[0] | "\(.status) \(.conclusion)"')"
+              run="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$GITHUB_SHA&event=push" \
+                --jq '.workflow_runs[0] | "\(.status) \(.id)"')"
               case "$run" in
-                "completed success") break ;;
-                "completed "* | "null "*)
-                  echo "::error::$workflow.yml has no successful push run on $GITHUB_SHA (found: $run)."
+                "completed "*) break ;;
+                "null "*)
+                  echo "::error::$workflow has no push run on $GITHUB_SHA."
                   exit 1
                   ;;
               esac
               sleep 30
             done
-          done
+            result="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/${run#* }/jobs?per_page=100" \
+              --jq ".jobs[] | select(.name == \"$gate\") | .conclusion")"
+            if [ "$result" != success ]; then
+              echo "::error::$gate ended with '$result' on $GITHUB_SHA."
+              exit 1
+            fi
+          done <<'EOF'
+          ci.yml PR quality gate
+          compatibility.yml Ecosystem compatibility gate
+          hardening.yml Native hardening gate
+          EOF
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
