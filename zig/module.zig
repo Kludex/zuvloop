@@ -6,6 +6,7 @@ const context = @import("context.zig");
 const loop = @import("loop.zig");
 const datagram = @import("datagram.zig");
 const process = @import("process.zig");
+const protocol = @import("protocol.zig");
 const handle = @import("handle.zig");
 const tshandle = @import("tshandle.zig");
 const timer = @import("timer.zig");
@@ -26,6 +27,7 @@ fn exec(module: ?*py.Object) callconv(.c) c_int {
     handle.register(m) catch return -1;
     tshandle.register(m) catch return -1;
     timer.register(m) catch return -1;
+    protocol.register() catch return -1;
     loop.register(m) catch return -1;
     datagram.register(m) catch return -1;
     process.register(m) catch return -1;

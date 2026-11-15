@@ -12,6 +12,7 @@ const c = py.c;
 const uv = @import("uv.zig");
 const handlemod = @import("handle.zig");
 const loopmod = @import("loop.zig");
+const protocolmod = @import("protocol.zig");
 const LoopObject = loopmod.LoopObject;
 
 const alloc = std.heap.c_allocator;
@@ -41,7 +42,6 @@ pub const KIND_PIPE: c_int = 1;
 /// A pipe whose descriptor is write-only, so no read is ever started on it.
 pub const KIND_PIPE_WRITE: c_int = 2;
 
-const default_high_water: usize = 64 * 1024;
 /// Reads land in a `bytes` object sized to what the peer has been sending.
 ///
 /// A fixed size cannot serve both shapes of traffic: a large buffer wastes an
@@ -79,8 +79,6 @@ var str_resume_writing: ?*py.Object = null;
 var str_detach: ?*py.Object = null;
 var str_sock_detach: ?*py.Object = null;
 var str_pipe_close: ?*py.Object = null;
-var str_high: ?*py.Object = null;
-var str_low: ?*py.Object = null;
 var str_start_reading: ?*py.Object = null;
 var str_set_result_unless_cancelled: ?*py.Object = null;
 var set_result_unless_cancelled: ?*py.Object = null;
@@ -201,12 +199,6 @@ fn acquireWriteView(data: *py.Object, view: *c.Py_buffer) py.Error!void {
 // ---------------------------------------------------------------------------
 // protocol dispatch
 
-fn cacheCallback(protocol: *py.Object, name: ?*py.Object, slot: *?*py.Object) void {
-    py.clear(slot);
-    slot.* = c.PyObject_GetAttr(protocol, name);
-    if (slot.* == null) c.PyErr_Clear();
-}
-
 /// Re-reads which reading protocol the object implements. `set_protocol` can
 /// swap a plain protocol for a buffered one - `start_tls` does exactly that -
 /// so bufferedness is decided here rather than by the caller.
@@ -214,10 +206,10 @@ fn bindProtocol(self: *Transport, protocol: *py.Object) void {
     py.clear(&self.protocol);
     py.incref(protocol);
     self.protocol = protocol;
-    cacheCallback(protocol, str_connection_lost, &self.cb_connection_lost);
-    cacheCallback(protocol, str_eof_received, &self.cb_eof_received);
-    cacheCallback(protocol, str_pause_writing, &self.cb_pause_writing);
-    cacheCallback(protocol, str_resume_writing, &self.cb_resume_writing);
+    protocolmod.cacheCallback(protocol, str_connection_lost, &self.cb_connection_lost);
+    protocolmod.cacheCallback(protocol, str_eof_received, &self.cb_eof_received);
+    protocolmod.cacheCallback(protocol, str_pause_writing, &self.cb_pause_writing);
+    protocolmod.cacheCallback(protocol, str_resume_writing, &self.cb_resume_writing);
 
     py.clear(&self.cb_get_buffer);
     py.clear(&self.cb_buffer_updated);
@@ -227,20 +219,12 @@ fn bindProtocol(self: *Transport, protocol: *py.Object) void {
     if (buffered < 0) c.PyErr_Clear();
     if (buffered == 1) {
         self.flags |= BUFFERED;
-        cacheCallback(protocol, str_get_buffer, &self.cb_get_buffer);
-        cacheCallback(protocol, str_buffer_updated, &self.cb_buffer_updated);
+        protocolmod.cacheCallback(protocol, str_get_buffer, &self.cb_get_buffer);
+        protocolmod.cacheCallback(protocol, str_buffer_updated, &self.cb_buffer_updated);
     } else {
         self.flags &= ~BUFFERED;
-        cacheCallback(protocol, str_data_received, &self.cb_data_received);
+        protocolmod.cacheCallback(protocol, str_data_received, &self.cb_data_received);
     }
-}
-
-/// Used for callbacks asyncio invokes synchronously from `write()`, which
-/// simply inherit whichever context is already active.
-fn callProtocol(self: *Transport, callback: ?*py.Object, arg: ?*py.Object) void {
-    const cb = callback orelse return;
-    const result = if (arg) |a| c.PyObject_CallOneArg(cb, a) else c.PyObject_CallNoArgs(cb);
-    if (result) |r| py.decref(r) else reportError(self, "Error in protocol callback");
 }
 
 /// Used for the read path. asyncio delivers reads from a handle whose context
@@ -252,7 +236,7 @@ fn callInContext(self: *Transport, callback: ?*py.Object, arg: ?*py.Object, comp
     const context = self.context;
     if (context) |ctx| {
         if (c.PyContext_Enter(ctx) < 0) {
-            reportError(self, "Error entering the transport context");
+            protocolmod.reportError(self.loop.?, @ptrCast(self), "Error entering the transport context");
             return;
         }
     }
@@ -279,34 +263,6 @@ fn callInContext(self: *Transport, callback: ?*py.Object, arg: ?*py.Object, comp
         loopmod.callExceptionHandler(loop, failed, exc, @ptrCast(self));
         forceClose(self, exc);
     }
-}
-
-fn reportError(self: *Transport, comptime message: [:0]const u8) void {
-    const exc = c.PyErr_GetRaisedException() orelse return;
-    defer py.decref(exc);
-    loopmod.callExceptionHandler(loopmod.asLoop(self.loop.?), message, exc, @ptrCast(self));
-}
-
-/// Queues `callback(arg)` on the loop rather than reentering protocol code
-/// from inside a libuv callback.
-fn scheduleCall(self: *Transport, callback: ?*py.Object, arg: ?*py.Object) void {
-    const cb = callback orelse return;
-    const st = self.loopState();
-    if (st.closed) return;
-    const loop = loopmod.asLoop(self.loop.?);
-    var argv: [1]?*py.Object = .{arg};
-    const n: usize = if (arg == null) 0 else 1;
-    const h = handlemod.create(handlemod.handle_type.?, self.loop.?, cb, argv[0..n], self.context) catch {
-        loopmod.captureFatal(loop);
-        return;
-    };
-    st.ready.push(@ptrCast(h)) catch {
-        py.decref(h);
-        py.errNoMemory() catch {};
-        loopmod.captureFatal(loop);
-        return;
-    };
-    loopmod.startIdle(st);
 }
 
 // ---------------------------------------------------------------------------
@@ -363,7 +319,7 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
                 return;
             }
         }
-        reportError(self, "Error allocating a receive buffer");
+        protocolmod.reportError(self.loop.?, @ptrCast(self), "Error allocating a receive buffer");
         buf.* = .{ .base = @ptrFromInt(@alignOf(u8)), .len = 0 };
         return;
     }
@@ -414,7 +370,7 @@ fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) vo
         py.clear(&self.read_bytes);
         if (nread == 0) return;
         if (bufferedBytes(self) != 0) {
-            forceClose(self, takeUvError(uv.EPIPE));
+            forceClose(self, protocolmod.takeUvError(uv.EPIPE));
         } else {
             closeTransport(self);
         }
@@ -458,7 +414,7 @@ fn onRead(stream: ?*uv.Stream, nread: isize, buf: *const uv.Buf) callconv(.c) vo
         handleEof(self);
         return;
     }
-    forceClose(self, takeUvError(@intCast(nread)));
+    forceClose(self, protocolmod.takeUvError(@intCast(nread)));
 }
 
 fn repr(obj: ?*py.Object) callconv(.c) ?*py.Object {
@@ -481,13 +437,6 @@ fn isSocket(fd: c_int) bool {
         var len: std.c.socklen_t = @sizeOf(c_int);
         return std.c.getsockopt(fd, std.c.SOL.SOCKET, std.c.SO.TYPE, &kind, &len) == 0;
     }
-}
-
-fn takeUvError(status: c_int) ?*py.Object {
-    switch (py.errUv(status)) {
-        error.Python => {},
-    }
-    return c.PyErr_GetRaisedException();
 }
 
 /// A full buffer means the peer had more to give, so read bigger next time.
@@ -518,7 +467,7 @@ fn handleEof(self: *Transport) void {
         if (c.PyContext_Exit(ctx) < 0) c.PyErr_Clear();
     }
     const kept = keep orelse {
-        reportError(self, "Error in eof_received");
+        protocolmod.reportError(self.loop.?, @ptrCast(self), "Error in eof_received");
         closeTransport(self);
         return;
     };
@@ -553,7 +502,7 @@ fn onWritten(req: ?*uv.Write, status: c_int) callconv(.c) void {
         // already recorded by then, and this is not it. `OPEN` is cleared
         // immediately before `uv_close` on both teardown paths, so it separates
         // a real write failure from libuv tidying up after one.
-        if (self.flags & OPEN != 0) forceClose(self, takeUvError(status));
+        if (self.flags & OPEN != 0) forceClose(self, protocolmod.takeUvError(status));
         return;
     }
     maybeResumeProtocol(self);
@@ -636,7 +585,7 @@ fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!vo
             pending[0].len -= @intCast(remaining);
         } else if (written < 0 and written != uv.EAGAIN) {
             releaseViews(views);
-            forceClose(self, takeUvError(written));
+            forceClose(self, protocolmod.takeUvError(written));
             return;
         }
     }
@@ -729,7 +678,7 @@ fn maybePauseProtocol(self: *Transport) void {
     if (bufferedBytes(self) <= self.high_water) return;
     if (self.flags & PROTOCOL_PAUSED != 0) return;
     self.flags |= PROTOCOL_PAUSED;
-    callProtocol(self, self.cb_pause_writing, null);
+    protocolmod.call(self.loop.?, @ptrCast(self), self.cb_pause_writing, null);
 }
 
 fn maybeResumeProtocol(self: *Transport) void {
@@ -740,7 +689,7 @@ fn maybeResumeProtocol(self: *Transport) void {
     if (self.flags & PROTOCOL_PAUSED == 0) return;
     if (bufferedBytes(self) > self.low_water) return;
     self.flags &= ~PROTOCOL_PAUSED;
-    callProtocol(self, self.cb_resume_writing, null);
+    protocolmod.call(self.loop.?, @ptrCast(self), self.cb_resume_writing, null);
 }
 
 fn onShutdown(req: ?*uv.Shutdown, status: c_int) callconv(.c) void {
@@ -770,12 +719,8 @@ fn shutdownWrite(self: *Transport) void {
 /// is disarmed before libuv closes the number, preventing a second close after
 /// another thread reuses it.
 fn releaseSocketView(self: *Transport) void {
-    const view = self.socket_view orelse return;
-    self.socket_view = null;
     const method = if (self.flags & PIPE_OWNED != 0) str_pipe_close else str_sock_detach;
-    const result = c.PyObject_CallMethodNoArgs(view, method);
-    if (result) |r| py.decref(r) else c.PyErr_Clear();
-    py.decref(view);
+    protocolmod.releaseSocketView(&self.socket_view, method);
 }
 
 fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
@@ -786,7 +731,7 @@ fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     defer st.pythonExit();
 
     self.flags |= CONN_LOST;
-    scheduleCall(self, self.cb_connection_lost, self.conn_lost_exc orelse py.none());
+    protocolmod.scheduleCall(self.loop.?, self.context, self.cb_connection_lost, self.conn_lost_exc orelse py.none());
     if (self.server) |server| {
         const res = c.PyObject_CallMethodOneArg(server, str_detach, @ptrCast(self));
         if (res) |r| py.decref(r) else py.writeUnraisable(@ptrCast(self));
@@ -886,14 +831,7 @@ fn asTransport(obj: *py.Object) *Transport {
 }
 
 fn getExtraInfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py.Object {
-    if (args.len < 1 or args.len > 2) return py.errType("get_extra_info() takes 1 or 2 arguments");
-    const self = asTransport(self_obj);
-    const default: *py.Object = if (args.len == 2) args[1].? else py.none();
-    const extra = self.extra orelse return py.newref(default).?;
-    const found = c.PyDict_GetItemWithError(extra, args[0].?);
-    if (found) |v| return py.newref(v).?;
-    if (c.PyErr_Occurred() != null) return py.Error.Python;
-    return py.newref(default).?;
+    return protocolmod.extraInfo(asTransport(self_obj).extra, args);
 }
 
 fn isClosing(self_obj: *py.Object) py.Error!*py.Object {
@@ -1059,62 +997,16 @@ fn getWriteBufferLimits(self_obj: *py.Object) py.Error!*py.Object {
     return c.Py_BuildValue("nn", @as(c.Py_ssize_t, @intCast(self.low_water)), @as(c.Py_ssize_t, @intCast(self.high_water))) orelse py.Error.Python;
 }
 
-/// `set_write_buffer_limits(high=None, low=None)`, matching asyncio: an
-/// omitted low mark defaults to a quarter of the high mark.
 fn setWriteBufferLimits(
     self_obj: *py.Object,
     args: []const ?*py.Object,
     nargs: usize,
     kwnames: ?*py.Object,
 ) py.Error!*py.Object {
-    if (nargs > 2) return py.errType("set_write_buffer_limits() takes at most 2 arguments");
-    var high: ?*py.Object = if (nargs > 0) args[0] else null;
-    var low: ?*py.Object = if (nargs > 1) args[1] else null;
-    if (kwnames) |names| {
-        const n: usize = @intCast(c.PyTuple_Size(names));
-        var i: usize = 0;
-        while (i < n) : (i += 1) {
-            const key = c.PyTuple_GetItem(names, @intCast(i)) orelse return py.Error.Python;
-            if (c.PyObject_RichCompareBool(key, str_high, c.Py_EQ) == 1) {
-                high = args[nargs + i];
-            } else if (c.PyObject_RichCompareBool(key, str_low, c.Py_EQ) == 1) {
-                low = args[nargs + i];
-            } else {
-                return py.errType("set_write_buffer_limits() got an unexpected keyword argument");
-            }
-        }
-    }
-
+    const marks = try protocolmod.parseWriteBufferLimits(args, nargs, kwnames);
     const self = asTransport(self_obj);
-    var high_water: usize = default_high_water;
-    if (high) |value| {
-        if (!py.isNone(value)) {
-            const parsed = try py.asIsize(value);
-            if (parsed < 0) return py.errValue("high water mark must be non-negative");
-            high_water = @intCast(parsed);
-        }
-    }
-    var low_water: usize = high_water / 4;
-    if (low) |value| {
-        if (!py.isNone(value)) {
-            const parsed = try py.asIsize(value);
-            if (parsed < 0) return py.errValue("low water mark must be non-negative");
-            low_water = @intCast(parsed);
-        }
-    }
-    if (high == null or py.isNone(high.?)) {
-        if (low) |value| {
-            if (!py.isNone(value)) {
-                if (low_water > std.math.maxInt(c.Py_ssize_t) / 4) {
-                    return py.errOverflow("high water mark is too large");
-                }
-                high_water = low_water * 4;
-            }
-        }
-    }
-    if (low_water > high_water) return py.errValue("high water mark must be >= low water mark");
-    self.high_water = high_water;
-    self.low_water = low_water;
+    self.high_water = marks.high;
+    self.low_water = marks.low;
     maybePauseProtocol(self);
     return py.noneRef();
 }
@@ -1147,8 +1039,8 @@ pub fn makeTransport(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*
     errdefer py.decref(obj);
 
     self.state = st;
-    self.high_water = default_high_water;
-    self.low_water = default_high_water / 4;
+    self.high_water = protocolmod.default_high_water;
+    self.low_water = protocolmod.default_high_water / 4;
     self.kind = kind;
     self.read_size = read_size_min;
     self.context = c.PyContext_CopyCurrent();
@@ -1398,8 +1290,6 @@ pub fn register(module: *py.Object) py.Error!void {
     str_detach = py.intern("_detach") orelse return py.Error.Python;
     str_sock_detach = py.intern("detach") orelse return py.Error.Python;
     str_pipe_close = py.intern("close") orelse return py.Error.Python;
-    str_high = py.intern("high") orelse return py.Error.Python;
-    str_low = py.intern("low") orelse return py.Error.Python;
     str_start_reading = py.intern("_start_reading") orelse return py.Error.Python;
     str_set_result_unless_cancelled = py.intern("_set_result_unless_cancelled") orelse return py.Error.Python;
     set_result_unless_cancelled = py.importFrom("asyncio.futures", "_set_result_unless_cancelled") orelse return py.Error.Python;
