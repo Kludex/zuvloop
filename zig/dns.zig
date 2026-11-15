@@ -34,7 +34,8 @@ var gaierror: ?*py.Object = null;
 
 const max_host = 1024;
 
-const Request = struct {
+/// One resolver request, linked into its loop's list until libuv completes it.
+pub const Request = struct {
     state: *loopmod.State,
     future: ?*py.Object,
     kind: uv.ReqType,
@@ -69,7 +70,7 @@ fn allocRequest(loop: *LoopObject, kind: uv.ReqType) py.Error!*Request {
         return py.Error.Python;
     };
     self.future = future;
-    self.next = @ptrCast(@alignCast(st.dns_requests));
+    self.next = st.dns_requests;
     if (self.next) |next| next.prev = self;
     st.dns_requests = self;
     uv.setData(self.addrReq(), self);
@@ -91,7 +92,7 @@ fn freeRequest(self: *Request, kind: uv.ReqType) void {
 /// Cancels every resolver request owned by `st`. Completion callbacks still
 /// run and are responsible for unlinking and freeing their request.
 pub fn cancelAll(st: *loopmod.State) void {
-    var node: ?*Request = @ptrCast(@alignCast(st.dns_requests));
+    var node = st.dns_requests;
     while (node) |req| : (node = req.next) {
         const raw = switch (req.kind) {
             .getaddrinfo => uv.asReq(req.addrReq()),
@@ -105,7 +106,7 @@ pub fn cancelAll(st: *loopmod.State) void {
 /// Drops every Python future before the remaining native requests move to the
 /// background reaper. Their callbacks become purely native from this point.
 pub fn releaseFutures(st: *loopmod.State) void {
-    var node: ?*Request = @ptrCast(@alignCast(st.dns_requests));
+    var node = st.dns_requests;
     while (node) |req| : (node = req.next) py.clear(&req.future);
 }
 
@@ -113,7 +114,7 @@ pub fn releaseFutures(st: *loopmod.State) void {
 /// points back to its loop, so hiding this edge would make an abandoned request
 /// look like an external root and prevent the loop finalizer from cancelling it.
 pub fn traverse(st: *loopmod.State, visitproc: c.visitproc, arg: ?*anyopaque) c_int {
-    var node: ?*Request = @ptrCast(@alignCast(st.dns_requests));
+    var node = st.dns_requests;
     while (node) |req| : (node = req.next) {
         const r = py.visit(req.future, visitproc, arg);
         if (r != 0) return r;
