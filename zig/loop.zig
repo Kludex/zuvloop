@@ -71,7 +71,7 @@ pub const State = struct {
     timer_active: bool = false,
     sampler_active: bool = false,
     flusher_active: bool = false,
-    /// A datagram endpoint stopped receiving when a callback ended the run.
+    /// Datagram endpoints stopped receiving when a callback ended the run.
     datagrams_suspended: bool = false,
 
     /// 0 = synchronous ownership, 1 = reaper running with a live LoopObject,
@@ -521,7 +521,10 @@ pub fn captureFatal(self: *LoopObject) void {
     st.stopping = true;
     // Only a `uv_run` in progress consumes the stop. Left set, it would make
     // the next one - a later run, or the drain in `close` - return at once.
-    if (st.running) uv.uv_stop(st.uvloop);
+    if (!st.running) return;
+    uv.uv_stop(st.uvloop);
+    uv.uv_walk(st.uvloop, datagrammod.suspendReceiving, null);
+    st.datagrams_suspended = true;
 }
 
 fn raiseFatal(st: *State) py.Error!void {

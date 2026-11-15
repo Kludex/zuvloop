@@ -2502,8 +2502,11 @@ def test_an_exit_raised_while_the_loop_is_stopped_ends_the_next_run(loop: zuvloo
         transport.set_write_buffer_limits(high=1024, low=512)
         transport.write(b"z" * (1 << 20))
         loop.call_soon(ran.append, "callback")
+        # Without the held exit nothing would ever stop this run.
+        watchdog = loop.call_later(5, loop.stop)
         with pytest.raises(KeyboardInterrupt, match="stop"):
             loop.run_forever()
+        watchdog.cancel()
         assert ran == []
         loop.run_until_complete(asyncio.sleep(0))
         assert ran == ["callback"]
@@ -2542,6 +2545,23 @@ def test_an_exit_raised_once_the_loop_has_stopped_does_not_stall_the_next_run(lo
         assert loop.run_until_complete(asyncio.sleep(0, "ran")) == "ran"
     finally:
         right.close()
+
+
+@pytest.mark.anyio(None)
+def test_an_exit_from_eof_received_reaches_the_caller(loop: zuvloop.EventLoop) -> None:
+    seen = collect_contexts(loop)
+    left, right = socket.socketpair()
+    left.setblocking(False)
+
+    class Interrupt(asyncio.Protocol):
+        def eof_received(self) -> bool:
+            raise KeyboardInterrupt("stop")
+
+    loop.run_until_complete(loop.connect_accepted_socket(Interrupt, left))
+    right.close()
+    with pytest.raises(KeyboardInterrupt, match="stop"):
+        loop.run_until_complete(asyncio.sleep(5))
+    assert seen == []
 
 
 @pytest.mark.parametrize("keep_alive", [None, False, True])

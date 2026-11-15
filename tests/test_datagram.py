@@ -540,6 +540,55 @@ def test_an_exit_from_a_datagram_callback_leaves_the_rest_for_the_next_run(loop:
         sender.close()
 
 
+def test_an_exit_stops_delivery_on_every_datagram_endpoint(loop: EventLoop) -> None:
+    """Both sockets are ready in the same turn. The second callback must wait for
+    the next run, with its datagram still in the socket."""
+    received: list[bytes] = []
+
+    class Interrupt(asyncio.DatagramProtocol):
+        def datagram_received(self, data: bytes, addr: Address) -> None:
+            received.append(data)
+            raise KeyboardInterrupt("stop")
+
+    first, _protocol = loop.run_until_complete(loop.create_datagram_endpoint(Interrupt, local_addr=("127.0.0.1", 0)))
+    second, _protocol = loop.run_until_complete(loop.create_datagram_endpoint(Interrupt, local_addr=("127.0.0.1", 0)))
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sender.sendto(b"first", first.get_extra_info("sockname"))
+        sender.sendto(b"second", second.get_extra_info("sockname"))
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_until_complete(asyncio.sleep(5))
+        assert len(received) == 1
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_until_complete(asyncio.sleep(5))
+        assert sorted(received) == [b"first", b"second"]
+    finally:
+        first.close()
+        second.close()
+        sender.close()
+
+
+def test_an_exit_from_error_received_reaches_the_caller(loop: EventLoop) -> None:
+    seen = collect_contexts(loop)
+
+    class Interrupt(asyncio.DatagramProtocol):
+        def error_received(self, exc: Exception) -> None:
+            raise KeyboardInterrupt("stop")
+
+    async def send_too_much() -> None:
+        transport, _protocol = await loop.create_datagram_endpoint(Interrupt, local_addr=("127.0.0.1", 0))
+        try:
+            # Larger than any datagram a UDP socket can carry, so the send itself fails.
+            transport.sendto(b"x" * 100_000, ("127.0.0.1", 9))
+            await asyncio.sleep(5)
+        finally:
+            transport.close()
+
+    with pytest.raises(KeyboardInterrupt, match="stop"):
+        loop.run_until_complete(send_too_much())
+    assert seen == []
+
+
 async def test_ipv6_endpoints_round_trip() -> None:
     loop = running_loop()
     try:
