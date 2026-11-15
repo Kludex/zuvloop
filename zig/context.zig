@@ -52,8 +52,16 @@ pub fn release(loop: ?*py.Object, context: *?*py.Object, flags: u32) void {
     const current = context.* orelse return;
     context.* = null;
     const context_obj: *ContextObject = @ptrCast(@alignCast(current));
+    // `Py_REFCNT(o) == 1` proves nothing without the GIL: another thread can still take a
+    // reference from the collector's view of the object while this one decides.
     // The GC may clear the context before its handle, and len() on a cleared one dereferences NULL.
-    if (flags & captured_flag != 0 and c.Py_REFCNT(current) == 1 and context_obj.variables != null) {
+    if (flags & captured_flag != 0 and
+        (if (@hasDecl(c, "Py_GIL_DISABLED"))
+            c.PyUnstable_Object_IsUniquelyReferenced(current) != 0
+        else
+            c.Py_REFCNT(current) == 1) and
+        context_obj.variables != null)
+    {
         // Cleanup paths arrive with the caller's exception raised, and slots must not run with one pending.
         const pending = c.PyErr_GetRaisedException();
         const size = c.PyObject_Size(current);
