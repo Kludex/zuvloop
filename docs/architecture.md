@@ -50,10 +50,10 @@ buffer.
 
 /// note | Windows TCP receive buffers
 
-In libuv 1.52.1, a pending Windows TCP read uses a zero-length buffer owned by
-libuv, not your `BufferedProtocol` buffer. When data arrives, libuv asks for your
-buffer, fills it with a synchronous `WSARecv`, and calls the read callback before
-returning to the event loop. zuvloop releases its buffer view in that callback.
+A pending Windows TCP read uses a zero-length buffer owned by libuv, not your
+`BufferedProtocol` buffer. When data arrives, libuv asks for your buffer, fills
+it with a synchronous `WSARecv`, and calls the read callback before returning to
+the event loop. zuvloop releases its buffer view in that callback.
 
 A subsequent `start_tls()` or `set_protocol()` call on the loop thread therefore
 does not release a buffer still owned by a pending Windows read. Tests exercise
