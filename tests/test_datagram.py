@@ -568,6 +568,38 @@ def test_an_exit_stops_delivery_on_every_datagram_endpoint(loop: EventLoop) -> N
         sender.close()
 
 
+def test_an_exit_from_connection_made_leaves_a_queued_datagram_for_the_next_run(loop: EventLoop) -> None:
+    """Receiving starts later in the same turn, after the exit was captured, and
+    must not hand over what the socket already holds."""
+    receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    receiver.bind(("127.0.0.1", 0))
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sender.sendto(b"queued", receiver.getsockname())
+    made: list[asyncio.BaseTransport] = []
+    received: list[bytes] = []
+    delivered: asyncio.Future[None] = loop.create_future()
+
+    class Interrupt(asyncio.DatagramProtocol):
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            made.append(transport)
+            raise KeyboardInterrupt("stop")
+
+        def datagram_received(self, data: bytes, addr: Address) -> None:
+            received.append(data)
+            delivered.set_result(None)
+
+    try:
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_until_complete(loop.create_datagram_endpoint(Interrupt, sock=receiver))
+        assert received == []
+        loop.run_until_complete(asyncio.wait_for(delivered, 5))
+        assert received == [b"queued"]
+    finally:
+        for transport in made:
+            transport.close()
+        sender.close()
+
+
 def test_an_exit_from_error_received_reaches_the_caller(loop: EventLoop) -> None:
     seen = collect_contexts(loop)
 
@@ -575,18 +607,19 @@ def test_an_exit_from_error_received_reaches_the_caller(loop: EventLoop) -> None
         def error_received(self, exc: Exception) -> None:
             raise KeyboardInterrupt("stop")
 
-    async def send_too_much() -> None:
-        transport, _protocol = await loop.create_datagram_endpoint(Interrupt, local_addr=("127.0.0.1", 0))
-        try:
-            # Larger than any datagram a UDP socket can carry, so the send itself fails.
-            transport.sendto(b"x" * 100_000, ("127.0.0.1", 9))
-            await asyncio.sleep(5)
-        finally:
-            transport.close()
-
-    with pytest.raises(KeyboardInterrupt, match="stop"):
-        loop.run_until_complete(send_too_much())
-    assert seen == []
+    transport, _protocol = loop.run_until_complete(
+        loop.create_datagram_endpoint(Interrupt, local_addr=("127.0.0.1", 0))
+    )
+    try:
+        # Larger than any datagram a UDP socket can carry, so the send itself fails.
+        loop.call_soon(transport.sendto, b"x" * 100_000, ("127.0.0.1", 9))
+        watchdog = loop.call_later(5, loop.stop)
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_forever()
+        watchdog.cancel()
+        assert seen == []
+    finally:
+        transport.close()
 
 
 async def test_ipv6_endpoints_round_trip() -> None:

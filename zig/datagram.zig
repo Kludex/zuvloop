@@ -174,7 +174,12 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
     _ = suggested;
     const self: *Datagram = @ptrCast(@alignCast(uv.getData(handle.?)));
     const st = self.loopState();
-    const scratch = loopmod.scratchBuffer(st) orelse {
+    // libuv reads a socket until it is empty and dispatches every ready socket
+    // in a turn, without looking at the stop a callback asked for. Offering no
+    // buffer once the run is ending leaves what is queued in the socket for the
+    // next run, which is when asyncio would deliver it; `onRecv` drops the
+    // ENOBUFS libuv reports in return.
+    const scratch = (if (st.fatal == null) loopmod.scratchBuffer(st) else null) orelse {
         buf.* = .{ .base = @ptrFromInt(@alignOf(u8)), .len = 0 };
         return;
     };
@@ -209,6 +214,7 @@ fn onRecv(
         return;
     }
     if (nread < 0) {
+        if (nread == uv.ENOBUFS and st.fatal != null) return;
         const exc = takeUvError(@intCast(nread)) orelse return;
         defer py.decref(exc);
         callInContext(self, self.cb_error_received, &.{exc});
@@ -230,29 +236,6 @@ fn onRecv(
     };
     defer py.decref(sender);
     callInContext(self, self.cb_datagram_received, &.{ data, sender });
-}
-
-/// `uv_walk` callback that stops an endpoint from receiving without changing
-/// what it reports: `READING` stays set, so `resumeSuspended` knows to restart it.
-///
-/// libuv reads a socket until it is empty and dispatches every ready socket
-/// in a turn, without looking at the stop a callback asked for. Stopping every
-/// endpoint leaves what is still queued in the sockets for the next run, which
-/// is when asyncio would deliver it.
-pub fn suspendReceiving(handle: ?*uv.Handle, _: ?*anyopaque) callconv(.c) void {
-    const h = handle orelse return;
-    if (uv.uv_handle_get_type(h) != .udp) return;
-    const self: *Datagram = @ptrCast(@alignCast(uv.getData(h)));
-    if (self.flags & READING != 0) _ = uv.uv_udp_recv_stop(self.udp());
-}
-
-/// `uv_walk` callback that restarts every endpoint `suspendReceiving` stopped.
-pub fn resumeSuspended(handle: ?*uv.Handle, _: ?*anyopaque) callconv(.c) void {
-    const h = handle orelse return;
-    if (uv.uv_handle_get_type(h) != .udp) return;
-    const self: *Datagram = @ptrCast(@alignCast(uv.getData(h)));
-    // An endpoint that was never stopped answers that it is already receiving.
-    if (self.flags & READING != 0) _ = uv.uv_udp_recv_start(self.udp(), onAlloc, onRecv);
 }
 
 fn startReceiving(self: *Datagram) py.Error!void {
