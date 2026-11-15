@@ -13,8 +13,11 @@ const loopmod = @import("loop.zig");
 
 const alloc = std.heap.c_allocator;
 
-const OPEN: u32 = 1 << 0;
-const EXITED: u32 = 1 << 1;
+const Flags = packed struct(u32) {
+    open: bool = false,
+    exited: bool = false,
+    _: u30 = 0,
+};
 
 pub var process_type: ?*c.PyTypeObject = null;
 
@@ -25,7 +28,7 @@ pub const Process = extern struct {
     on_exit: ?*py.Object,
     context: ?*py.Object,
     returncode: c_int,
-    flags: u32,
+    flags: Flags,
 
     inline fn handle(self: *Process) *uv.Process {
         return @ptrCast(@as([*]u8, @ptrCast(self)) + handle_offset);
@@ -135,7 +138,7 @@ fn onExit(handle: ?*uv.Process, status: i64, signal: c_int) callconv(.c) void {
     // asyncio reports a signalled child as a negative signal number, the same
     // convention `subprocess` uses.
     self.returncode = if (signal != 0) -signal else @intCast(status);
-    self.flags |= EXITED;
+    self.flags.exited = true;
 
     if (self.on_exit) |callback| {
         const loop = loopmod.asLoop(self.loop.?);
@@ -173,15 +176,15 @@ fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
 }
 
 fn closeHandle(self: *Process) void {
-    if (self.flags & OPEN == 0) return;
-    self.flags &= ~OPEN;
+    if (!self.flags.open) return;
+    self.flags.open = false;
     self.loopState().closeExternalHandle(uv.asHandle(self.handle()), onClosed);
 }
 
 /// Closes a process handle discovered while the owning loop shuts down.
 pub fn closeFromLoop(handle: *uv.Handle) void {
     const self: *Process = @ptrCast(@alignCast(uv.getData(handle)));
-    self.flags &= ~OPEN;
+    self.flags.open = false;
     self.loopState().closeExternalHandle(handle, onClosed);
 }
 
@@ -199,13 +202,13 @@ fn getPid(self_obj: *py.Object) py.Error!*py.Object {
 
 fn getReturncode(self_obj: *py.Object) py.Error!*py.Object {
     const self = asProcess(self_obj);
-    if (self.flags & EXITED == 0) return py.noneRef();
+    if (!self.flags.exited) return py.noneRef();
     return py.int(@as(c.Py_ssize_t, self.returncode)) orelse py.Error.Python;
 }
 
 fn sendSignal(self_obj: *py.Object, signum: *py.Object) py.Error!*py.Object {
     const self = asProcess(self_obj);
-    if (self.flags & EXITED != 0) {
+    if (self.flags.exited) {
         c.PyErr_SetString(py.exc_process_lookup_error, "process already exited");
         return py.Error.Python;
     }
@@ -312,7 +315,7 @@ pub fn spawnProcess(self_obj: *py.Object, args_in: []const ?*py.Object) py.Error
         return py.errUv(status);
     }
 
-    self.flags |= OPEN;
+    self.flags.open = true;
     py.incref(obj); // released by the close callback
     py.incref(self_obj);
     self.loop = self_obj;
@@ -357,8 +360,8 @@ var methods = [_]c.PyMethodDef{
 };
 
 var slots = [_]c.PyType_Slot{
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&py.wrapDealloc(dealloc))) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&py.wrapTraverse(traverse))) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
     .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&py.wrapClear(clear_))) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
     .{ .slot = c.Py_tp_doc, .pfunc = @ptrCast(@constCast("A libuv-backed child process.")) },

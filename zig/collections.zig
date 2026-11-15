@@ -13,11 +13,13 @@ pub const Ready = struct {
 
     pub const empty: Ready = .{ .items = &.{} };
 
+    /// The item `index` places behind the head; `index` must be below `len`.
+    pub fn at(self: *const Ready, index: usize) ?*py.Object {
+        return self.items[(self.head + index) & (self.items.len - 1)];
+    }
+
     pub fn deinit(self: *Ready) void {
-        var i: usize = 0;
-        while (i < self.len) : (i += 1) {
-            py.xdecref(self.items[(self.head + i) & (self.items.len - 1)]);
-        }
+        for (0..self.len) |i| py.xdecref(self.at(i));
         if (self.items.len != 0) alloc.free(self.items);
         self.* = .empty;
     }
@@ -53,10 +55,7 @@ pub const Ready = struct {
 
     fn grow(self: *Ready, new_cap: usize) error{OutOfMemory}!void {
         const new_items = try alloc.alloc(?*py.Object, new_cap);
-        var i: usize = 0;
-        while (i < self.len) : (i += 1) {
-            new_items[i] = self.items[(self.head + i) & (self.items.len - 1)];
-        }
+        for (0..self.len) |i| new_items[i] = self.at(i);
         if (self.items.len != 0) alloc.free(self.items);
         self.items = new_items;
         self.head = 0;

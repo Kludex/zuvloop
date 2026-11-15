@@ -7,9 +7,6 @@ const py = @import("py.zig");
 const c = py.c;
 const loopmod = @import("loop.zig");
 
-/// Marks a context as implicitly captured rather than explicitly supplied.
-pub const captured_flag: u32 = 1 << 1;
-
 const ContextObject = extern struct {
     ob_base: c.PyObject,
     previous: ?*ContextObject,
@@ -18,13 +15,13 @@ const ContextObject = extern struct {
     entered: c_int,
 };
 
-/// Captures a non-empty current context and defers allocating an empty one.
-pub fn capture(explicit: ?*py.Object, flags: *u32) py.Error!?*py.Object {
+/// Returns the supplied context, or captures a non-empty current one and
+/// defers allocating an empty one.
+pub fn capture(explicit: ?*py.Object) py.Error!?*py.Object {
     if (explicit) |context| {
         py.incref(context);
         return context;
     }
-    flags.* |= captured_flag;
     const thread_state = c.PyThreadState_Get();
     const current_slot: *?*py.Object = @ptrFromInt(
         @intFromPtr(thread_state) + c.ZUVLOOP_PYTHREADSTATE_CONTEXT_OFFSET,
@@ -48,19 +45,58 @@ pub fn materialize(loop: ?*py.Object, context: *?*py.Object) py.Error!*py.Object
 }
 
 /// Releases a context or moves an unused captured one into the loop pool.
-pub fn release(loop: ?*py.Object, context: *?*py.Object, flags: u32) void {
+/// `captured` says the context was not supplied by the caller.
+pub fn release(loop: ?*py.Object, context: *?*py.Object, captured: bool) void {
     const current = context.* orelse return;
     context.* = null;
-    if (flags & captured_flag != 0 and c.Py_REFCNT(current) == 1) {
-        const context_obj: *ContextObject = @ptrCast(@alignCast(current));
+    const context_obj: *ContextObject = @ptrCast(@alignCast(current));
+    // `Py_REFCNT(o) == 1` proves nothing without the GIL: another thread can still take a
+    // reference from the collector's view of the object while this one decides.
+    // The GC may clear the context before its handle, and len() on a cleared one dereferences NULL.
+    if (captured and
+        (if (@hasDecl(c, "Py_GIL_DISABLED"))
+            c.PyUnstable_Object_IsUniquelyReferenced(current) != 0
+        else
+            c.Py_REFCNT(current) == 1) and
+        context_obj.variables != null)
+    {
+        // Cleanup paths arrive with the caller's exception raised, and slots must not run with one pending.
+        const pending = c.PyErr_GetRaisedException();
         const size = c.PyObject_Size(current);
+        if (size < 0) c.PyErr_Clear();
+        c.PyErr_SetRaisedException(pending);
         if (size == 0 and context_obj.weakrefs == null and context_obj.entered == 0) {
             if (loop) |loop_obj| {
                 if (loopmod.isRunningThread(loop_obj) and loopmod.recycleEmptyContext(loop_obj, current)) return;
             }
-        } else if (size < 0) {
-            c.PyErr_Clear();
         }
     }
     py.decref(current);
+}
+
+/// Refuses to load against a `contextvars.Context` whose layout is not the one
+/// `ContextObject` mirrors. The struct is private to CPython, and reading it
+/// through the wrong shape would recycle the wrong contexts rather than raise.
+pub fn register() py.Error!void {
+    const probe = c.PyContext_New() orelse return py.Error.Python;
+    defer py.decref(probe);
+    const mirror: *ContextObject = @ptrCast(@alignCast(probe));
+    // A new context holds a variable map and nothing else, which places `variables`.
+    var matches = py.typeOf(probe).tp_basicsize == @sizeOf(ContextObject) and
+        mirror.previous == null and mirror.variables != null and mirror.weakrefs == null and mirror.entered == 0;
+
+    // The other fields `release` reads are each driven to a value only they
+    // can hold, so one that moved is caught even when the size did not change.
+    const reference = c.PyWeakref_NewRef(probe, null) orelse return py.Error.Python;
+    defer py.decref(reference);
+    matches = matches and mirror.weakrefs != null;
+    // Entering notifies any installed context watcher, which is free to share the
+    // probe with another thread, so this read must not race a write made there.
+    if (c.PyContext_Enter(probe) < 0) return py.Error.Python;
+    matches = matches and @atomicLoad(c_int, &mirror.entered, .seq_cst) == 1;
+    if (c.PyContext_Exit(probe) < 0) return py.Error.Python;
+
+    if (!matches) {
+        return py.errRuntime("contextvars.Context instance layout is not the one zuvloop was built against");
+    }
 }

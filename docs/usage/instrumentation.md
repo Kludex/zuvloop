@@ -19,13 +19,14 @@ whether or not an OpenTelemetry provider exists. Telemetry only counts them. A
 broken exporter or provider is contained: its exception is not allowed to escape
 the loop's exception handler or suppress the normal log record.
 
-!!! note "Unhandled exceptions do not produce spans"
-    Most of what reaches the loop's exception handler is not a failure of your
-    code. A peer that disconnects mid-keepalive, or an exception landing in a
-    shielded future whose waiter was cancelled, both arrive there. A span per
-    event made them look like errors. The `zuvloop.unhandled_exceptions` counter
-    carries the exception class in `error.type`, so you can alert on the classes
-    you care about. The traceback is in the `asyncio` log record.
+/// note | Unhandled exceptions do not produce spans
+Most of what reaches the loop's exception handler is not a failure of your
+code. A peer that disconnects mid-keepalive, or an exception landing in a
+shielded future whose waiter was cancelled, both arrive there. A span per
+event made them look like errors. The `zuvloop.unhandled_exceptions` counter
+carries the exception class in `error.type`, so you can alert on the classes
+you care about. The traceback is in the `asyncio` log record.
+///
 
 ## Signals
 

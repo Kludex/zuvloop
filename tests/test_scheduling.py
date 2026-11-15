@@ -140,6 +140,26 @@ def test_call_soon_keeps_empty_contexts_independent() -> None:
     assert seen == ["default"]
 
 
+def test_call_soon_discards_a_pooled_context_the_gc_cleared() -> None:
+    loop = zuvloop.new_event_loop()
+    variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable", default="default")
+
+    async def main() -> str:
+        cycle: list[zuvloop.Handle | None] = []
+        cycle.append(loop.call_soon(cycle.append, None))
+        await asyncio.sleep(0)
+        del cycle
+        gc.collect()
+        future: asyncio.Future[str] = loop.create_future()
+        loop.call_soon(lambda: future.set_result(variable.get()))
+        return await future
+
+    try:
+        assert contextvars.Context().run(loop.run_until_complete, main()) == "default"
+    finally:
+        loop.close()
+
+
 def test_call_soon_exposes_its_context_before_running() -> None:
     loop = zuvloop.new_event_loop()
     variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable", default="default")
@@ -185,13 +205,14 @@ async def test_callback_can_cancel_its_own_handle_during_vectorcall(
     schedule_callback: ScheduleCallback, args: tuple[int, ...]
 ) -> None:
     loop = running_loop()
-    seen: list[tuple[bool, bool, tuple[int, ...]]] = []
+    seen: list[tuple[bool, bool, bool, tuple[int, ...]]] = []
     done: asyncio.Future[None] = loop.create_future()
 
     def callback(*received: int) -> None:
         handle.cancel()
         handle.cancel()
-        seen.append((reference() is not None, handle.cancelled(), received))
+        # The call in progress keeps its arguments; the handle already reports none.
+        seen.append((reference() is not None, handle.cancelled(), handle._args is None, received))
         done.set_result(None)
 
     wrapped = functools.partial(callback)
@@ -200,7 +221,7 @@ async def test_callback_can_cancel_its_own_handle_during_vectorcall(
     del wrapped
     try:
         await asyncio.wait_for(done, 2)
-        assert seen == [(True, True, args)]
+        assert seen == [(True, True, True, args)]
         gc.collect()
         assert reference() is None
         assert handle.cancelled()
@@ -240,6 +261,15 @@ async def test_self_cancelling_callback_releases_references_after_an_exception(
     finally:
         handle.cancel()
         loop.set_exception_handler(previous)
+
+
+async def test_a_cancelled_handle_reports_no_arguments(schedule_callback: ScheduleCallback) -> None:
+    """asyncio sets `_args` to None on cancel rather than emptying it, and code
+    that formats or inspects a handle reads it whichever scheduler it came from."""
+    handle = schedule_callback(functools.partial(print), 1, 2)
+    assert handle._args == (1, 2)
+    handle.cancel()
+    assert handle._args is None
 
 
 async def test_handle_repr_names_the_callback() -> None:
@@ -717,6 +747,57 @@ def test_threadsafe_cancel_before_the_loop_runs_it() -> None:
     loop.close()
     assert results == []
     assert observed == [True]
+
+
+def test_threadsafe_callbacks_queued_while_draining_waits_on_a_handle_all_run() -> None:
+    loop = zuvloop.new_event_loop()
+    finalizing = threading.Event()
+    draining = threading.Event()
+    drained = threading.Event()
+    flooded = threading.Event()
+    ran: list[None] = []
+    total = 1000
+
+    class SpinningFinalizer:
+        def __del__(self) -> None:
+            finalizing.set()
+            # Spinning keeps the thread attached, so `cancel` holds the handle's critical section.
+            while not flooded.is_set() and not drained.is_set():
+                pass
+
+    def cancel_with_a_slow_finalizer() -> None:
+        loop.call_soon_threadsafe(ran.append, None, SpinningFinalizer()).cancel()
+
+    def flood() -> None:
+        try:
+            draining.wait(5)
+            # A late loop thread lets this producer wait on the held handle instead, until `drained` frees it.
+            time.sleep(0.1)
+            for _ in range(total):
+                loop.call_soon_threadsafe(ran.append, None)
+            loop.call_soon_threadsafe(loop.stop)
+        finally:
+            flooded.set()
+
+    def drain_while_the_handle_is_held() -> None:
+        finalizing.wait(5)
+        draining.set()
+        try:
+            loop.call_soon(lambda: None)
+        finally:
+            drained.set()
+
+    loop.call_soon(drain_while_the_handle_is_held)
+    # Only a loop that lost the flood's own `stop` gets this far.
+    loop.call_later(5, loop.stop)
+    threads = [threading.Thread(target=cancel_with_a_slow_finalizer), threading.Thread(target=flood)]
+    for thread in threads:
+        thread.start()
+    loop.run_forever()
+    for thread in threads:
+        thread.join()
+    loop.close()
+    assert len(ran) == total
 
 
 def test_threadsafe_cancel_releases_every_waiting_thread() -> None:

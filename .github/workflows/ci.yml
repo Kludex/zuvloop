@@ -11,7 +11,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Each main commit keeps its own run, so a later merge cannot cancel the one a release needs.
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -19,6 +20,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     # A single hung test would otherwise hold the job for the 6-hour default.
     timeout-minutes: 20
+    # compiler_rt and libc land here; rebuilding them dominates the Windows ARM64 install.
+    env:
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
     strategy:
       fail-fast: false
       matrix:
@@ -51,12 +55,14 @@ jobs:
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: .zig-cache
+          path: |
+            .zig-cache
+            .zig-global-cache
           key: >-
             zig-test-0.16.0-${{ matrix.os }}-${{ matrix.python-version }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: zig-test-0.16.0-${{ matrix.os }}-${{ matrix.python-version }}-
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           version: 0.12.3
@@ -65,6 +71,7 @@ jobs:
         env:
           HATCH_ZIG_TARGET: ${{ matrix.os == 'windows-11-arm' && 'aarch64-windows' || '' }}
           PYTHON_VERSION: ${{ matrix.python-version }}
+        shell: bash
         run: uv sync --locked --python "$PYTHON_VERSION" --group dev --group bench
 
       - name: Verify the hashed build constraints
@@ -167,6 +174,8 @@ jobs:
     # standard and free-threaded wheels; leave room for both while the per-test
     # timeout still catches an actual hang quickly.
     timeout-minutes: 60
+    env:
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
     strategy:
       fail-fast: false
       matrix:
@@ -184,7 +193,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           version: 0.12.3
@@ -201,8 +210,16 @@ jobs:
           key: cibuildwheel-4.2.0-${{ matrix.os }}-${{ hashFiles('pyproject.toml') }}
           restore-keys: cibuildwheel-4.2.0-${{ matrix.os }}-
 
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .zig-cache
+            .zig-global-cache
+          key: zig-release-0.16.0-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: zig-release-0.16.0-${{ matrix.os }}-
+
       - name: Build and test the release wheel
-        uses: pypa/cibuildwheel@e090b81e30c4d855ea63bf4b6e59204c09a101ae # v4.2.1
+        uses: pypa/cibuildwheel@f9b966cfadf4109556cadc5bb39ddb72d0ce664e # v4.3.5
         env:
           CIBW_ARCHS: ${{ matrix.archs }}
           CIBW_CACHE_PATH: ${{ runner.temp }}/cibw-cache
@@ -280,13 +297,14 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           version: 0.12.3
 
+      # Debian's `pyconfig.h` includes a multiarch path Zig only searches on native builds.
       - name: Install
-        run: uv sync --locked --python 3.14 --group dev
+        run: uv sync --locked --managed-python --python 3.14 --group dev
 
       # The headers are the host's, which is enough: this compiles the Zig, and
       # what differs between targets is `std.c`, not `Python.h`.
@@ -318,7 +336,7 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           version: 0.12.3
@@ -366,7 +384,10 @@ jobs:
 
 
   benchmarks:
-    runs-on: ubuntu-latest
+    # ubuntu-latest hands out different CPUs from run to run, which moves every
+    # benchmark against its baseline. GitHub documents the arm64 fleet as one
+    # processor; CodSpeed warns when base and head hardware differ.
+    runs-on: ubuntu-24.04-arm
     # Normally ~3 minutes; the CodSpeed harness has been seen sitting for over
     # half an hour, and without a bound that holds the whole run hostage.
     timeout-minutes: 15
@@ -385,17 +406,18 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           version: 0.12.3
 
+      # The baseline was recorded on uv's CPython; the runner's system Python is a different interpreter.
       - name: Install
-        run: uv sync --locked --python 3.14 --group dev --group bench
+        run: uv sync --locked --managed-python --python 3.14 --group dev --group bench
 
       # Walltime, not simulation: an event loop spends its time in syscalls and
       # polling, which instruction counting does not model.
-      - uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
+      - uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3
         with:
           mode: walltime
           run: >-
@@ -410,7 +432,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           version: 0.12.3
