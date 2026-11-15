@@ -1363,8 +1363,8 @@ var getsets = [_]c.PyGetSetDef{
 };
 
 var slots = [_]c.PyType_Slot{
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&py.wrapDealloc(dealloc))) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&py.wrapTraverse(traverse))) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
     .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&py.wrapClear(clear_))) },
     .{ .slot = c.Py_tp_repr, .pfunc = @ptrCast(@constCast(&py.wrapRepr(repr))) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
