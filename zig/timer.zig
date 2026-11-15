@@ -17,9 +17,6 @@ const c = py.c;
 const handlemod = @import("handle.zig");
 const loopmod = @import("loop.zig");
 
-const inline_args = 3;
-const arg_alloc = std.heap.c_allocator;
-
 const Flags = packed struct(u32) {
     cancelled: bool = false,
     /// What asyncio reports as `_scheduled`.
@@ -39,7 +36,7 @@ const Payload = extern struct {
     nargs: c.Py_ssize_t,
     flags: Flags,
     when: f64,
-    args: [inline_args]?*py.Object,
+    args: [3]?*py.Object,
 
     pub inline fn argv(self: *Payload) [*]?*py.Object {
         return self.heap_args orelse @ptrCast(&self.args);
@@ -87,6 +84,7 @@ pub fn create(
     original_when: ?*py.Object,
 ) py.Error!*py.Object {
     const obj = c.PyType_GenericAlloc(timer_type.?, 0) orelse return py.Error.Python;
+    errdefer py.decref(obj);
     const self = payload(obj);
     self.when = at;
     self.flags = .{ .scheduled = true, .in_heap = true };
@@ -95,19 +93,7 @@ pub fn create(
         self.when_obj = value;
     }
 
-    if (args.len > inline_args) {
-        const buf = arg_alloc.alloc(?*py.Object, args.len) catch {
-            py.decref(obj);
-            return py.errNoMemory();
-        };
-        self.heap_args = buf.ptr;
-    }
-    const dst = self.argv();
-    for (args, 0..) |a, i| {
-        py.incref(a.?);
-        dst[i] = a;
-    }
-    self.nargs = @intCast(args.len);
+    try handlemod.storeArgs(self, args);
 
     py.incref(loop);
     self.loop = loop;
@@ -118,10 +104,7 @@ pub fn create(
         py.incref(ctx);
         self.context = ctx;
     } else {
-        self.context = c.PyContext_CopyCurrent() orelse {
-            py.decref(obj);
-            return py.Error.Python;
-        };
+        self.context = c.PyContext_CopyCurrent() orelse return py.Error.Python;
     }
 
     return obj;
@@ -136,23 +119,11 @@ pub fn run(obj: *py.Object) void {
     defer {
         self.flags.running = false;
         if (self.flags.cancelled) {
-            clearArgs(self);
+            handlemod.clearStoredArgs(self);
             py.clear(&self.callback);
         }
     }
     handlemod.invoke(obj, self.loop, callback, self.argv(), self.nargs, self.context.?);
-}
-
-fn clearArgs(self: *Payload) void {
-    const n: usize = @intCast(self.nargs);
-    const dst = self.argv();
-    var i: usize = 0;
-    while (i < n) : (i += 1) py.clear(&dst[i]);
-    self.nargs = 0;
-    if (self.heap_args) |buf| {
-        arg_alloc.free(buf[0..n]);
-        self.heap_args = null;
-    }
 }
 
 fn cancel(self_obj: *py.Object) py.Error!*py.Object {
@@ -160,7 +131,7 @@ fn cancel(self_obj: *py.Object) py.Error!*py.Object {
     if (!self.flags.cancelled) {
         self.flags.cancelled = true;
         if (!self.flags.running) {
-            clearArgs(self);
+            handlemod.clearStoredArgs(self);
             py.clear(&self.callback);
         }
         if (self.flags.in_heap) {
@@ -182,9 +153,7 @@ fn when(self_obj: *py.Object) py.Error!*py.Object {
 
 fn repr(obj: ?*py.Object) callconv(.c) ?*py.Object {
     const self = payload(obj.?);
-    const name = py.typeOf(obj.?).tp_name;
-    if (self.flags.cancelled) return c.PyUnicode_FromFormat("<%s cancelled>", name);
-    return c.PyUnicode_FromFormat("<%s %R>", name, self.callback orelse py.none());
+    return handlemod.describe(obj.?, self.flags.cancelled, self.callback);
 }
 
 fn dealloc(obj: ?*py.Object) callconv(.c) void {
@@ -192,7 +161,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     const tp = py.typeOf(obj.?);
     c.PyObject_GC_UnTrack(obj);
     c.PyObject_ClearWeakRefs(obj);
-    clearArgs(self);
+    handlemod.clearStoredArgs(self);
     py.clear(&self.loop);
     py.clear(&self.callback);
     py.clear(&self.context);
@@ -203,27 +172,13 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
 
 fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv(.c) c_int {
     const self = payload(obj.?);
-    var r = py.visit(self.loop, visitproc, arg);
-    if (r != 0) return r;
-    r = py.visit(self.callback, visitproc, arg);
-    if (r != 0) return r;
-    r = py.visit(self.context, visitproc, arg);
-    if (r != 0) return r;
-    r = py.visit(self.when_obj, visitproc, arg);
-    if (r != 0) return r;
-    const n: usize = @intCast(self.nargs);
-    const items = self.argv();
-    var i: usize = 0;
-    while (i < n) : (i += 1) {
-        r = py.visit(items[i], visitproc, arg);
-        if (r != 0) return r;
-    }
-    return py.visit(@ptrCast(py.typeOf(obj.?)), visitproc, arg);
+    const refs = [_]?*py.Object{ self.loop, self.callback, self.context, self.when_obj };
+    return handlemod.visitHandle(obj.?, &refs, self.argv()[0..@intCast(self.nargs)], visitproc, arg);
 }
 
 fn clear_(obj: ?*py.Object) callconv(.c) c_int {
     const self = payload(obj.?);
-    clearArgs(self);
+    handlemod.clearStoredArgs(self);
     py.clear(&self.loop);
     py.clear(&self.callback);
     py.clear(&self.context);
@@ -237,17 +192,7 @@ fn getCallback(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 
 fn getArgs(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
     const self = payload(self_obj.?);
-    // Cancelling drops the arguments rather than emptying them, which is the
-    // difference asyncio reports as None instead of an empty tuple.
-    if (self.flags.cancelled) return py.newref(py.none());
-    const n: usize = @intCast(self.nargs);
-    const items = self.argv();
-    const tuple = c.PyTuple_New(self.nargs) orelse return null;
-    var i: usize = 0;
-    while (i < n) : (i += 1) {
-        _ = c.PyTuple_SetItem(tuple, @intCast(i), py.newref(items[i]));
-    }
-    return tuple;
+    return handlemod.argsTuple(self.flags.cancelled, self.argv()[0..@intCast(self.nargs)]);
 }
 
 fn getCancelledSlot(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
@@ -270,10 +215,6 @@ fn getWhen(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 
 fn getScheduled(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
     return py.boolRef(payload(self_obj.?).flags.scheduled);
-}
-
-fn getNone(_: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
-    return py.newref(py.none());
 }
 
 // `_when` above all: the base's ordering and equality read it, and that ordering
@@ -322,8 +263,8 @@ var getsets = [_]c.PyGetSetDef{
         .closure = null,
     },
     .{ .name = "_scheduled", .get = py.wrapGet(getScheduled), .set = null, .doc = null, .closure = null },
-    .{ .name = "_source_traceback", .get = py.wrapGet(getNone), .set = null, .doc = null, .closure = null },
-    .{ .name = "_repr", .get = py.wrapGet(getNone), .set = null, .doc = null, .closure = null },
+    .{ .name = "_source_traceback", .get = py.wrapGet(handlemod.getNone), .set = null, .doc = null, .closure = null },
+    .{ .name = "_repr", .get = py.wrapGet(handlemod.getNone), .set = null, .doc = null, .closure = null },
     .{ .name = null, .get = null, .set = null, .doc = null, .closure = null },
 };
 
@@ -335,8 +276,8 @@ var methods = [_]c.PyMethodDef{
 };
 
 var slots = [_]c.PyType_Slot{
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&py.wrapDealloc(dealloc))) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&py.wrapTraverse(traverse))) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
     .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&py.wrapClear(clear_))) },
     .{ .slot = c.Py_tp_repr, .pfunc = @ptrCast(@constCast(&py.wrapRepr(repr))) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },

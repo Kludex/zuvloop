@@ -205,13 +205,14 @@ async def test_callback_can_cancel_its_own_handle_during_vectorcall(
     schedule_callback: ScheduleCallback, args: tuple[int, ...]
 ) -> None:
     loop = running_loop()
-    seen: list[tuple[bool, bool, tuple[int, ...]]] = []
+    seen: list[tuple[bool, bool, bool, tuple[int, ...]]] = []
     done: asyncio.Future[None] = loop.create_future()
 
     def callback(*received: int) -> None:
         handle.cancel()
         handle.cancel()
-        seen.append((reference() is not None, handle.cancelled(), received))
+        # The call in progress keeps its arguments; the handle already reports none.
+        seen.append((reference() is not None, handle.cancelled(), handle._args is None, received))
         done.set_result(None)
 
     wrapped = functools.partial(callback)
@@ -220,7 +221,7 @@ async def test_callback_can_cancel_its_own_handle_during_vectorcall(
     del wrapped
     try:
         await asyncio.wait_for(done, 2)
-        assert seen == [(True, True, args)]
+        assert seen == [(True, True, True, args)]
         gc.collect()
         assert reference() is None
         assert handle.cancelled()
@@ -260,6 +261,15 @@ async def test_self_cancelling_callback_releases_references_after_an_exception(
     finally:
         handle.cancel()
         loop.set_exception_handler(previous)
+
+
+async def test_a_cancelled_handle_reports_no_arguments(schedule_callback: ScheduleCallback) -> None:
+    """asyncio sets `_args` to None on cancel rather than emptying it, and code
+    that formats or inspects a handle reads it whichever scheduler it came from."""
+    handle = schedule_callback(functools.partial(print), 1, 2)
+    assert handle._args == (1, 2)
+    handle.cancel()
+    assert handle._args is None
 
 
 async def test_handle_repr_names_the_callback() -> None:
