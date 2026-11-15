@@ -111,17 +111,17 @@ class StalledSink(Sink):
         running_loop().call_soon(transport.pause_reading)
 
 
-async def start_sink(protocol_type: type[Sink] = Sink) -> tuple[Server, int, list[Sink]]:
-    sinks: list[Sink] = []
+async def start_sink(protocol_type: type[Sink] = Sink) -> tuple[Server, int, asyncio.Future[Sink]]:
+    loop = running_loop()
+    accepted: asyncio.Future[Sink] = loop.create_future()
 
     def factory() -> Sink:
         sink = protocol_type()
-        sinks.append(sink)
+        accepted.set_result(sink)
         return sink
 
-    loop = running_loop()
     server = await loop.create_server(factory, "127.0.0.1", 0)
-    return server, server.sockets[0].getsockname()[1], sinks
+    return server, server.sockets[0].getsockname()[1], accepted
 
 
 # -- sock_sendfile ----------------------------------------------------------
@@ -359,9 +359,10 @@ async def test_sock_sendfile_failing_after_a_partial_transfer(
 
 async def test_sendfile_streams_a_file_over_a_transport(payload_file: IO[bytes]) -> None:
     loop = running_loop()
-    server, port, sinks = await start_sink()
+    server, port, accepted = await start_sink()
     protocol = Recorder()
     transport, _ = await loop.create_connection(lambda: protocol, "127.0.0.1", port)
+    sink = await accepted
     try:
         sent = await loop.sendfile(transport, payload_file)
         assert sent == len(PAYLOAD)
@@ -372,14 +373,15 @@ async def test_sendfile_streams_a_file_over_a_transport(payload_file: IO[bytes])
         transport.close()
         server.close()
         await server.wait_closed()
-    await sinks[0].closed
-    assert bytes(sinks[0].received) == PAYLOAD + b"tail"
+    await sink.closed
+    assert bytes(sink.received) == PAYLOAD + b"tail"
 
 
 async def test_sendfile_honours_offset_and_count_over_a_transport(payload_file: IO[bytes]) -> None:
     loop = running_loop()
-    server, port, sinks = await start_sink()
+    server, port, accepted = await start_sink()
     transport, _ = await loop.create_connection(asyncio.Protocol, "127.0.0.1", port)
+    sink = await accepted
     try:
         sent = await loop.sendfile(transport, payload_file, offset=4096, count=100_000)
         assert sent == 100_000
@@ -388,13 +390,13 @@ async def test_sendfile_honours_offset_and_count_over_a_transport(payload_file: 
         transport.close()
         server.close()
         await server.wait_closed()
-    await sinks[0].closed
-    assert bytes(sinks[0].received) == PAYLOAD[4096:104_096]
+    await sink.closed
+    assert bytes(sink.received) == PAYLOAD[4096:104_096]
 
 
 async def test_sendfile_of_an_empty_file_over_a_transport(tmp_path: Path) -> None:
     loop = running_loop()
-    server, port, sinks = await start_sink()
+    server, port, _accepted = await start_sink()
     transport, _ = await loop.create_connection(asyncio.Protocol, "127.0.0.1", port)
     path = tmp_path / "empty.bin"
     path.write_bytes(b"")
@@ -410,9 +412,10 @@ async def test_sendfile_of_an_empty_file_over_a_transport(tmp_path: Path) -> Non
 @requires_loopback_backpressure
 async def test_sendfile_waits_for_buffered_writes_to_drain(payload_file: IO[bytes]) -> None:
     loop = running_loop()
-    server, port, sinks = await start_sink(StalledSink)
+    server, port, accepted = await start_sink(StalledSink)
     protocol = Recorder()
     transport, _ = await loop.create_connection(lambda: protocol, "127.0.0.1", port)
+    sink = await accepted
     # A stalled peer and a head far beyond loopback buffering, so the backlog
     # reliably outlives the sendfile call on every platform - Linux otherwise
     # absorbs multi-megabyte writes synchronously and nothing stays buffered.
@@ -427,21 +430,21 @@ async def test_sendfile_waits_for_buffered_writes_to_drain(payload_file: IO[byte
         task = loop.create_task(loop.sendfile(transport, payload_file, count=100_000))
         await asyncio.sleep(0.05)
         assert not task.done()
-        assert sinks[0].transport is not None
-        sinks[0].transport.resume_reading()
+        assert sink.transport is not None
+        sink.transport.resume_reading()
         assert await task == 100_000
         assert protocol.resumed >= 1
     finally:
         transport.close()
         server.close()
         await server.wait_closed()
-    await sinks[0].closed
-    assert bytes(sinks[0].received) == head + PAYLOAD[:100_000]
+    await sink.closed
+    assert bytes(sink.received) == head + PAYLOAD[:100_000]
 
 
 async def test_sendfile_rejects_a_closing_transport(payload_file: IO[bytes]) -> None:
     loop = running_loop()
-    server, port, _sinks = await start_sink()
+    server, port, _accepted = await start_sink()
     transport, _ = await loop.create_connection(asyncio.Protocol, "127.0.0.1", port)
     transport.close()
     try:
@@ -454,8 +457,9 @@ async def test_sendfile_rejects_a_closing_transport(payload_file: IO[bytes]) -> 
 
 async def test_sendfile_falls_back_for_a_filelike_over_a_transport() -> None:
     loop = running_loop()
-    server, port, sinks = await start_sink()
+    server, port, accepted = await start_sink()
     transport, _ = await loop.create_connection(asyncio.Protocol, "127.0.0.1", port)
+    sink = await accepted
     try:
         with pytest.raises(asyncio.SendfileNotAvailableError):
             await loop.sendfile(transport, io.BytesIO(b"data"), fallback=False)
@@ -465,8 +469,8 @@ async def test_sendfile_falls_back_for_a_filelike_over_a_transport() -> None:
         transport.close()
         server.close()
         await server.wait_closed()
-    await sinks[0].closed
-    assert bytes(sinks[0].received) == PAYLOAD[1000:200_000]
+    await sink.closed
+    assert bytes(sink.received) == PAYLOAD[1000:200_000]
 
 
 @requires_unix_sockets
@@ -555,9 +559,10 @@ async def test_sendfile_is_unsupported_for_datagram_transports(payload_file: IO[
 @requires_loopback_backpressure
 async def test_sendfile_surfaces_a_connection_lost_while_draining(payload_file: IO[bytes]) -> None:
     loop = running_loop()
-    server, port, sinks = await start_sink(StalledSink)
+    server, port, accepted = await start_sink(StalledSink)
     protocol = Recorder()
     transport, _ = await loop.create_connection(lambda: protocol, "127.0.0.1", port)
+    sink = await accepted
     try:
         # Far more than loopback buffering absorbs, so the backlog outlives the test.
         transport.write(PAYLOAD * 8)
@@ -571,9 +576,8 @@ async def test_sendfile_surfaces_a_connection_lost_while_draining(payload_file: 
         assert len(protocol.lost) == 1
         assert isinstance(protocol.lost[0], RuntimeError)
     finally:
-        for sink in sinks:
-            assert sink.transport is not None
-            sink.transport.abort()
+        assert sink.transport is not None
+        sink.transport.abort()
         server.close()
         await server.wait_closed()
 
@@ -581,8 +585,9 @@ async def test_sendfile_surfaces_a_connection_lost_while_draining(payload_file: 
 @requires_loopback_backpressure
 async def test_sendfile_reports_an_abort_while_draining_as_connection_error(payload_file: IO[bytes]) -> None:
     loop = running_loop()
-    server, port, sinks = await start_sink(StalledSink)
+    server, port, accepted = await start_sink(StalledSink)
     transport, _ = await loop.create_connection(asyncio.Protocol, "127.0.0.1", port)
+    sink = await accepted
     try:
         transport.write(PAYLOAD * 8)
         task = loop.create_task(loop.sendfile(transport, payload_file))
@@ -591,9 +596,8 @@ async def test_sendfile_reports_an_abort_while_draining_as_connection_error(payl
         with pytest.raises(ConnectionError, match="closed by peer"):
             await task
     finally:
-        for sink in sinks:
-            assert sink.transport is not None
-            sink.transport.abort()
+        assert sink.transport is not None
+        sink.transport.abort()
         server.close()
         await server.wait_closed()
 
@@ -601,9 +605,10 @@ async def test_sendfile_reports_an_abort_while_draining_as_connection_error(payl
 @requires_loopback_backpressure
 async def test_sendfile_cancellation_restores_the_transport(payload_file: IO[bytes]) -> None:
     loop = running_loop()
-    server, port, sinks = await start_sink(StalledSink)
+    server, port, accepted = await start_sink(StalledSink)
     protocol = Recorder()
     transport, _ = await loop.create_connection(lambda: protocol, "127.0.0.1", port)
+    sink = await accepted
     try:
         transport.write(PAYLOAD * 8)
         task = loop.create_task(loop.sendfile(transport, payload_file))
@@ -615,9 +620,8 @@ async def test_sendfile_cancellation_restores_the_transport(payload_file: IO[byt
         assert transport.is_reading()
     finally:
         transport.abort()
-        for sink in sinks:
-            assert sink.transport is not None
-            sink.transport.abort()
+        assert sink.transport is not None
+        sink.transport.abort()
         server.close()
         await server.wait_closed()
 
