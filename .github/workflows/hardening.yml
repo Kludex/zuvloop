@@ -1,6 +1,9 @@
 name: Native hardening
 
 on:
+  # A release requires this workflow to have passed on the tagged main commit.
+  push:
+    branches: [main]
   pull_request:
   schedule:
     - cron: "41 3 * * *"
@@ -10,7 +13,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Each main commit keeps its own run, so a later merge cannot cancel the one a release needs.
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
