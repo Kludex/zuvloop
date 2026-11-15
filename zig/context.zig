@@ -70,7 +70,7 @@ pub fn release(loop: ?*py.Object, context: *?*py.Object, flags: u32) void {
 
 /// Refuses to load against a `contextvars.Context` whose layout is not the one
 /// `ContextObject` mirrors. The struct is private to CPython, and reading it
-/// through the wrong shape would corrupt memory rather than raise.
+/// through the wrong shape would recycle the wrong contexts rather than raise.
 pub fn register() py.Error!void {
     const probe = c.PyContext_New() orelse return py.Error.Python;
     defer py.decref(probe);
