@@ -67,3 +67,20 @@ pub fn release(loop: ?*py.Object, context: *?*py.Object, flags: u32) void {
     }
     py.decref(current);
 }
+
+/// Refuses to load against a `contextvars.Context` whose layout is not the one
+/// `ContextObject` mirrors. The struct is private to CPython, and reading it
+/// through the wrong shape would corrupt memory rather than raise.
+pub fn register() py.Error!void {
+    const probe = c.PyContext_New() orelse return py.Error.Python;
+    defer py.decref(probe);
+    const fresh: *ContextObject = @ptrCast(@alignCast(probe));
+    // A new context has no predecessor, an empty variable map, no weak
+    // references and has not been entered, so a field that moved shows up here
+    // even when the size did not change.
+    if (py.typeOf(probe).tp_basicsize != @sizeOf(ContextObject) or
+        fresh.previous != null or fresh.variables == null or fresh.weakrefs != null or fresh.entered != 0)
+    {
+        return py.errRuntime("contextvars.Context instance layout is not the one zuvloop was built against");
+    }
+}
