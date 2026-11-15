@@ -551,7 +551,7 @@ fn onWritten(req: ?*uv.Write, status: c_int) callconv(.c) void {
     // abort() zeroes the queue while requests are still in flight.
     self.write_buffer_size -= @min(wr.size, self.write_buffer_size);
     wr.release();
-    alloc.free(@as([*]u8, @ptrCast(wr))[0..wr.total]);
+    alloc.free(@as([*]align(16) u8, @ptrCast(@alignCast(wr)))[0..wr.total]);
 
     if (status < 0) {
         // Closing the handle completes everything still queued with ECANCELED,
@@ -712,13 +712,23 @@ fn submitWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!
     // Batching pays off only for consecutive writes from one callback, and a
     // caller outside the loop may block reading the peer before the flush could
     // ever run, so writes from a stopped loop go straight out.
-    if (!self.loopState().running) flushPending(self);
+    //
+    // A batch that first crosses the high-water mark goes out too. Only the
+    // socket can tell whether the protocol has to pause, and holding the batch
+    // until the end of the turn would let `drain()` return with all of it still
+    // buffered. Once paused, writes batch again.
+    const crossed = self.flags & PROTOCOL_PAUSED == 0 and bufferedBytes(self) > self.high_water;
+    if (!self.loopState().running or crossed) flushPending(self);
 }
 
 /// What `write()` has accepted and not yet handed back to the socket, whether
 /// it is sitting in the pending batch or in libuv's queue.
 inline fn bufferedBytes(self: *Transport) usize {
-    return self.write_buffer_size + self.pending_size;
+    // `write_buffer_size` only drops when a whole request completes, while libuv's
+    // count drops as each request drains, so a slow reader still shows progress.
+    // It is zero once nothing is outstanding, including right after an abort.
+    const queued = if (self.write_buffer_size == 0) 0 else uv.uv_stream_get_write_queue_size(self.stream());
+    return queued + self.pending_size;
 }
 
 fn maybePauseProtocol(self: *Transport) void {
@@ -741,7 +751,7 @@ fn maybeResumeProtocol(self: *Transport) void {
 
 fn onShutdown(req: ?*uv.Shutdown, status: c_int) callconv(.c) void {
     _ = status;
-    alloc.free(@as([*]u8, @ptrCast(req.?))[0..uv.uv_req_size(.shutdown)]);
+    alloc.free(@as([*]align(16) u8, @ptrCast(@alignCast(req.?)))[0..uv.uv_req_size(.shutdown)]);
 }
 
 /// Half-closes through `uv_shutdown`, the spelling that also covers Windows,

@@ -10,6 +10,8 @@ import time
 import weakref
 from collections.abc import AsyncGenerator, Callable, Mapping
 
+import anyio
+import anyio.to_thread
 import pytest
 
 import zuvloop
@@ -445,6 +447,30 @@ def test_run_until_complete_rejects_a_loop_stopped_early(loop: zuvloop.EventLoop
     loop.call_later(0.01, loop.stop)
     with pytest.raises(RuntimeError, match="stopped before Future completed"):
         loop.run_until_complete(main())
+
+
+def test_anyio_worker_threads_stop_with_the_run_until_complete_task(loop: zuvloop.EventLoop) -> None:
+    workers: list[threading.Thread] = []
+
+    async def background(started: asyncio.Event) -> None:
+        with anyio.CancelScope():
+            await anyio.to_thread.run_sync(lambda: workers.append(threading.current_thread()))
+            started.set()
+            await asyncio.Event().wait()
+
+    async def main() -> asyncio.Task[None]:
+        started = asyncio.Event()
+        task = loop.create_task(background(started))
+        await started.wait()
+        return task
+
+    task = loop.run_until_complete(main())
+    workers[0].join(timeout=5)
+    outlived_the_root_task = workers[0].is_alive()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        loop.run_until_complete(task)
+    assert not outlived_the_root_task
 
 
 def test_system_exit_escapes_the_loop(loop: zuvloop.EventLoop) -> None:

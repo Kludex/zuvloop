@@ -260,10 +260,6 @@ fn visitReferences(obj: *py.Object, visitproc: c.visitproc, arg: ?*anyopaque) c_
 
 /// Visits queued references transparently when the handle is untracked.
 pub fn traverseQueued(obj: *py.Object, visitproc: c.visitproc, arg: ?*anyopaque) c_int {
-    // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
-    var critical_section: py.CriticalSection = undefined;
-    py.beginCriticalSection(&critical_section, obj);
-    defer py.endCriticalSection(&critical_section);
     if (c.PyObject_GC_IsTracked(obj) != 0) return py.visit(obj, visitproc, arg);
     return visitReferences(obj, visitproc, arg);
 }
