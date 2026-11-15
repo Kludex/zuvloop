@@ -283,6 +283,9 @@ fn getCallback(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 
 fn getArgs(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
     const self = payload(self_obj.?);
+    // Cancelling drops the arguments rather than emptying them, which is the
+    // difference asyncio reports as None instead of an empty tuple.
+    if (self.flags & cancelled_flag != 0) return py.newref(py.none());
     const n: usize = @intCast(self.nargs);
     const items = self.argv();
     const tuple = c.PyTuple_New(self.nargs) orelse return null;
