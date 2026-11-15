@@ -377,7 +377,10 @@ jobs:
 
 
   benchmarks:
-    runs-on: ubuntu-latest
+    # ubuntu-latest hands out different CPUs from run to run, which moves every
+    # benchmark against its baseline. GitHub documents the arm64 fleet as one
+    # processor; CodSpeed warns when base and head hardware differ.
+    runs-on: ubuntu-24.04-arm
     # Normally ~3 minutes; the CodSpeed harness has been seen sitting for over
     # half an hour, and without a bound that holds the whole run hostage.
     timeout-minutes: 15
