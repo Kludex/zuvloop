@@ -613,8 +613,6 @@ fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py
     var critical_section: py.CriticalSection = undefined;
     py.beginCriticalSection(&critical_section, @ptrCast(self));
     defer py.endCriticalSection(&critical_section);
-    try checkClosed(st);
-    try checkThread(st);
     try drainThreadsafe(st);
     py.incref(h);
     st.ready.push(@as(*py.Object, @ptrCast(h))) catch {
@@ -642,6 +640,11 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
     const p = try parseCall(args, nargs, kwnames, 1);
     clearThreadsafeCandidate(st, true);
     const h = try tshandle.create(self_obj, args[0].?, p.positional, p.context);
+    // Taking the candidate's lock or allocating can suspend the loop's critical section.
+    checkClosed(st) catch |err| {
+        py.decref(h);
+        return err;
+    };
     py.incref(h);
     // A loop-thread `call_soon` drains this inbox before appending its own
     // handle, so both schedulers preserve registration order.

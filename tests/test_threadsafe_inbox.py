@@ -14,7 +14,7 @@ import zuvloop
 
 
 @pytest.mark.skipif(sys._is_gil_enabled(), reason="Requires free-threaded critical-section suspension")
-@pytest.mark.parametrize("transition", ["start", "close"])
+@pytest.mark.parametrize("transition", ["start", "close", "close_threadsafe"])
 def test_inbox_drain_rechecks_loop_state_after_handle_contention(
     transition: str,
 ) -> None:  # pragma: no cover - free-threaded CI
@@ -57,8 +57,9 @@ def test_inbox_drain_rechecks_loop_state_after_handle_contention(
 
         def schedule() -> None:
             scheduling.set()
+            call = loop.call_soon_threadsafe if transition == "close_threadsafe" else loop.call_soon
             try:
-                loop.call_soon(lambda: None, context=contextvars.Context())
+                call(lambda: None, context=contextvars.Context())
             except RuntimeError as exc:
                 errors.append(str(exc))
             else:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import socket
 import threading
 from collections.abc import Callable
 
@@ -69,46 +68,3 @@ def test_debug_scheduling_during_loop_startup(method: str) -> None:
             loop.close()
         assert len(seen) == accepted
         assert all(ident == thread.ident for ident in seen)
-
-
-def test_debug_loop_retains_thread_ownership_during_final_flush() -> None:
-    loop = zuvloop.new_event_loop()
-    loop.set_debug(True)
-    flushing = threading.Event()
-    release = threading.Event()
-
-    class FlushProtocol(asyncio.Protocol):
-        def connection_made(self, transport: asyncio.BaseTransport) -> None:
-            assert isinstance(transport, asyncio.Transport)
-            self.transport = transport
-
-        def data_received(self, data: bytes) -> None:
-            self.transport.write(data)
-            self.transport.set_write_buffer_limits(high=0, low=0)
-            loop.stop()
-
-        def resume_writing(self) -> None:
-            assert not loop.is_running()
-            loop.call_soon(lambda: None)
-            flushing.set()
-            assert release.wait(5)
-
-    local, peer = socket.socketpair()
-    peer.settimeout(5)
-    transport, _ = loop.run_until_complete(loop.create_connection(FlushProtocol, sock=local))
-    thread = threading.Thread(target=loop.run_forever)
-    thread.start()
-    try:
-        peer.sendall(b"flush")
-        assert flushing.wait(5)
-        for schedule in (loop.call_soon, functools.partial(loop.call_later, 0), functools.partial(loop.call_at, 0)):
-            with pytest.raises(RuntimeError, match="Non-thread-safe operation"):
-                schedule(lambda: None)
-        assert peer.recv(5) == b"flush"
-    finally:
-        release.set()
-        thread.join(5)
-        assert not thread.is_alive()
-        transport.close()
-        peer.close()
-        loop.close()

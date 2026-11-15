@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import functools
 import socket
 import threading
 
@@ -35,6 +36,7 @@ def test_close_is_rejected_until_final_flushing_finishes(debug: bool) -> None:
                 assert not loop.is_running()
                 with pytest.raises(RuntimeError, match="Cannot close a running event loop"):
                     loop.close()
+                loop.call_soon(lambda: None)
                 flushing.set()
                 assert release.wait(5)
                 self.transport.write(b"alive")
@@ -57,6 +59,10 @@ def test_close_is_rejected_until_final_flushing_finishes(debug: bool) -> None:
             callback_result.result()
         with pytest.raises(RuntimeError, match="Cannot close a running event loop"):
             loop.close()
+        if debug:
+            for schedule in (loop.call_soon, functools.partial(loop.call_later, 0), functools.partial(loop.call_at, 0)):
+                with pytest.raises(RuntimeError, match="Non-thread-safe operation"):
+                    schedule(lambda: None)
         assert not loop.is_closed()
         assert not transport.is_closing()
         release.set()
