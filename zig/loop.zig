@@ -71,6 +71,8 @@ pub const State = struct {
     timer_active: bool = false,
     sampler_active: bool = false,
     flusher_active: bool = false,
+    /// A datagram endpoint stopped receiving when a callback ended the run.
+    datagrams_suspended: bool = false,
 
     /// 0 = synchronous ownership, 1 = reaper running with a live LoopObject,
     /// 2 = reaper running after LoopObject deallocation, 3 = reaper finished.
@@ -737,6 +739,10 @@ fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
     @atomicStore(c_ulong, &st.thread_id, c.PyThread_get_thread_ident(), .release);
     startIdle(st);
     armTimer(self);
+    if (st.datagrams_suspended) {
+        st.datagrams_suspended = false;
+        uv.uv_walk(st.uvloop, datagrammod.resumeSuspended, null);
+    }
 
     st.pythonExit();
     _ = uv.uv_run(st.uvloop, .default);

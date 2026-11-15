@@ -508,6 +508,38 @@ def test_an_exit_from_a_datagram_callback_reaches_the_caller(loop: EventLoop, er
         sender.close()
 
 
+def test_an_exit_from_a_datagram_callback_leaves_the_rest_for_the_next_run(loop: EventLoop) -> None:
+    """asyncio unwinds from the callback that raised, so a datagram queued behind
+    it reaches the protocol on the next run and not before the caller hears of
+    the exit."""
+    received: list[bytes] = []
+    second: asyncio.Future[None] = loop.create_future()
+
+    class Interrupt(asyncio.DatagramProtocol):
+        def datagram_received(self, data: bytes, addr: Address) -> None:
+            received.append(data)
+            if data == b"first":
+                raise KeyboardInterrupt("stop")
+            second.set_result(None)
+
+    transport, _protocol = loop.run_until_complete(
+        loop.create_datagram_endpoint(Interrupt, local_addr=("127.0.0.1", 0))
+    )
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        address = transport.get_extra_info("sockname")
+        sender.sendto(b"first", address)
+        sender.sendto(b"second", address)
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_until_complete(asyncio.sleep(5))
+        assert received == [b"first"]
+        loop.run_until_complete(asyncio.wait_for(second, 5))
+        assert received == [b"first", b"second"]
+    finally:
+        transport.close()
+        sender.close()
+
+
 async def test_ipv6_endpoints_round_trip() -> None:
     loop = running_loop()
     try:

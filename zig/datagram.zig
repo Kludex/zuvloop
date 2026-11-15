@@ -195,6 +195,13 @@ fn onRecv(
     const st = self.loopState();
     st.pythonEnter();
     defer st.pythonExit();
+    // libuv reads on until the socket is empty, without looking at the stop a
+    // callback asked for. Stopping here leaves what is still queued in the
+    // socket for the next run, which is when asyncio would deliver it.
+    defer if (st.fatal != null and self.flags & READING != 0) {
+        _ = uv.uv_udp_recv_stop(self.udp());
+        st.datagrams_suspended = true;
+    };
 
     if (nread == 0 and from == null) return;
     if (flags & uv.UDP_PARTIAL != 0) {
@@ -230,6 +237,17 @@ fn onRecv(
     };
     defer py.decref(sender);
     callInContext(self, self.cb_datagram_received, &.{ data, sender });
+}
+
+/// `uv_walk` callback that restarts every endpoint `onRecv` stopped when a
+/// callback ended the previous run. An endpoint that never stopped answers
+/// that it is already receiving, which is all there is to do for it.
+pub fn resumeSuspended(handle: ?*uv.Handle, _: ?*anyopaque) callconv(.c) void {
+    const h = handle orelse return;
+    if (uv.uv_handle_get_type(h) != .udp) return;
+    const self: *Datagram = @ptrCast(@alignCast(uv.getData(h)));
+    if (self.flags & READING == 0 or self.flags & (CLOSING | CONN_LOST) != 0) return;
+    _ = uv.uv_udp_recv_start(self.udp(), onAlloc, onRecv);
 }
 
 fn startReceiving(self: *Datagram) py.Error!void {
