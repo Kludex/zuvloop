@@ -254,7 +254,7 @@ fn callInContext(self: *Transport, callback: ?*py.Object, arg: ?*py.Object, comp
     if (failure) |exc| {
         // Asking to leave is the loop's business, not the connection's.
         const loop = loopmod.asLoop(self.loop.?);
-        if (isExit(exc)) {
+        if (loopmod.isExit(exc)) {
             c.PyErr_SetRaisedException(exc);
             loopmod.captureFatal(loop);
             forceClose(self, null);
@@ -263,12 +263,6 @@ fn callInContext(self: *Transport, callback: ?*py.Object, arg: ?*py.Object, comp
         loopmod.callExceptionHandler(loop, failed, exc, @ptrCast(self));
         forceClose(self, exc);
     }
-}
-
-fn isExit(exc: *py.Object) bool {
-    const kind: *py.Object = @ptrCast(py.typeOf(exc));
-    return c.PyType_IsSubtype(@ptrCast(kind), @ptrCast(py.exc_system_exit)) != 0 or
-        c.PyType_IsSubtype(@ptrCast(kind), @ptrCast(py.exc_keyboard_interrupt)) != 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -1261,8 +1255,8 @@ var getsets = [_]c.PyGetSetDef{
 };
 
 var slots = [_]c.PyType_Slot{
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&py.wrapDealloc(dealloc))) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&py.wrapTraverse(traverse))) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
     .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&py.wrapClear(clear_))) },
     .{ .slot = c.Py_tp_repr, .pfunc = @ptrCast(@constCast(&py.wrapRepr(repr))) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },

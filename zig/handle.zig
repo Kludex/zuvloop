@@ -196,6 +196,9 @@ fn getCallback(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 
 fn getArgs(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
     const self: *Handle = @ptrCast(@alignCast(self_obj.?));
+    // Cancelling drops the arguments rather than emptying them, which is the
+    // difference asyncio reports as None instead of an empty tuple.
+    if (self.isCancelled()) return py.newref(py.none());
     const n: usize = @intCast(self.nargs());
     const items = self.argv();
     const tuple = c.PyTuple_New(@intCast(n)) orelse return null;
@@ -240,8 +243,8 @@ var handle_methods = [_]c.PyMethodDef{
 
 fn slots(methods: [*]c.PyMethodDef) [8]c.PyType_Slot {
     return .{
-        .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&py.wrapDealloc(dealloc))) },
-        .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&py.wrapTraverse(traverse))) },
+        .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
+        .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
         .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&py.wrapClear(clear_))) },
         .{ .slot = c.Py_tp_repr, .pfunc = @ptrCast(@constCast(&py.wrapRepr(repr))) },
         .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(methods) },

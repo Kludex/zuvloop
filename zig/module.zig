@@ -2,6 +2,7 @@ const std = @import("std");
 const py = @import("py.zig");
 const c = py.c;
 const uv = @import("uv.zig");
+const context = @import("context.zig");
 const loop = @import("loop.zig");
 const datagram = @import("datagram.zig");
 const process = @import("process.zig");
@@ -22,6 +23,7 @@ var methods = [_]c.PyMethodDef{
 fn exec(module: ?*py.Object) callconv(.c) c_int {
     const m = module orelse return -1;
     py.initConstants() catch return -1;
+    context.register() catch return -1;
     handle.register(m) catch return -1;
     tshandle.register(m) catch return -1;
     timer.register(m) catch return -1;

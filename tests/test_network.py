@@ -17,7 +17,7 @@ from typing import Literal, NoReturn
 import pytest
 
 import zuvloop
-from tests.conftest import running_loop
+from tests.conftest import collect_contexts, running_loop
 from zuvloop._server import Server
 from zuvloop._sockets import _SocketAddress
 
@@ -2449,6 +2449,119 @@ def test_an_exit_from_a_read_callback_reaches_the_caller(loop: zuvloop.EventLoop
             loop.run_until_complete(asyncio.sleep(0.3))
     finally:
         right.close()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; nothing pauses the protocol"
+)
+@pytest.mark.anyio(None)
+def test_an_exit_from_a_flow_control_callback_reaches_the_caller(loop: zuvloop.EventLoop) -> None:
+    """The rule is the loop's, not the read path's: no protocol callback may
+    swallow a request to stop the program."""
+    seen = collect_contexts(loop)
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+
+    class Interrupt(asyncio.Protocol):
+        def pause_writing(self) -> None:
+            raise KeyboardInterrupt("stop")
+
+    async def overfill() -> None:
+        transport, _protocol = await loop.connect_accepted_socket(Interrupt, left)
+        transport.set_write_buffer_limits(high=1024, low=512)
+        transport.write(b"z" * (1 << 20))
+        await asyncio.sleep(5)
+
+    try:
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_until_complete(overfill())
+        assert seen == []
+    finally:
+        right.close()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; nothing pauses the protocol"
+)
+@pytest.mark.anyio(None)
+def test_an_exit_raised_while_the_loop_is_stopped_ends_the_next_run(loop: zuvloop.EventLoop) -> None:
+    """With no run in progress there is no caller to unwind to, so the exit is
+    held for the next run, which raises it before doing any work."""
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    ran: list[str] = []
+
+    class Interrupt(asyncio.Protocol):
+        def pause_writing(self) -> None:
+            raise KeyboardInterrupt("stop")
+
+    try:
+        transport, _protocol = loop.run_until_complete(loop.connect_accepted_socket(Interrupt, left))
+        transport.set_write_buffer_limits(high=1024, low=512)
+        transport.write(b"z" * (1 << 20))
+        loop.call_soon(ran.append, "callback")
+        # Without the held exit nothing would ever stop this run.
+        watchdog = loop.call_later(5, loop.stop)
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_forever()
+        watchdog.cancel()
+        assert ran == []
+        loop.run_until_complete(asyncio.sleep(0))
+        assert ran == ["callback"]
+    finally:
+        right.close()
+
+
+@pytest.mark.anyio(None)
+def test_an_exit_raised_once_the_loop_has_stopped_does_not_stall_the_next_run(loop: zuvloop.EventLoop) -> None:
+    """A write made by the callback that stops the loop is flushed after it has
+    stopped. An exit raised from there ends that run, and the next one must
+    still do its work rather than return at once."""
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+
+    class Interrupt(asyncio.Protocol):
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            assert isinstance(transport, asyncio.Transport)
+            self.transport = transport
+
+        def data_received(self, data: bytes) -> None:
+            self.transport.write(b"x" * 100)
+            # Past the new mark, so the protocol is paused with the write still batched.
+            self.transport.set_write_buffer_limits(high=10, low=5)
+            loop.stop()
+
+        def resume_writing(self) -> None:
+            raise KeyboardInterrupt("stop")
+
+    try:
+        loop.run_until_complete(loop.connect_accepted_socket(Interrupt, left))
+        right.send(b"go")
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_forever()
+        assert loop.run_until_complete(asyncio.sleep(0, "ran")) == "ran"
+    finally:
+        right.close()
+
+
+@pytest.mark.anyio(None)
+def test_an_exit_from_eof_received_reaches_the_caller(loop: zuvloop.EventLoop) -> None:
+    seen = collect_contexts(loop)
+    left, right = socket.socketpair()
+    left.setblocking(False)
+
+    class Interrupt(asyncio.Protocol):
+        def eof_received(self) -> bool:
+            raise KeyboardInterrupt("stop")
+
+    loop.run_until_complete(loop.connect_accepted_socket(Interrupt, left))
+    right.close()
+    with pytest.raises(KeyboardInterrupt, match="stop"):
+        loop.run_until_complete(asyncio.sleep(5))
+    assert seen == []
 
 
 @pytest.mark.parametrize("keep_alive", [None, False, True])
