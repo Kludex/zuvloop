@@ -75,3 +75,30 @@ pub fn release(loop: ?*py.Object, context: *?*py.Object, flags: u32) void {
     }
     py.decref(current);
 }
+
+/// Refuses to load against a `contextvars.Context` whose layout is not the one
+/// `ContextObject` mirrors. The struct is private to CPython, and reading it
+/// through the wrong shape would recycle the wrong contexts rather than raise.
+pub fn register() py.Error!void {
+    const probe = c.PyContext_New() orelse return py.Error.Python;
+    defer py.decref(probe);
+    const mirror: *ContextObject = @ptrCast(@alignCast(probe));
+    // A new context holds a variable map and nothing else, which places `variables`.
+    var matches = py.typeOf(probe).tp_basicsize == @sizeOf(ContextObject) and
+        mirror.previous == null and mirror.variables != null and mirror.weakrefs == null and mirror.entered == 0;
+
+    // The other fields `release` reads are each driven to a value only they
+    // can hold, so one that moved is caught even when the size did not change.
+    const reference = c.PyWeakref_NewRef(probe, null) orelse return py.Error.Python;
+    defer py.decref(reference);
+    matches = matches and mirror.weakrefs != null;
+    // Entering notifies any installed context watcher, which is free to share the
+    // probe with another thread, so this read must not race a write made there.
+    if (c.PyContext_Enter(probe) < 0) return py.Error.Python;
+    matches = matches and @atomicLoad(c_int, &mirror.entered, .seq_cst) == 1;
+    if (c.PyContext_Exit(probe) < 0) return py.Error.Python;
+
+    if (!matches) {
+        return py.errRuntime("contextvars.Context instance layout is not the one zuvloop was built against");
+    }
+}
