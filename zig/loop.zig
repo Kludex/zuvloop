@@ -47,7 +47,7 @@ pub const State = struct {
     empty_contexts: [context_pool_capacity]?*py.Object = .{null} ** context_pool_capacity,
     empty_contexts_len: usize = 0,
     threadsafe_candidate: ?*py.Object = null,
-    dns_requests: ?*anyopaque = null,
+    dns_requests: ?*dns.Request = null,
     transport_head: ?*transportmod.Transport = null,
     flush_head: ?*transportmod.Transport = null,
     /// Initialized external handles, including those awaiting a close callback.
@@ -978,7 +978,13 @@ fn closeLoop(self_obj: *py.Object) py.Error!*py.Object {
     const self = asLoop(self_obj);
     const st = self.state();
     if (st.running) return py.errRuntime("Cannot close a running event loop");
-    if (st.closed) return py.noneRef();
+    if (!st.closed) teardown(st);
+    return py.noneRef();
+}
+
+/// Releases everything the loop holds and closes its libuv handles. Runs once,
+/// from `_close` or from deallocation, whichever reaches the loop first.
+fn teardown(st: *State) void {
     st.closed = true;
 
     clearThreadsafeCandidate(st, false);
@@ -1004,7 +1010,6 @@ fn closeLoop(self_obj: *py.Object) py.Error!*py.Object {
         st.flusher_active = false;
     }
     closeAllHandles(st);
-    return py.noneRef();
 }
 
 fn walkClose(handle: ?*uv.Handle, _: ?*anyopaque) callconv(.c) void {
@@ -1192,26 +1197,12 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     const tp = py.typeOf(obj.?);
     c.PyObject_GC_UnTrack(obj);
     if (self.st) |st| {
-        const needs_close = !st.closed;
-        st.closed = true;
-        if (needs_close) {
-            clearThreadsafeCandidate(st, false);
-            st.ready.deinit();
-            st.threadsafe_ready.deinit();
-            st.timers.deinit();
-            clearEmptyContexts(st);
-        }
+        if (!st.closed) teardown(st);
         // The flush list owns one Python reference per transport regardless of
         // how the loop reached deallocation, including partially completed
         // explicit close paths.
         dropFlushList(st);
         py.clear(&st.task_factory);
-        if (needs_close) {
-            py.clear(&st.fatal);
-            py.clear(&st.metrics_cb);
-            pollermod.closeAll(st);
-            closeAllHandles(st);
-        }
         self.st = null;
         releaseStateFromLoopObject(st);
     }
@@ -1230,26 +1221,20 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
         if (r != 0) return r;
         r = py.visit(st.threadsafe_candidate, visitproc, arg);
         if (r != 0) return r;
-        var i: usize = 0;
-        while (i < st.ready.len) : (i += 1) {
-            const handle = st.ready.items[(st.ready.head + i) & (st.ready.items.len - 1)].?;
+        for (0..st.ready.len) |i| {
+            const handle = st.ready.at(i).?;
             r = if (tshandle.owns(handle))
                 tshandle.traverseQueued(handle, visitproc, arg)
             else
                 py.visit(handle, visitproc, arg);
             if (r != 0) return r;
         }
-        i = 0;
-        while (i < st.threadsafe_ready.len) : (i += 1) {
-            const handle = st.threadsafe_ready.items[
-                (st.threadsafe_ready.head + i) & (st.threadsafe_ready.items.len - 1)
-            ].?;
-            r = tshandle.traverseQueued(handle, visitproc, arg);
+        for (0..st.threadsafe_ready.len) |i| {
+            r = tshandle.traverseQueued(st.threadsafe_ready.at(i).?, visitproc, arg);
             if (r != 0) return r;
         }
-        i = 0;
-        while (i < st.timers.len) : (i += 1) {
-            r = py.visit(st.timers.items[i].handle, visitproc, arg);
+        for (st.timers.items[0..st.timers.len]) |entry| {
+            r = py.visit(entry.handle, visitproc, arg);
             if (r != 0) return r;
         }
         var transport = st.flush_head;
