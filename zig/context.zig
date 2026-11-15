@@ -7,9 +7,6 @@ const py = @import("py.zig");
 const c = py.c;
 const loopmod = @import("loop.zig");
 
-/// Marks a context as implicitly captured rather than explicitly supplied.
-pub const captured_flag: u32 = 1 << 1;
-
 const ContextObject = extern struct {
     ob_base: c.PyObject,
     previous: ?*ContextObject,
@@ -18,13 +15,13 @@ const ContextObject = extern struct {
     entered: c_int,
 };
 
-/// Captures a non-empty current context and defers allocating an empty one.
-pub fn capture(explicit: ?*py.Object, flags: *u32) py.Error!?*py.Object {
+/// Returns the supplied context, or captures a non-empty current one and
+/// defers allocating an empty one.
+pub fn capture(explicit: ?*py.Object) py.Error!?*py.Object {
     if (explicit) |context| {
         py.incref(context);
         return context;
     }
-    flags.* |= captured_flag;
     const thread_state = c.PyThreadState_Get();
     const current_slot: *?*py.Object = @ptrFromInt(
         @intFromPtr(thread_state) + c.ZUVLOOP_PYTHREADSTATE_CONTEXT_OFFSET,
@@ -48,12 +45,13 @@ pub fn materialize(loop: ?*py.Object, context: *?*py.Object) py.Error!*py.Object
 }
 
 /// Releases a context or moves an unused captured one into the loop pool.
-pub fn release(loop: ?*py.Object, context: *?*py.Object, flags: u32) void {
+/// `captured` says the context was not supplied by the caller.
+pub fn release(loop: ?*py.Object, context: *?*py.Object, captured: bool) void {
     const current = context.* orelse return;
     context.* = null;
     const context_obj: *ContextObject = @ptrCast(@alignCast(current));
     // The GC may clear the context before its handle, and len() on a cleared one dereferences NULL.
-    if (flags & captured_flag != 0 and c.Py_REFCNT(current) == 1 and context_obj.variables != null) {
+    if (captured and c.Py_REFCNT(current) == 1 and context_obj.variables != null) {
         // Cleanup paths arrive with the caller's exception raised, and slots must not run with one pending.
         const pending = c.PyErr_GetRaisedException();
         const size = c.PyObject_Size(current);

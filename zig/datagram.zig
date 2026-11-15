@@ -14,12 +14,15 @@ const loopmod = @import("loop.zig");
 
 const alloc = std.heap.c_allocator;
 
-const READING: u32 = 1 << 0;
-const CLOSING: u32 = 1 << 1;
-const CONN_LOST: u32 = 1 << 2;
-const PROTOCOL_PAUSED: u32 = 1 << 3;
-const OPEN: u32 = 1 << 4;
-const CONNECTED: u32 = 1 << 5;
+const Flags = packed struct(u32) {
+    reading: bool = false,
+    closing: bool = false,
+    conn_lost: bool = false,
+    protocol_paused: bool = false,
+    open: bool = false,
+    connected: bool = false,
+    _: u26 = 0,
+};
 
 const default_high_water: usize = 64 * 1024;
 const recv_size: usize = 64 * 1024;
@@ -56,7 +59,7 @@ pub const Datagram = extern struct {
     write_buffer_size: usize,
     high_water: usize,
     low_water: usize,
-    flags: u32,
+    flags: Flags,
     family: c_int,
 
     inline fn udp(self: *Datagram) *uv.Udp {
@@ -233,9 +236,9 @@ fn onRecv(
 }
 
 fn startReceiving(self: *Datagram) py.Error!void {
-    if (self.flags & (READING | CLOSING | CONN_LOST) != 0) return;
+    if (self.flags.reading or self.flags.closing or self.flags.conn_lost) return;
     try py.errUvIfNeg(uv.uv_udp_recv_start(self.udp(), onAlloc, onRecv));
-    self.flags |= READING;
+    self.flags.reading = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -255,14 +258,14 @@ fn onSent(req: ?*uv.UdpSend, status: c_int) callconv(.c) void {
 
     // A failed datagram is reported to the protocol, never raised: asyncio
     // treats the endpoint as still usable.
-    if (status < 0 and self.flags & (CLOSING | CONN_LOST) == 0) {
+    if (status < 0 and !(self.flags.closing or self.flags.conn_lost)) {
         if (takeUvError(status)) |exc| {
             defer py.decref(exc);
             callProtocol(self, self.cb_error_received, exc);
         }
     }
     maybeResumeProtocol(self);
-    if (self.write_buffer_size == 0 and self.flags & CLOSING != 0) shutdownAndClose(self);
+    if (self.write_buffer_size == 0 and self.flags.closing) shutdownAndClose(self);
 }
 
 fn queueSend(self: *Datagram, buf: uv.Buf, dest: ?*const std.posix.sockaddr, dest_len: c_uint) py.Error!void {
@@ -296,16 +299,16 @@ fn queueSend(self: *Datagram, buf: uv.Buf, dest: ?*const std.posix.sockaddr, des
 
 fn maybePauseProtocol(self: *Datagram) void {
     if (self.write_buffer_size <= self.high_water) return;
-    if (self.flags & PROTOCOL_PAUSED != 0) return;
-    self.flags |= PROTOCOL_PAUSED;
+    if (self.flags.protocol_paused) return;
+    self.flags.protocol_paused = true;
     callProtocol(self, self.cb_pause_writing, null);
 }
 
 fn maybeResumeProtocol(self: *Datagram) void {
-    if (self.flags & (CLOSING | CONN_LOST) != 0) return;
-    if (self.flags & PROTOCOL_PAUSED == 0) return;
+    if (self.flags.closing or self.flags.conn_lost) return;
+    if (!self.flags.protocol_paused) return;
     if (self.write_buffer_size > self.low_water) return;
-    self.flags &= ~PROTOCOL_PAUSED;
+    self.flags.protocol_paused = false;
     callProtocol(self, self.cb_resume_writing, null);
 }
 
@@ -327,17 +330,17 @@ fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     st.pythonEnter();
     defer st.pythonExit();
 
-    self.flags |= CONN_LOST;
+    self.flags.conn_lost = true;
     scheduleCall(self, self.cb_connection_lost, self.conn_lost_exc orelse py.none());
     py.decref(self);
 }
 
 fn shutdownAndClose(self: *Datagram) void {
-    if (self.flags & OPEN == 0) return;
-    self.flags &= ~OPEN;
-    if (self.flags & READING != 0) {
+    if (!self.flags.open) return;
+    self.flags.open = false;
+    if (self.flags.reading) {
         _ = uv.uv_udp_recv_stop(self.udp());
-        self.flags &= ~READING;
+        self.flags.reading = false;
     }
     // As with streams, uv_close closes the descriptor before its callback.
     // Detach the Python socket while the number still names our endpoint.
@@ -349,11 +352,11 @@ fn shutdownAndClose(self: *Datagram) void {
 /// Closes a datagram endpoint discovered while the owning loop shuts down.
 pub fn closeFromLoop(handle: *uv.Handle) void {
     const self: *Datagram = @ptrCast(@alignCast(uv.getData(handle)));
-    self.flags |= CLOSING;
-    self.flags &= ~OPEN;
-    if (self.flags & READING != 0) {
+    self.flags.closing = true;
+    self.flags.open = false;
+    if (self.flags.reading) {
         _ = uv.uv_udp_recv_stop(self.udp());
-        self.flags &= ~READING;
+        self.flags.reading = false;
     }
     releaseSocketView(self);
     self.loopState().closeExternalHandle(handle, onClosed);
@@ -389,7 +392,7 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
     var dest_len: c_int = 0;
     if (target) |t| {
         dest_len = try addr.fromPython(self.family, t, &dest);
-        if (self.flags & CONNECTED != 0) {
+        if (self.flags.connected) {
             // Naming the peer is allowed, as it is for asyncio; naming anything
             // else is not.
             var peer: addr.Storage = .{};
@@ -402,7 +405,7 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
         } else {
             dest_ptr = dest.ptr();
         }
-    } else if (self.flags & CONNECTED == 0) {
+    } else if (!self.flags.connected) {
         return py.errValue("sendto() requires an address on an unconnected transport");
     }
 
@@ -416,7 +419,7 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
 
     // A closing endpoint drops the datagram, as asyncio does - but the argument
     // errors above still raise there, which is why they all come first.
-    if (self.flags & (CONN_LOST | CLOSING) != 0) return py.noneRef();
+    if (self.flags.conn_lost or self.flags.closing) return py.noneRef();
 
     const buf = uv.Buf{ .base = @ptrCast(view.buf), .len = @intCast(view.len) };
 
@@ -439,7 +442,7 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
 
 fn abort(self_obj: *py.Object) py.Error!*py.Object {
     const self = asDatagram(self_obj);
-    self.flags |= CLOSING;
+    self.flags.closing = true;
     self.write_buffer_size = 0;
     shutdownAndClose(self);
     return py.noneRef();
@@ -447,18 +450,18 @@ fn abort(self_obj: *py.Object) py.Error!*py.Object {
 
 fn close(self_obj: *py.Object) py.Error!*py.Object {
     const self = asDatagram(self_obj);
-    if (self.flags & CLOSING != 0) return py.noneRef();
-    self.flags |= CLOSING;
-    if (self.flags & READING != 0) {
+    if (self.flags.closing) return py.noneRef();
+    self.flags.closing = true;
+    if (self.flags.reading) {
         _ = uv.uv_udp_recv_stop(self.udp());
-        self.flags &= ~READING;
+        self.flags.reading = false;
     }
     if (self.write_buffer_size == 0) shutdownAndClose(self);
     return py.noneRef();
 }
 
 fn isClosing(self_obj: *py.Object) py.Error!*py.Object {
-    return py.boolRef(asDatagram(self_obj).flags & CLOSING != 0);
+    return py.boolRef(asDatagram(self_obj).flags.closing);
 }
 
 fn getExtraInfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py.Object {
@@ -565,10 +568,10 @@ fn adoptSocketView(self_obj: *py.Object, view: *py.Object) py.Error!*py.Object {
 /// asyncio's does too; uvloop's has no such method at all.
 fn pauseReading(self_obj: *py.Object) py.Error!*py.Object {
     const self = asDatagram(self_obj);
-    if (self.flags & CLOSING != 0) return py.errRuntime("Cannot pause_reading() after close()");
-    if (self.flags & READING != 0) {
+    if (self.flags.closing) return py.errRuntime("Cannot pause_reading() after close()");
+    if (self.flags.reading) {
         _ = uv.uv_udp_recv_stop(self.udp());
-        self.flags &= ~READING;
+        self.flags.reading = false;
     }
     return py.noneRef();
 }
@@ -576,7 +579,7 @@ fn pauseReading(self_obj: *py.Object) py.Error!*py.Object {
 /// `resume_reading()`: deliver datagrams again.
 fn resumeReading(self_obj: *py.Object) py.Error!*py.Object {
     const self = asDatagram(self_obj);
-    if (self.flags & CLOSING != 0) return py.errRuntime("Cannot resume_reading() after close()");
+    if (self.flags.closing) return py.errRuntime("Cannot resume_reading() after close()");
     try startReceiving(self);
     return py.noneRef();
 }
@@ -587,7 +590,7 @@ fn startReceivingMethod(self_obj: *py.Object) py.Error!*py.Object {
         const exc = c.PyErr_GetRaisedException();
         py.clear(&self.conn_lost_exc);
         self.conn_lost_exc = exc;
-        self.flags |= CLOSING;
+        self.flags.closing = true;
         shutdownAndClose(self);
         return py.noneRef();
     };
@@ -616,7 +619,7 @@ pub fn makeDatagram(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*p
     self.high_water = default_high_water;
     self.low_water = default_high_water / 4;
     self.family = family;
-    if (connected) self.flags |= CONNECTED;
+    if (connected) self.flags.connected = true;
     self.context = c.PyContext_CopyCurrent();
     if (self.context == null) return py.Error.Python;
 
@@ -626,13 +629,13 @@ pub fn makeDatagram(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*p
 
     try py.errUvIfNeg(uv.uv_udp_init_ex(st.uvloop, self.udp(), 0));
     st.external_handles += 1;
-    self.flags |= OPEN;
+    self.flags.open = true;
     uv.setData(self.udp(), self);
 
     const status = uv.uv_udp_open_ex(self.udp(), uv.asSock(fd), 0);
     if (status < 0) {
         // libuv never took the descriptor, so the caller still owns it.
-        self.flags &= ~OPEN;
+        self.flags.open = false;
         py.incref(obj);
         st.closeExternalHandle(uv.asHandle(self.udp()), onOpenFailed);
         return py.errUv(status);

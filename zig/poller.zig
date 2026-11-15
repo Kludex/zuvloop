@@ -82,11 +82,11 @@ fn destroy(self: *Poller) void {
     self.writer = null;
     self.state.closeExternalHandle(uv.asHandle(self.uvPoll()), onClosed);
     if (reader) |h| {
-        h.flags |= handlemod.CANCELLED;
+        h.flags.cancelled = true;
         py.decref(h);
     }
     if (writer) |h| {
-        h.flags |= handlemod.CANCELLED;
+        h.flags.cancelled = true;
         py.decref(h);
     }
 }
@@ -153,7 +153,7 @@ fn add(self_obj: *py.Object, args: []const ?*py.Object, comptime writer: bool) p
     const superseded = slot.*;
     slot.* = h;
     defer if (superseded) |old| py.decref(old);
-    if (superseded) |old| old.flags |= handlemod.CANCELLED;
+    if (superseded) |old| old.flags.cancelled = true;
     try rearm(st, poller);
     return py.noneRef();
 }
@@ -165,7 +165,7 @@ fn remove(self_obj: *py.Object, arg: *py.Object, comptime writer: bool) py.Error
     const slot = if (writer) &poller.writer else &poller.reader;
     const h = slot.* orelse return py.boolRef(false);
     slot.* = null;
-    h.flags |= handlemod.CANCELLED;
+    h.flags.cancelled = true;
     defer py.decref(h);
     try rearm(st, poller);
     return py.boolRef(true);
