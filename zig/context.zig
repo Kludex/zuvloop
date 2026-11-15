@@ -84,8 +84,10 @@ pub fn register() py.Error!void {
     const reference = c.PyWeakref_NewRef(probe, null) orelse return py.Error.Python;
     defer py.decref(reference);
     matches = matches and mirror.weakrefs != null;
+    // Entering notifies any installed context watcher, which is free to share the
+    // probe with another thread, so this read must not race a write made there.
     if (c.PyContext_Enter(probe) < 0) return py.Error.Python;
-    matches = matches and mirror.entered == 1;
+    matches = matches and @atomicLoad(c_int, &mirror.entered, .seq_cst) == 1;
     if (c.PyContext_Exit(probe) < 0) return py.Error.Python;
 
     if (!matches) {
