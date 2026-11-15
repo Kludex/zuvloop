@@ -6,10 +6,13 @@
 //! not a subtype of `asyncio.Handle`, whose slots are storage this never writes.
 //! `timer.zig` pays that price, where the ordering the base defines earns it.
 
+const std = @import("std");
 const py = @import("py.zig");
 const c = py.c;
 const contextmod = @import("context.zig");
 const loopmod = @import("loop.zig");
+
+const arg_alloc = std.heap.c_allocator;
 
 pub const CANCELLED: u32 = 1 << 0;
 const RUNNING: u32 = 1 << 2;
@@ -115,6 +118,76 @@ pub fn invoke(
     }
 }
 
+/// Copies `args` into a payload's inline slots, or onto the heap when they do
+/// not fit. Shared by the handle types that store arguments in their payload:
+/// each declares `args`, `heap_args`, `nargs` and `argv()`.
+pub fn storeArgs(payload: anytype, args: []const ?*py.Object) py.Error!void {
+    if (args.len > payload.args.len) {
+        const buf = arg_alloc.alloc(?*py.Object, args.len) catch return py.errNoMemory();
+        payload.heap_args = buf.ptr;
+    }
+    const dst = payload.argv();
+    for (args, 0..) |a, i| {
+        py.incref(a.?);
+        dst[i] = a;
+    }
+    payload.nargs = @intCast(args.len);
+}
+
+/// Releases what `storeArgs` stored.
+pub fn clearStoredArgs(payload: anytype) void {
+    const n: usize = @intCast(payload.nargs);
+    const dst = payload.argv();
+    var i: usize = 0;
+    while (i < n) : (i += 1) py.clear(&dst[i]);
+    payload.nargs = 0;
+    if (payload.heap_args) |buf| {
+        arg_alloc.free(buf[0..n]);
+        payload.heap_args = null;
+    }
+}
+
+/// The `_args` a handle reports. Cancelling drops the arguments rather than
+/// emptying them, which is the difference asyncio reports as None instead of
+/// an empty tuple.
+pub fn argsTuple(is_cancelled: bool, args: []const ?*py.Object) ?*py.Object {
+    if (is_cancelled) return py.newref(py.none());
+    const tuple = c.PyTuple_New(@intCast(args.len)) orelse return null;
+    for (args, 0..) |a, i| _ = c.PyTuple_SetItem(tuple, @intCast(i), py.newref(a));
+    return tuple;
+}
+
+/// Visits a handle's own references, then its arguments, then its heap type.
+pub fn visitHandle(
+    obj: *py.Object,
+    refs: []const ?*py.Object,
+    args: []const ?*py.Object,
+    visitproc: c.visitproc,
+    arg: ?*anyopaque,
+) c_int {
+    for (refs) |ref| {
+        const r = py.visit(ref, visitproc, arg);
+        if (r != 0) return r;
+    }
+    for (args) |a| {
+        const r = py.visit(a, visitproc, arg);
+        if (r != 0) return r;
+    }
+    return py.visit(@ptrCast(py.typeOf(obj)), visitproc, arg);
+}
+
+/// The `repr` every handle type shares.
+pub fn describe(obj: *py.Object, is_cancelled: bool, callback: ?*py.Object) ?*py.Object {
+    const name = py.typeOf(obj).tp_name;
+    if (is_cancelled) return c.PyUnicode_FromFormat("<%s cancelled>", name);
+    return c.PyUnicode_FromFormat("<%s %R>", name, callback orelse py.none());
+}
+
+/// Getter for the base-class slots a native handle has nothing to report in.
+pub fn getNone(_: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
+    return py.newref(py.none());
+}
+
 fn clearArgs(self: *Handle) void {
     if (self.flags & args_cleared != 0) return;
     const n: usize = @intCast(self.ob_base.ob_size);
@@ -139,20 +212,8 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
 
 fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv(.c) c_int {
     const self: *Handle = @ptrCast(@alignCast(obj.?));
-    var r = py.visit(self.loop, visitproc, arg);
-    if (r != 0) return r;
-    r = py.visit(self.callback, visitproc, arg);
-    if (r != 0) return r;
-    r = py.visit(self.context, visitproc, arg);
-    if (r != 0) return r;
-    const n: usize = @intCast(self.nargs());
-    const items = self.argv();
-    var i: usize = 0;
-    while (i < n) : (i += 1) {
-        r = py.visit(items[i], visitproc, arg);
-        if (r != 0) return r;
-    }
-    return py.visit(@ptrCast(py.typeOf(obj.?)), visitproc, arg);
+    const refs = [_]?*py.Object{ self.loop, self.callback, self.context };
+    return visitHandle(obj.?, &refs, self.argv()[0..@intCast(self.nargs())], visitproc, arg);
 }
 
 fn clear_(obj: ?*py.Object) callconv(.c) c_int {
@@ -196,17 +257,7 @@ fn getCallback(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 
 fn getArgs(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
     const self: *Handle = @ptrCast(@alignCast(self_obj.?));
-    // Cancelling drops the arguments rather than emptying them, which is the
-    // difference asyncio reports as None instead of an empty tuple.
-    if (self.isCancelled()) return py.newref(py.none());
-    const n: usize = @intCast(self.nargs());
-    const items = self.argv();
-    const tuple = c.PyTuple_New(@intCast(n)) orelse return null;
-    var i: usize = 0;
-    while (i < n) : (i += 1) {
-        _ = c.PyTuple_SetItem(tuple, @intCast(i), py.newref(items[i]));
-    }
-    return tuple;
+    return argsTuple(self.isCancelled(), self.argv()[0..@intCast(self.nargs())]);
 }
 
 var getsets = [_]c.PyGetSetDef{
@@ -229,9 +280,7 @@ var getsets = [_]c.PyGetSetDef{
 
 fn repr(obj: ?*py.Object) callconv(.c) ?*py.Object {
     const self: *Handle = @ptrCast(@alignCast(obj.?));
-    const name = py.typeOf(obj.?).tp_name;
-    if (self.isCancelled()) return c.PyUnicode_FromFormat("<%s cancelled>", name);
-    return c.PyUnicode_FromFormat("<%s %R>", name, self.callback orelse py.none());
+    return describe(obj.?, self.isCancelled(), self.callback);
 }
 
 var handle_methods = [_]c.PyMethodDef{
