@@ -17,8 +17,10 @@ jobs:
   preflight:
     name: Release preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Long enough to await the slowest gate job, which may run for 60 minutes.
+    timeout-minutes: 90
     permissions:
+      actions: read # read the tagged commit's workflow runs
       contents: read
 
     steps:
@@ -34,6 +36,41 @@ jobs:
             echo "::error::Release tags must point to a commit on main."
             exit 1
           fi
+
+      # The pull request checks ran on a merge with an older main, so only the
+      # push runs prove this exact commit. A run still in progress is awaited.
+      # The gate jobs are required rather than the whole run, so a job outside
+      # them, such as a timed-out benchmark, does not block a release.
+      - name: Require the CI, compatibility and hardening gates to have passed on this commit
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          while read -r workflow gate; do
+            while true; do
+              run="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs?head_sha=$GITHUB_SHA&event=push" \
+                --jq '.workflow_runs[0] | "\(.status) \(.id)"')"
+              case "$run" in
+                "completed "*) break ;;
+                "null "*)
+                  echo "::error::$workflow has no push run on $GITHUB_SHA."
+                  exit 1
+                  ;;
+              esac
+              sleep 30
+            done
+            result="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/${run#* }/jobs?per_page=100" \
+              --jq ".jobs[] | select(.name == \"$gate\") | .conclusion")"
+            if [ "$result" != success ]; then
+              echo "::error::$gate ended with '$result' on $GITHUB_SHA."
+              exit 1
+            fi
+          done <<'EOF'
+          ci.yml PR quality gate
+          compatibility.yml Ecosystem compatibility gate
+          compatibility.yml Service ecosystem gate
+          hardening.yml Native hardening gate
+          EOF
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
@@ -189,9 +226,16 @@ jobs:
       - name: Download all distributions
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          path: dist
+          path: artifacts
           pattern: "{wheels-*,sdist}"
-          merge-multiple: true
+
+      # One directory per artifact until checked: merging them on download
+      # would let a repeated filename overwrite its twin unnoticed.
+      - name: Require exactly the expected distributions, all at the tagged version
+        run: |
+          uv run --no-project python scripts/check_dist.py artifacts --version "${GITHUB_REF_NAME#v}"
+          mkdir dist
+          mv artifacts/*/* dist/
 
       - name: Attest the released distributions
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
