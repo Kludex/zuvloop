@@ -262,6 +262,15 @@ async def test_self_cancelling_callback_releases_references_after_an_exception(
         loop.set_exception_handler(previous)
 
 
+async def test_a_cancelled_handle_reports_no_arguments(schedule_callback: ScheduleCallback) -> None:
+    """asyncio sets `_args` to None on cancel rather than emptying it, and code
+    that formats or inspects a handle reads it whichever scheduler it came from."""
+    handle = schedule_callback(functools.partial(print), 1, 2)
+    assert handle._args == (1, 2)
+    handle.cancel()
+    assert handle._args is None
+
+
 async def test_handle_repr_names_the_callback() -> None:
     loop = running_loop()
     handle = loop.call_soon(print)
