@@ -551,7 +551,7 @@ fn onWritten(req: ?*uv.Write, status: c_int) callconv(.c) void {
     // abort() zeroes the queue while requests are still in flight.
     self.write_buffer_size -= @min(wr.size, self.write_buffer_size);
     wr.release();
-    alloc.free(@as([*]u8, @ptrCast(wr))[0..wr.total]);
+    alloc.free(@as([*]align(16) u8, @ptrCast(@alignCast(wr)))[0..wr.total]);
 
     if (status < 0) {
         // Closing the handle completes everything still queued with ECANCELED,
@@ -745,7 +745,7 @@ fn maybeResumeProtocol(self: *Transport) void {
 
 fn onShutdown(req: ?*uv.Shutdown, status: c_int) callconv(.c) void {
     _ = status;
-    alloc.free(@as([*]u8, @ptrCast(req.?))[0..uv.uv_req_size(.shutdown)]);
+    alloc.free(@as([*]align(16) u8, @ptrCast(@alignCast(req.?)))[0..uv.uv_req_size(.shutdown)]);
 }
 
 /// Half-closes through `uv_shutdown`, the spelling that also covers Windows,
