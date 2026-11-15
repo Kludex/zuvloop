@@ -9,8 +9,8 @@ const py = @import("py.zig");
 const c = py.c;
 const uv = @import("uv.zig");
 const addr = @import("addr.zig");
-const handlemod = @import("handle.zig");
 const loopmod = @import("loop.zig");
+const protocolmod = @import("protocol.zig");
 
 const alloc = std.heap.c_allocator;
 
@@ -21,7 +21,6 @@ const PROTOCOL_PAUSED: u32 = 1 << 3;
 const OPEN: u32 = 1 << 4;
 const CONNECTED: u32 = 1 << 5;
 
-const default_high_water: usize = 64 * 1024;
 const recv_size: usize = 64 * 1024;
 
 var str_connection_lost: ?*py.Object = null;
@@ -31,8 +30,6 @@ var str_pause_writing: ?*py.Object = null;
 var str_resume_writing: ?*py.Object = null;
 var str_sock_detach: ?*py.Object = null;
 var str_addr: ?*py.Object = null;
-var str_high: ?*py.Object = null;
-var str_low: ?*py.Object = null;
 
 pub var datagram_type: ?*c.PyTypeObject = null;
 
@@ -95,42 +92,15 @@ var send_req_offset: usize = 0;
 // ---------------------------------------------------------------------------
 // protocol dispatch
 
-fn cacheCallback(protocol: *py.Object, name: ?*py.Object, slot: *?*py.Object) void {
-    py.clear(slot);
-    slot.* = c.PyObject_GetAttr(protocol, name);
-    if (slot.* == null) c.PyErr_Clear();
-}
-
 fn bindProtocol(self: *Datagram, protocol: *py.Object) void {
     py.clear(&self.protocol);
     py.incref(protocol);
     self.protocol = protocol;
-    cacheCallback(protocol, str_connection_lost, &self.cb_connection_lost);
-    cacheCallback(protocol, str_datagram_received, &self.cb_datagram_received);
-    cacheCallback(protocol, str_error_received, &self.cb_error_received);
-    cacheCallback(protocol, str_pause_writing, &self.cb_pause_writing);
-    cacheCallback(protocol, str_resume_writing, &self.cb_resume_writing);
-}
-
-fn reportError(self: *Datagram, comptime message: [:0]const u8) void {
-    const exc = c.PyErr_GetRaisedException() orelse return;
-    defer py.decref(exc);
-    loopmod.callExceptionHandler(loopmod.asLoop(self.loop.?), message, exc, @ptrCast(self));
-}
-
-/// Turns a libuv status into the exception asyncio would have raised, so it can
-/// be handed to `error_received` instead.
-fn takeUvError(status: c_int) ?*py.Object {
-    switch (py.errUv(status)) {
-        error.Python => {},
-    }
-    return c.PyErr_GetRaisedException();
-}
-
-fn callProtocol(self: *Datagram, callback: ?*py.Object, arg: ?*py.Object) void {
-    const cb = callback orelse return;
-    const result = if (arg) |a| c.PyObject_CallOneArg(cb, a) else c.PyObject_CallNoArgs(cb);
-    if (result) |r| py.decref(r) else reportError(self, "Error in protocol callback");
+    protocolmod.cacheCallback(protocol, str_connection_lost, &self.cb_connection_lost);
+    protocolmod.cacheCallback(protocol, str_datagram_received, &self.cb_datagram_received);
+    protocolmod.cacheCallback(protocol, str_error_received, &self.cb_error_received);
+    protocolmod.cacheCallback(protocol, str_pause_writing, &self.cb_pause_writing);
+    protocolmod.cacheCallback(protocol, str_resume_writing, &self.cb_resume_writing);
 }
 
 /// Reads reach the protocol inside the context captured when the endpoint was
@@ -139,32 +109,12 @@ fn callInContext(self: *Datagram, callback: ?*py.Object, args: []const ?*py.Obje
     const cb = callback orelse return;
     const ctx = self.context orelse return;
     if (c.PyContext_Enter(ctx) != 0) {
-        reportError(self, "Error entering transport context");
+        protocolmod.reportError(self.loop.?, @ptrCast(self), "Error entering transport context");
         return;
     }
     const result = c.PyObject_Vectorcall(cb, args.ptr, args.len, null);
-    if (result) |r| py.decref(r) else reportError(self, "Error in protocol callback");
-    if (c.PyContext_Exit(ctx) != 0) reportError(self, "Error leaving transport context");
-}
-
-fn scheduleCall(self: *Datagram, callback: ?*py.Object, arg: ?*py.Object) void {
-    const cb = callback orelse return;
-    const st = self.loopState();
-    if (st.closed) return;
-    const loop = loopmod.asLoop(self.loop.?);
-    var argv: [1]?*py.Object = .{arg};
-    const n: usize = if (arg == null) 0 else 1;
-    const h = handlemod.create(handlemod.handle_type.?, self.loop.?, cb, argv[0..n], self.context) catch {
-        loopmod.captureFatal(loop);
-        return;
-    };
-    st.ready.push(@ptrCast(h)) catch {
-        py.decref(h);
-        py.errNoMemory() catch {};
-        loopmod.captureFatal(loop);
-        return;
-    };
-    loopmod.startIdle(st);
+    if (result) |r| py.decref(r) else protocolmod.reportError(self.loop.?, @ptrCast(self), "Error in protocol callback");
+    if (c.PyContext_Exit(ctx) != 0) protocolmod.reportError(self.loop.?, @ptrCast(self), "Error leaving transport context");
 }
 
 // ---------------------------------------------------------------------------
@@ -209,7 +159,7 @@ fn onRecv(
         return;
     }
     if (nread < 0) {
-        const exc = takeUvError(@intCast(nread)) orelse return;
+        const exc = protocolmod.takeUvError(@intCast(nread)) orelse return;
         defer py.decref(exc);
         callInContext(self, self.cb_error_received, &.{exc});
         return;
@@ -256,9 +206,9 @@ fn onSent(req: ?*uv.UdpSend, status: c_int) callconv(.c) void {
     // A failed datagram is reported to the protocol, never raised: asyncio
     // treats the endpoint as still usable.
     if (status < 0 and self.flags & (CLOSING | CONN_LOST) == 0) {
-        if (takeUvError(status)) |exc| {
+        if (protocolmod.takeUvError(status)) |exc| {
             defer py.decref(exc);
-            callProtocol(self, self.cb_error_received, exc);
+            protocolmod.call(self.loop.?, @ptrCast(self), self.cb_error_received, exc);
         }
     }
     maybeResumeProtocol(self);
@@ -298,7 +248,7 @@ fn maybePauseProtocol(self: *Datagram) void {
     if (self.write_buffer_size <= self.high_water) return;
     if (self.flags & PROTOCOL_PAUSED != 0) return;
     self.flags |= PROTOCOL_PAUSED;
-    callProtocol(self, self.cb_pause_writing, null);
+    protocolmod.call(self.loop.?, @ptrCast(self), self.cb_pause_writing, null);
 }
 
 fn maybeResumeProtocol(self: *Datagram) void {
@@ -306,19 +256,11 @@ fn maybeResumeProtocol(self: *Datagram) void {
     if (self.flags & PROTOCOL_PAUSED == 0) return;
     if (self.write_buffer_size > self.low_water) return;
     self.flags &= ~PROTOCOL_PAUSED;
-    callProtocol(self, self.cb_resume_writing, null);
+    protocolmod.call(self.loop.?, @ptrCast(self), self.cb_resume_writing, null);
 }
 
 // ---------------------------------------------------------------------------
 // teardown
-
-fn releaseSocketView(self: *Datagram) void {
-    const view = self.socket_view orelse return;
-    self.socket_view = null;
-    const result = c.PyObject_CallMethodNoArgs(view, str_sock_detach);
-    if (result) |r| py.decref(r) else c.PyErr_Clear();
-    py.decref(view);
-}
 
 fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     const self: *Datagram = @ptrCast(@alignCast(uv.getData(handle.?)));
@@ -328,7 +270,7 @@ fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
     defer st.pythonExit();
 
     self.flags |= CONN_LOST;
-    scheduleCall(self, self.cb_connection_lost, self.conn_lost_exc orelse py.none());
+    protocolmod.scheduleCall(self.loop.?, self.context, self.cb_connection_lost, self.conn_lost_exc orelse py.none());
     py.decref(self);
 }
 
@@ -341,7 +283,7 @@ fn shutdownAndClose(self: *Datagram) void {
     }
     // As with streams, uv_close closes the descriptor before its callback.
     // Detach the Python socket while the number still names our endpoint.
-    releaseSocketView(self);
+    protocolmod.releaseSocketView(&self.socket_view, str_sock_detach);
     const handle = uv.asHandle(self.udp());
     self.loopState().closeExternalHandle(handle, onClosed);
 }
@@ -355,7 +297,7 @@ pub fn closeFromLoop(handle: *uv.Handle) void {
         _ = uv.uv_udp_recv_stop(self.udp());
         self.flags &= ~READING;
     }
-    releaseSocketView(self);
+    protocolmod.releaseSocketView(&self.socket_view, str_sock_detach);
     self.loopState().closeExternalHandle(handle, onClosed);
 }
 
@@ -426,9 +368,9 @@ fn sendto(self_obj: *py.Object, args: []const ?*py.Object, nargs: usize, kwnames
         if (sent != uv.EAGAIN) {
             // asyncio reports a failed datagram to the protocol rather than
             // raising, and the endpoint stays usable.
-            if (takeUvError(sent)) |exc| {
+            if (protocolmod.takeUvError(sent)) |exc| {
                 defer py.decref(exc);
-                callProtocol(self, self.cb_error_received, exc);
+                protocolmod.call(self.loop.?, @ptrCast(self), self.cb_error_received, exc);
             }
             return py.noneRef();
         }
@@ -462,16 +404,7 @@ fn isClosing(self_obj: *py.Object) py.Error!*py.Object {
 }
 
 fn getExtraInfo(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*py.Object {
-    if (args.len < 1 or args.len > 2) return py.errType("get_extra_info() takes 1 or 2 arguments");
-    const self = asDatagram(self_obj);
-    const fallback: *py.Object = if (args.len == 2) args[1].? else py.none();
-    const extra = self.extra orelse return py.newref(fallback).?;
-    if (py.isNone(extra)) return py.newref(fallback).?;
-    const found = c.PyDict_GetItemWithError(extra, args[0].?) orelse {
-        if (c.PyErr_Occurred() != null) return py.Error.Python;
-        return py.newref(fallback).?;
-    };
-    return py.newref(found).?;
+    return protocolmod.extraInfo(asDatagram(self_obj).extra, args);
 }
 
 fn getProtocol(self_obj: *py.Object) py.Error!*py.Object {
@@ -499,53 +432,10 @@ fn setWriteBufferLimits(
     nargs: usize,
     kwnames: ?*py.Object,
 ) py.Error!*py.Object {
-    if (nargs > 2) return py.errType("set_write_buffer_limits() takes at most 2 arguments");
-    var high: ?*py.Object = if (nargs > 0) args[0] else null;
-    var low: ?*py.Object = if (nargs > 1) args[1] else null;
-    if (kwnames) |names| {
-        const n: usize = @intCast(c.PyTuple_Size(names));
-        var i: usize = 0;
-        while (i < n) : (i += 1) {
-            const key = c.PyTuple_GetItem(names, @intCast(i)) orelse return py.Error.Python;
-            if (c.PyObject_RichCompareBool(key, str_high, c.Py_EQ) == 1) {
-                high = args[nargs + i];
-            } else if (c.PyObject_RichCompareBool(key, str_low, c.Py_EQ) == 1) {
-                low = args[nargs + i];
-            } else {
-                return py.errType("set_write_buffer_limits() got an unexpected keyword argument");
-            }
-        }
-    }
+    const marks = try protocolmod.parseWriteBufferLimits(args, nargs, kwnames);
     const self = asDatagram(self_obj);
-    var high_value: usize = default_high_water;
-    if (high) |h| {
-        if (!py.isNone(h)) {
-            const parsed = try py.asIsize(h);
-            if (parsed < 0) return py.errValue("high water mark must be non-negative");
-            high_value = @intCast(parsed);
-        }
-    }
-    var low_value: usize = high_value / 4;
-    if (low) |l| {
-        if (!py.isNone(l)) {
-            const parsed = try py.asIsize(l);
-            if (parsed < 0) return py.errValue("low water mark must be non-negative");
-            low_value = @intCast(parsed);
-        }
-    }
-    if (high == null or py.isNone(high.?)) {
-        if (low) |l| {
-            if (!py.isNone(l)) {
-                if (low_value > std.math.maxInt(c.Py_ssize_t) / 4) {
-                    return py.errOverflow("high water mark is too large");
-                }
-                high_value = low_value * 4;
-            }
-        }
-    }
-    if (low_value > high_value) return py.errValue("high water mark must be >= low water mark");
-    self.high_water = high_value;
-    self.low_water = low_value;
+    self.high_water = marks.high;
+    self.low_water = marks.low;
     maybePauseProtocol(self);
     return py.noneRef();
 }
@@ -613,8 +503,8 @@ pub fn makeDatagram(self_obj: *py.Object, args: []const ?*py.Object) py.Error!*p
     errdefer py.decref(obj);
 
     self.state = st;
-    self.high_water = default_high_water;
-    self.low_water = default_high_water / 4;
+    self.high_water = protocolmod.default_high_water;
+    self.low_water = protocolmod.default_high_water / 4;
     self.family = family;
     if (connected) self.flags |= CONNECTED;
     self.context = c.PyContext_CopyCurrent();
@@ -764,8 +654,6 @@ pub fn register(module: *py.Object) py.Error!void {
     str_resume_writing = py.intern("resume_writing") orelse return py.Error.Python;
     str_sock_detach = py.intern("detach") orelse return py.Error.Python;
     str_addr = py.intern("addr") orelse return py.Error.Python;
-    str_high = py.intern("high") orelse return py.Error.Python;
-    str_low = py.intern("low") orelse return py.Error.Python;
 
     handle_offset = std.mem.alignForward(usize, @sizeOf(Datagram), 16);
     send_req_offset = std.mem.alignForward(usize, @sizeOf(SendReq), 16);
