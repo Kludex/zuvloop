@@ -2451,6 +2451,9 @@ def test_an_exit_from_a_read_callback_reaches_the_caller(loop: zuvloop.EventLoop
         right.close()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; nothing pauses the protocol"
+)
 @pytest.mark.anyio(None)
 def test_an_exit_from_a_flow_control_callback_reaches_the_caller(loop: zuvloop.EventLoop) -> None:
     """The rule is the loop's, not the read path's: no protocol callback may
