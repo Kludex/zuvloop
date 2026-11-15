@@ -270,7 +270,7 @@ fn callInContext(self: *Transport, callback: ?*py.Object, arg: ?*py.Object, comp
     if (failure) |exc| {
         // Asking to leave is the loop's business, not the connection's.
         const loop = loopmod.asLoop(self.loop.?);
-        if (isExit(exc)) {
+        if (loopmod.isExit(exc)) {
             c.PyErr_SetRaisedException(exc);
             loopmod.captureFatal(loop);
             forceClose(self, null);
@@ -279,12 +279,6 @@ fn callInContext(self: *Transport, callback: ?*py.Object, arg: ?*py.Object, comp
         loopmod.callExceptionHandler(loop, failed, exc, @ptrCast(self));
         forceClose(self, exc);
     }
-}
-
-fn isExit(exc: *py.Object) bool {
-    const kind: *py.Object = @ptrCast(py.typeOf(exc));
-    return c.PyType_IsSubtype(@ptrCast(kind), @ptrCast(py.exc_system_exit)) != 0 or
-        c.PyType_IsSubtype(@ptrCast(kind), @ptrCast(py.exc_keyboard_interrupt)) != 0;
 }
 
 fn reportError(self: *Transport, comptime message: [:0]const u8) void {

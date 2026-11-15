@@ -13,8 +13,8 @@ from typing import NoReturn
 
 import pytest
 
-from tests.conftest import running_loop
-from zuvloop import _connect, _zuvloop, new_event_loop
+from tests.conftest import collect_contexts, running_loop
+from zuvloop import EventLoop, _connect, _zuvloop, new_event_loop
 
 pytestmark = pytest.mark.anyio
 requires_unix_sockets = pytest.mark.skipif(sys.platform == "win32", reason="Windows has no Unix sockets")
@@ -482,6 +482,30 @@ async def test_a_send_failure_reaches_error_received() -> None:
         assert isinstance(protocol.errors[0], OSError)
     finally:
         transport.close()
+
+
+@pytest.mark.parametrize("error_type", [SystemExit, KeyboardInterrupt])
+def test_an_exit_from_a_datagram_callback_reaches_the_caller(loop: EventLoop, error_type: type[BaseException]) -> None:
+    """asyncio lets these two end the run instead of handing them to the exception
+    handler, where the caller of `run_forever` would never learn of them."""
+    seen = collect_contexts(loop)
+
+    class Interrupt(asyncio.DatagramProtocol):
+        def datagram_received(self, data: bytes, addr: Address) -> None:
+            raise error_type("stop")
+
+    transport, _protocol = loop.run_until_complete(
+        loop.create_datagram_endpoint(Interrupt, local_addr=("127.0.0.1", 0))
+    )
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sender.sendto(b"go", transport.get_extra_info("sockname"))
+        with pytest.raises(error_type, match="stop"):
+            loop.run_until_complete(asyncio.sleep(5))
+        assert seen == []
+    finally:
+        transport.close()
+        sender.close()
 
 
 async def test_ipv6_endpoints_round_trip() -> None:

@@ -517,26 +517,33 @@ pub fn captureFatal(self: *LoopObject) void {
     uv.uv_stop(st.uvloop);
 }
 
-/// Routes a failed callback to `call_exception_handler`, except for the two
-/// exceptions asyncio propagates out of `run_forever`.
+/// Routes the raised exception of a failed callback to `callExceptionHandler`.
 pub fn callbackFailed(loop_obj_opt: ?*py.Object, h: *py.Object) void {
     const loop_obj = loop_obj_opt orelse {
         c.PyErr_Clear();
         return;
     };
-    const self = asLoop(loop_obj);
-    if (c.PyErr_ExceptionMatches(py.exc_system_exit) != 0 or
-        c.PyErr_ExceptionMatches(py.exc_keyboard_interrupt) != 0)
-    {
+    const exc = c.PyErr_GetRaisedException() orelse return;
+    defer py.decref(exc);
+    callExceptionHandler(asLoop(loop_obj), "Exception in callback", exc, h);
+}
+
+/// True for the two exceptions asyncio propagates out of `run_forever`.
+pub fn isExit(exc: *py.Object) bool {
+    const kind = py.typeOf(exc);
+    return c.PyType_IsSubtype(kind, @ptrCast(py.exc_system_exit)) != 0 or
+        c.PyType_IsSubtype(kind, @ptrCast(py.exc_keyboard_interrupt)) != 0;
+}
+
+/// Reports `exc` through `call_exception_handler`, unless it asks the program
+/// to stop: that is the loop's caller's business, so it ends the run instead.
+pub fn callExceptionHandler(self: *LoopObject, comptime message: [:0]const u8, exc: *py.Object, h: ?*py.Object) void {
+    if (isExit(exc)) {
+        py.incref(exc);
+        c.PyErr_SetRaisedException(exc);
         captureFatal(self);
         return;
     }
-    const exc = c.PyErr_GetRaisedException() orelse return;
-    defer py.decref(exc);
-    callExceptionHandler(self, "Exception in callback", exc, h);
-}
-
-pub fn callExceptionHandler(self: *LoopObject, comptime message: [:0]const u8, exc: *py.Object, h: ?*py.Object) void {
     const ctx = c.PyDict_New() orelse {
         py.writeUnraisable(@ptrCast(self));
         return;

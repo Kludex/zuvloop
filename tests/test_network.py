@@ -17,7 +17,7 @@ from typing import Literal, NoReturn
 import pytest
 
 import zuvloop
-from tests.conftest import running_loop
+from tests.conftest import collect_contexts, running_loop
 from zuvloop._server import Server
 from zuvloop._sockets import _SocketAddress
 
@@ -2447,6 +2447,33 @@ def test_an_exit_from_a_read_callback_reaches_the_caller(loop: zuvloop.EventLoop
         right.send(b"go")
         with pytest.raises(KeyboardInterrupt, match="stop"):
             loop.run_until_complete(asyncio.sleep(0.3))
+    finally:
+        right.close()
+
+
+@pytest.mark.anyio(None)
+def test_an_exit_from_a_flow_control_callback_reaches_the_caller(loop: zuvloop.EventLoop) -> None:
+    """The rule is the loop's, not the read path's: no protocol callback may
+    swallow a request to stop the program."""
+    seen = collect_contexts(loop)
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+
+    class Interrupt(asyncio.Protocol):
+        def pause_writing(self) -> None:
+            raise KeyboardInterrupt("stop")
+
+    async def overfill() -> None:
+        transport, _protocol = await loop.connect_accepted_socket(Interrupt, left)
+        transport.set_write_buffer_limits(high=1024, low=512)
+        transport.write(b"z" * (1 << 20))
+        await asyncio.sleep(5)
+
+    try:
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_until_complete(overfill())
+        assert seen == []
     finally:
         right.close()
 
