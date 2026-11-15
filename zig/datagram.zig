@@ -174,7 +174,12 @@ fn onAlloc(handle: ?*uv.Handle, suggested: usize, buf: *uv.Buf) callconv(.c) voi
     _ = suggested;
     const self: *Datagram = @ptrCast(@alignCast(uv.getData(handle.?)));
     const st = self.loopState();
-    const scratch = loopmod.scratchBuffer(st) orelse {
+    // libuv reads a socket until it is empty and dispatches every ready socket
+    // in a turn, without looking at the stop a callback asked for. Offering no
+    // buffer once the run is ending leaves what is queued in the socket for the
+    // next run, which is when asyncio would deliver it; `onRecv` drops the
+    // ENOBUFS libuv reports in return.
+    const scratch = (if (st.fatal == null) loopmod.scratchBuffer(st) else null) orelse {
         buf.* = .{ .base = @ptrFromInt(@alignOf(u8)), .len = 0 };
         return;
     };
@@ -209,6 +214,7 @@ fn onRecv(
         return;
     }
     if (nread < 0) {
+        if (nread == uv.ENOBUFS and st.fatal != null) return;
         const exc = takeUvError(@intCast(nread)) orelse return;
         defer py.decref(exc);
         callInContext(self, self.cb_error_received, &.{exc});

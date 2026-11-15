@@ -509,34 +509,53 @@ pub fn noteTimerCancelled(self: *LoopObject) void {
     }
 }
 
+/// Holds the raised exception for `_run` to re-raise, and ends the run in
+/// progress. With no run in progress there is no caller to unwind to, so the
+/// exception waits for the next `_run`, which raises it before doing any work.
 pub fn captureFatal(self: *LoopObject) void {
     const st = self.state();
     const exc = c.PyErr_GetRaisedException();
     if (st.fatal == null) st.fatal = exc else py.xdecref(exc);
     st.stopping = true;
-    uv.uv_stop(st.uvloop);
+    // Only a `uv_run` in progress consumes the stop. Left set, it would make
+    // the next one - a later run, or the drain in `close` - return at once.
+    if (st.running) uv.uv_stop(st.uvloop);
 }
 
-/// Routes a failed callback to `call_exception_handler`, except for the two
-/// exceptions asyncio propagates out of `run_forever`.
+fn raiseFatal(st: *State) py.Error!void {
+    const exc = st.fatal orelse return;
+    st.fatal = null;
+    c.PyErr_SetRaisedException(exc);
+    return py.Error.Python;
+}
+
+/// Routes the raised exception of a failed callback to `callExceptionHandler`.
 pub fn callbackFailed(loop_obj_opt: ?*py.Object, h: *py.Object) void {
     const loop_obj = loop_obj_opt orelse {
         c.PyErr_Clear();
         return;
     };
-    const self = asLoop(loop_obj);
-    if (c.PyErr_ExceptionMatches(py.exc_system_exit) != 0 or
-        c.PyErr_ExceptionMatches(py.exc_keyboard_interrupt) != 0)
-    {
+    const exc = c.PyErr_GetRaisedException() orelse return;
+    defer py.decref(exc);
+    callExceptionHandler(asLoop(loop_obj), "Exception in callback", exc, h);
+}
+
+/// True for the two exceptions asyncio propagates out of `run_forever`.
+pub fn isExit(exc: *py.Object) bool {
+    const kind = py.typeOf(exc);
+    return c.PyType_IsSubtype(kind, @ptrCast(py.exc_system_exit)) != 0 or
+        c.PyType_IsSubtype(kind, @ptrCast(py.exc_keyboard_interrupt)) != 0;
+}
+
+/// Reports `exc` through `call_exception_handler`, unless it asks the program
+/// to stop: that is the loop's caller's business, so it ends the run instead.
+pub fn callExceptionHandler(self: *LoopObject, comptime message: [:0]const u8, exc: *py.Object, h: ?*py.Object) void {
+    if (isExit(exc)) {
+        py.incref(exc);
+        c.PyErr_SetRaisedException(exc);
         captureFatal(self);
         return;
     }
-    const exc = c.PyErr_GetRaisedException() orelse return;
-    defer py.decref(exc);
-    callExceptionHandler(self, "Exception in callback", exc, h);
-}
-
-pub fn callExceptionHandler(self: *LoopObject, comptime message: [:0]const u8, exc: *py.Object, h: ?*py.Object) void {
     const ctx = c.PyDict_New() orelse {
         py.writeUnraisable(@ptrCast(self));
         return;
@@ -711,6 +730,7 @@ fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
     const st = self.state();
     try checkClosed(st);
     if (st.running) return py.errRuntime("This event loop is already running");
+    try raiseFatal(st);
 
     st.running = true;
     st.stopping = false;
@@ -730,11 +750,7 @@ fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
     // callbacks write in turn.
     drainFlushList(st);
 
-    if (st.fatal) |exc| {
-        st.fatal = null;
-        c.PyErr_SetRaisedException(exc);
-        return py.Error.Python;
-    }
+    try raiseFatal(st);
     return py.noneRef();
 }
 
