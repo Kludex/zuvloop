@@ -74,13 +74,21 @@ pub fn release(loop: ?*py.Object, context: *?*py.Object, flags: u32) void {
 pub fn register() py.Error!void {
     const probe = c.PyContext_New() orelse return py.Error.Python;
     defer py.decref(probe);
-    const fresh: *ContextObject = @ptrCast(@alignCast(probe));
-    // A new context has no predecessor, an empty variable map, no weak
-    // references and has not been entered, so a field that moved shows up here
-    // even when the size did not change.
-    if (py.typeOf(probe).tp_basicsize != @sizeOf(ContextObject) or
-        fresh.previous != null or fresh.variables == null or fresh.weakrefs != null or fresh.entered != 0)
-    {
+    const mirror: *ContextObject = @ptrCast(@alignCast(probe));
+    // A new context holds a variable map and nothing else, which places `variables`.
+    var matches = py.typeOf(probe).tp_basicsize == @sizeOf(ContextObject) and
+        mirror.previous == null and mirror.variables != null and mirror.weakrefs == null and mirror.entered == 0;
+
+    // The other fields `release` reads are each driven to a value only they
+    // can hold, so one that moved is caught even when the size did not change.
+    const reference = c.PyWeakref_NewRef(probe, null) orelse return py.Error.Python;
+    defer py.decref(reference);
+    matches = matches and mirror.weakrefs != null;
+    if (c.PyContext_Enter(probe) < 0) return py.Error.Python;
+    matches = matches and mirror.entered == 1;
+    if (c.PyContext_Exit(probe) < 0) return py.Error.Python;
+
+    if (!matches) {
         return py.errRuntime("contextvars.Context instance layout is not the one zuvloop was built against");
     }
 }
