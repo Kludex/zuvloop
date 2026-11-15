@@ -97,7 +97,7 @@ pub fn create(
     py.incref(callback);
     self.callback = callback;
 
-    self.flags.captured = context == null;
+    if (context == null) self.flags.captured = true;
     self.context = try contextmod.capture(context);
 
     c.PyObject_GC_Track(obj);

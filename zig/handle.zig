@@ -69,7 +69,7 @@ pub fn create(
     py.incref(callback);
     self.callback = callback;
 
-    self.flags.captured = context == null;
+    if (context == null) self.flags.captured = true;
     self.context = contextmod.capture(context) catch {
         py.decref(obj);
         return py.Error.Python;
