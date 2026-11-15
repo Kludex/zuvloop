@@ -68,6 +68,7 @@ jobs:
           done <<'EOF'
           ci.yml PR quality gate
           compatibility.yml Ecosystem compatibility gate
+          compatibility.yml Service ecosystem gate
           hardening.yml Native hardening gate
           EOF
 
