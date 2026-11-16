@@ -196,10 +196,9 @@ def test_call_soon_discards_a_pooled_context_that_was_changed() -> None:
         known = {id(found) for found in gc.get_objects() if type(found) is contextvars.Context}
         loop.call_soon(int)
         await asyncio.sleep(0)
-        for found in gc.get_objects():
-            if type(found) is contextvars.Context and id(found) not in known:
-                found.run(variable.set, "changed")
-        del found
+        pooled = [found for found in gc.get_objects() if type(found) is contextvars.Context and id(found) not in known]
+        assert len(pooled) == 1
+        pooled.pop().run(variable.set, "changed")
         future: asyncio.Future[str] = loop.create_future()
         loop.call_soon(lambda: future.set_result(variable.get()))
         return await future

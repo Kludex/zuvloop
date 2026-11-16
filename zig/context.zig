@@ -60,23 +60,26 @@ pub fn recycle(owner: *py.Object, loop: ?*py.Object, context: *?*py.Object) void
     const current = context.* orelse return;
     const loop_obj = loop orelse return;
     // A handle or context something else still holds keeps the context it ran in.
-    for ([_]*py.Object{ owner, current }) |held| {
-        // `Py_REFCNT(o) == 1` proves nothing without the GIL: another thread can still take a
-        // reference from the collector's view of the object while this one decides.
-        const unique = if (@hasDecl(c, "Py_GIL_DISABLED"))
-            c.PyUnstable_Object_IsUniquelyReferenced(held) != 0
-        else
-            c.Py_REFCNT(held) == 1;
-        if (!unique) return;
-    }
+    if (!isSoleReference(owner) or !isSoleReference(current)) return;
     const context_obj: *ContextObject = @ptrCast(@alignCast(current));
-    if (!isUnused(current) or context_obj.weakrefs != null) return;
+    if (!isEmpty(current) or context_obj.weakrefs != null or context_obj.entered != 0) return;
     if (loopmod.isRunningThread(loop_obj) and loopmod.recycleEmptyContext(loop_obj, current)) context.* = null;
 }
 
-/// Reports whether `context` holds no variables and nothing is running in it.
+/// Reports whether a pooled `context` still holds no variables and has nothing running in it.
 pub fn isUnused(context: *py.Object) bool {
+    // Without the GIL, only a sole reference rules out another thread writing these fields.
+    if (@hasDecl(c, "Py_GIL_DISABLED") and !isSoleReference(context)) return false;
     return isEmpty(context) and @as(*ContextObject, @ptrCast(@alignCast(context))).entered == 0;
+}
+
+fn isSoleReference(object: *py.Object) bool {
+    // `Py_REFCNT(o) == 1` proves nothing without the GIL: another thread can still take a
+    // reference from the collector's view of the object while this one decides.
+    return if (@hasDecl(c, "Py_GIL_DISABLED"))
+        c.PyUnstable_Object_IsUniquelyReferenced(object) != 0
+    else
+        c.Py_REFCNT(object) == 1;
 }
 
 /// Refuses to load against a `contextvars.Context` whose layout is not the one
