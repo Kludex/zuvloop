@@ -15,6 +15,16 @@ const ContextObject = extern struct {
     entered: c_int,
 };
 
+/// The map every empty context shares: CPython hands out one immortal empty HAMT.
+/// Left null if it ever stops, which makes every context read as non-empty.
+var empty_variables: ?*py.Object = null;
+
+/// Reports whether `context` holds no variables, without calling into the interpreter.
+fn isEmpty(context: *py.Object) bool {
+    const variables = @as(*ContextObject, @ptrCast(@alignCast(context))).variables;
+    return variables != null and variables == empty_variables;
+}
+
 /// Returns the supplied context, or captures a non-empty current one and
 /// defers allocating an empty one.
 pub fn capture(explicit: ?*py.Object) py.Error!?*py.Object {
@@ -26,10 +36,8 @@ pub fn capture(explicit: ?*py.Object) py.Error!?*py.Object {
     const current_slot: *?*py.Object = @ptrFromInt(
         @intFromPtr(thread_state) + c.ZUVLOOP_PYTHREADSTATE_CONTEXT_OFFSET,
     );
-    const current = current_slot.*;
-    const context_size = if (current) |context| c.PyObject_Size(context) else 0;
-    if (context_size < 0) return py.Error.Python;
-    if (context_size == 0) return null;
+    const current = current_slot.* orelse return null;
+    if (isEmpty(current)) return null;
     return c.PyContext_CopyCurrent() orelse return py.Error.Python;
 }
 
@@ -52,23 +60,16 @@ pub fn release(loop: ?*py.Object, context: *?*py.Object, captured: bool) void {
     const context_obj: *ContextObject = @ptrCast(@alignCast(current));
     // `Py_REFCNT(o) == 1` proves nothing without the GIL: another thread can still take a
     // reference from the collector's view of the object while this one decides.
-    // The GC may clear the context before its handle, and len() on a cleared one dereferences NULL.
+    // The GC may clear the context before its handle, which leaves it without the shared empty map.
     if (captured and
         (if (@hasDecl(c, "Py_GIL_DISABLED"))
             c.PyUnstable_Object_IsUniquelyReferenced(current) != 0
         else
             c.Py_REFCNT(current) == 1) and
-        context_obj.variables != null)
+        isEmpty(current) and context_obj.weakrefs == null and context_obj.entered == 0)
     {
-        // Cleanup paths arrive with the caller's exception raised, and slots must not run with one pending.
-        const pending = c.PyErr_GetRaisedException();
-        const size = c.PyObject_Size(current);
-        if (size < 0) c.PyErr_Clear();
-        c.PyErr_SetRaisedException(pending);
-        if (size == 0 and context_obj.weakrefs == null and context_obj.entered == 0) {
-            if (loop) |loop_obj| {
-                if (loopmod.isRunningThread(loop_obj) and loopmod.recycleEmptyContext(loop_obj, current)) return;
-            }
+        if (loop) |loop_obj| {
+            if (loopmod.isRunningThread(loop_obj) and loopmod.recycleEmptyContext(loop_obj, current)) return;
         }
     }
     py.decref(current);
@@ -95,6 +96,12 @@ pub fn register() py.Error!void {
     if (c.PyContext_Enter(probe) < 0) return py.Error.Python;
     matches = matches and @atomicLoad(c_int, &mirror.entered, .seq_cst) == 1;
     if (c.PyContext_Exit(probe) < 0) return py.Error.Python;
+
+    // Two fresh contexts share their map only while CPython keeps the empty one a singleton.
+    const second = c.PyContext_New() orelse return py.Error.Python;
+    defer py.decref(second);
+    const second_mirror: *ContextObject = @ptrCast(@alignCast(second));
+    if (matches and second_mirror.variables == mirror.variables) empty_variables = mirror.variables;
 
     if (!matches) {
         return py.errRuntime("contextvars.Context instance layout is not the one zuvloop was built against");
