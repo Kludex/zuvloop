@@ -160,6 +160,33 @@ def test_call_soon_discards_a_pooled_context_the_gc_cleared() -> None:
         loop.close()
 
 
+def test_call_soon_never_pools_a_context_the_gc_is_about_to_clear() -> None:
+    loop = zuvloop.new_event_loop()
+    variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable", default="default")
+    taken: list[contextvars.Context] = []
+
+    class TakesAContext:
+        def __del__(self) -> None:
+            taken.append(loop.call_soon(int).get_context())
+
+    async def main() -> list[str]:
+        finalizers = [TakesAContext() for _ in range(4)]
+        # Old objects that only young garbage holds are freed while that garbage is being cleared.
+        gc.collect()
+        cycle: list[zuvloop.Handle] = []
+        while finalizers:
+            cycle.append(loop.call_soon(lambda *_: None, cycle, finalizers.pop()))
+        await asyncio.sleep(0)
+        del cycle
+        gc.collect(0)
+        return [context.run(variable.get) for context in taken]
+
+    try:
+        assert contextvars.Context().run(loop.run_until_complete, main()) == ["default"] * 4
+    finally:
+        loop.close()
+
+
 def test_call_soon_exposes_its_context_before_running() -> None:
     loop = zuvloop.new_event_loop()
     variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable", default="default")

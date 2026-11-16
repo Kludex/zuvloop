@@ -136,6 +136,7 @@ pub fn run(obj: *py.Object) void {
         return;
     };
     handlemod.invoke(obj, self.loop, callback, self.argv(), self.nargs, context);
+    if (self.flags.captured) contextmod.recycle(obj, self.loop, &self.context);
 }
 
 /// Parks until the running callback finishes. The thread state is detached for
@@ -213,7 +214,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     c.PyObject_ClearWeakRefs(obj);
     handlemod.clearStoredArgs(self);
     py.clear(&self.callback);
-    contextmod.release(self.loop, &self.context, self.flags.captured);
+    py.clear(&self.context);
     py.clear(&self.loop);
     tp.tp_free.?(obj);
     py.decref(tp);
@@ -239,7 +240,7 @@ fn clear_(obj: ?*py.Object) callconv(.c) c_int {
     const self = payload(obj.?);
     handlemod.clearStoredArgs(self);
     py.clear(&self.callback);
-    contextmod.release(self.loop, &self.context, self.flags.captured);
+    py.clear(&self.context);
     py.clear(&self.loop);
     return 0;
 }

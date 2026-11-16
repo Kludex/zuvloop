@@ -20,7 +20,7 @@ const ContextObject = extern struct {
 var empty_variables: ?*py.Object = null;
 
 /// Reports whether `context` holds no variables, without calling into the interpreter.
-pub fn isEmpty(context: *py.Object) bool {
+fn isEmpty(context: *py.Object) bool {
     const variables = @as(*ContextObject, @ptrCast(@alignCast(context))).variables;
     return variables != null and variables == empty_variables;
 }
@@ -52,27 +52,26 @@ pub fn materialize(loop: ?*py.Object, context: *?*py.Object) py.Error!*py.Object
     return context.*.?;
 }
 
-/// Releases a context or moves an unused captured one into the loop pool.
-/// `captured` says the context was not supplied by the caller.
-pub fn release(loop: ?*py.Object, context: *?*py.Object, captured: bool) void {
+/// Moves the empty context `owner` captured back into the loop pool once its callback has run.
+///
+/// Only the run path calls this. The loop holds the handle there, so no collection under way
+/// can have the context on its garbage list, and the pool never hands out one about to be cleared.
+pub fn recycle(owner: *py.Object, loop: ?*py.Object, context: *?*py.Object) void {
     const current = context.* orelse return;
-    context.* = null;
-    const context_obj: *ContextObject = @ptrCast(@alignCast(current));
-    // `Py_REFCNT(o) == 1` proves nothing without the GIL: another thread can still take a
-    // reference from the collector's view of the object while this one decides.
-    // The GC may clear the context before its handle, which leaves it without the shared empty map.
-    if (captured and
-        (if (@hasDecl(c, "Py_GIL_DISABLED"))
-            c.PyUnstable_Object_IsUniquelyReferenced(current) != 0
+    const loop_obj = loop orelse return;
+    // A handle or context something else still holds keeps the context it ran in.
+    for ([_]*py.Object{ owner, current }) |held| {
+        // `Py_REFCNT(o) == 1` proves nothing without the GIL: another thread can still take a
+        // reference from the collector's view of the object while this one decides.
+        const unique = if (@hasDecl(c, "Py_GIL_DISABLED"))
+            c.PyUnstable_Object_IsUniquelyReferenced(held) != 0
         else
-            c.Py_REFCNT(current) == 1) and
-        isEmpty(current) and context_obj.weakrefs == null and context_obj.entered == 0)
-    {
-        if (loop) |loop_obj| {
-            if (loopmod.isRunningThread(loop_obj) and loopmod.recycleEmptyContext(loop_obj, current)) return;
-        }
+            c.Py_REFCNT(held) == 1;
+        if (!unique) return;
     }
-    py.decref(current);
+    const context_obj: *ContextObject = @ptrCast(@alignCast(current));
+    if (!isEmpty(current) or context_obj.weakrefs != null or context_obj.entered != 0) return;
+    if (loopmod.isRunningThread(loop_obj) and loopmod.recycleEmptyContext(loop_obj, current)) context.* = null;
 }
 
 /// Refuses to load against a `contextvars.Context` whose layout is not the one

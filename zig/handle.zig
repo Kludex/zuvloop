@@ -95,6 +95,7 @@ pub fn run(self: *Handle) void {
         return;
     };
     invoke(@ptrCast(self), self.loop, callback, self.argv(), self.nargs(), context);
+    if (self.flags.captured) contextmod.recycle(@ptrCast(self), self.loop, &self.context);
 }
 
 /// Calls `callback(*argv)` inside `ctx`, routing failures to `loop` with
@@ -211,7 +212,7 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     c.PyObject_ClearWeakRefs(obj);
     clearArgs(self);
     py.clear(&self.callback);
-    contextmod.release(self.loop, &self.context, self.flags.captured);
+    py.clear(&self.context);
     py.clear(&self.loop);
     tp.tp_free.?(obj);
     py.decref(tp);
@@ -227,7 +228,7 @@ fn clear_(obj: ?*py.Object) callconv(.c) c_int {
     const self: *Handle = @ptrCast(@alignCast(obj.?));
     clearArgs(self);
     py.clear(&self.callback);
-    contextmod.release(self.loop, &self.context, self.flags.captured);
+    py.clear(&self.context);
     py.clear(&self.loop);
     return 0;
 }
