@@ -59,13 +59,13 @@ pub fn materialize(loop: ?*py.Object, context: *?*py.Object) py.Error!*py.Object
 pub fn recycle(owner: *py.Object, loop: ?*py.Object, context: *?*py.Object) void {
     const current = context.* orelse return;
     const loop_obj = loop orelse return;
-    // Most callbacks carry variables, so that is tested early. Sole ownership comes first
-    // because a context another thread holds may be changing while it is read.
-    if (!isSoleReference(current) or !isEmpty(current)) return;
-    // A handle something else still holds keeps the context it ran in.
-    if (!isSoleReference(owner)) return;
+    // Most callbacks carry variables. With the GIL nothing can be changing them here, so they leave first.
+    if (!@hasDecl(c, "Py_GIL_DISABLED") and !isEmpty(current)) return;
+    // A handle or context something else still holds keeps the context it ran in. Without the GIL
+    // that holder may also be changing the context, so both are ruled out before it is read.
+    if (!isSoleReference(owner) or !isSoleReference(current)) return;
     const context_obj: *ContextObject = @ptrCast(@alignCast(current));
-    if (context_obj.weakrefs != null or context_obj.entered != 0) return;
+    if (!isEmpty(current) or context_obj.weakrefs != null or context_obj.entered != 0) return;
     if (loopmod.isRunningThread(loop_obj) and loopmod.recycleEmptyContext(loop_obj, current)) context.* = null;
 }
 
