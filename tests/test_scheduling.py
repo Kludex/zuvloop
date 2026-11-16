@@ -762,7 +762,7 @@ def test_threadsafe_callbacks_queued_while_draining_waits_on_a_handle_all_run() 
         def __del__(self) -> None:
             finalizing.set()
             # Spinning keeps the thread attached, so `cancel` holds the handle's critical section.
-            while not flooded.is_set() and not drained.is_set():
+            while not flooded.is_set() and not drained.is_set():  # pragma: no cover - the drain can finish first
                 pass
 
     def cancel_with_a_slow_finalizer() -> None:
