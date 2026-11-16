@@ -20,7 +20,7 @@ const ContextObject = extern struct {
 var empty_variables: ?*py.Object = null;
 
 /// Reports whether `context` holds no variables, without calling into the interpreter.
-fn isEmpty(context: *py.Object) bool {
+pub fn isEmpty(context: *py.Object) bool {
     const variables = @as(*ContextObject, @ptrCast(@alignCast(context))).variables;
     return variables != null and variables == empty_variables;
 }

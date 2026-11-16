@@ -10,6 +10,7 @@ const py = @import("py.zig");
 const c = py.c;
 const uv = @import("uv.zig");
 const collections = @import("collections.zig");
+const contextmod = @import("context.zig");
 const handlemod = @import("handle.zig");
 const tshandle = @import("tshandle.zig");
 const timermod = @import("timer.zig");
@@ -357,19 +358,20 @@ pub inline fn startIdle(st: *State) void {
 
 pub fn takeEmptyContext(loop_obj: *py.Object) ?*py.Object {
     const st = asLoop(loop_obj).state();
-    if (st.empty_contexts_len == 0) return null;
-    st.empty_contexts_len -= 1;
-    const context = st.empty_contexts[st.empty_contexts_len];
-    st.empty_contexts[st.empty_contexts_len] = null;
-    c.PyObject_GC_Track(context);
-    return context;
+    while (st.empty_contexts_len != 0) {
+        st.empty_contexts_len -= 1;
+        const context = st.empty_contexts[st.empty_contexts_len].?;
+        st.empty_contexts[st.empty_contexts_len] = null;
+        // A collection under way when it was pooled may have cleared it since.
+        if (contextmod.isEmpty(context)) return context;
+        py.decref(context);
+    }
+    return null;
 }
 
 pub fn recycleEmptyContext(loop_obj: *py.Object, context: *py.Object) bool {
     const st = asLoop(loop_obj).state();
     if (st.closed or st.empty_contexts_len == context_pool_capacity) return false;
-    // Untracked, so a collection already under way cannot clear it while it waits here.
-    c.PyObject_GC_UnTrack(context);
     st.empty_contexts[st.empty_contexts_len] = context;
     st.empty_contexts_len += 1;
     return true;
@@ -378,8 +380,6 @@ pub fn recycleEmptyContext(loop_obj: *py.Object, context: *py.Object) bool {
 fn clearEmptyContexts(st: *State) void {
     while (st.empty_contexts_len > 0) {
         st.empty_contexts_len -= 1;
-        // context_tp_dealloc untracks without checking, so it must be tracked to be freed.
-        c.PyObject_GC_Track(st.empty_contexts[st.empty_contexts_len]);
         py.clear(&st.empty_contexts[st.empty_contexts_len]);
     }
 }
