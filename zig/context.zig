@@ -86,6 +86,15 @@ pub fn register() py.Error!void {
     var matches = py.typeOf(probe).tp_basicsize == @sizeOf(ContextObject) and
         mirror.previous == null and mirror.variables != null and mirror.weakrefs == null and mirror.entered == 0;
 
+    // Two fresh contexts share their map only while CPython keeps the empty one a singleton.
+    // Read before the probe is entered, after which a context watcher may share it with another thread.
+    const second = c.PyContext_New() orelse return py.Error.Python;
+    defer py.decref(second);
+    const shared_map = if (@as(*ContextObject, @ptrCast(@alignCast(second))).variables == mirror.variables)
+        mirror.variables
+    else
+        null;
+
     // The other fields `release` reads are each driven to a value only they
     // can hold, so one that moved is caught even when the size did not change.
     const reference = c.PyWeakref_NewRef(probe, null) orelse return py.Error.Python;
@@ -97,13 +106,8 @@ pub fn register() py.Error!void {
     matches = matches and @atomicLoad(c_int, &mirror.entered, .seq_cst) == 1;
     if (c.PyContext_Exit(probe) < 0) return py.Error.Python;
 
-    // Two fresh contexts share their map only while CPython keeps the empty one a singleton.
-    const second = c.PyContext_New() orelse return py.Error.Python;
-    defer py.decref(second);
-    const second_mirror: *ContextObject = @ptrCast(@alignCast(second));
-    if (matches and second_mirror.variables == mirror.variables) empty_variables = mirror.variables;
-
     if (!matches) {
         return py.errRuntime("contextvars.Context instance layout is not the one zuvloop was built against");
     }
+    empty_variables = shared_map;
 }
