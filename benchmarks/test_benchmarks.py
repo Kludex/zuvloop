@@ -85,6 +85,20 @@ def test_call_soon(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop)
 
 
 @pytest.mark.benchmark
+def test_call_soon_small_bursts(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
+    """A hundred callbacks a turn, so every handle is freed before the garbage collector runs."""
+    turns = 100
+
+    async def work() -> None:
+        for _ in range(turns):
+            for _ in range(100):
+                loop.call_soon(_noop)
+            await asyncio.sleep(0)
+
+    benchmark(drive(loop, work))
+
+
+@pytest.mark.benchmark
 @pytest.mark.parametrize("iterations", [100_000, 1_000_000], ids=["100k", "1m"])
 def test_call_soon_large_queue(
     benchmark: BenchmarkFixture,
