@@ -10,6 +10,7 @@ const py = @import("py.zig");
 const c = py.c;
 const uv = @import("uv.zig");
 const collections = @import("collections.zig");
+const contextmod = @import("context.zig");
 const handlemod = @import("handle.zig");
 const tshandle = @import("tshandle.zig");
 const timermod = @import("timer.zig");
@@ -357,11 +358,15 @@ pub inline fn startIdle(st: *State) void {
 
 pub fn takeEmptyContext(loop_obj: *py.Object) ?*py.Object {
     const st = asLoop(loop_obj).state();
-    if (st.empty_contexts_len == 0) return null;
-    st.empty_contexts_len -= 1;
-    const context = st.empty_contexts[st.empty_contexts_len];
-    st.empty_contexts[st.empty_contexts_len] = null;
-    return context;
+    while (st.empty_contexts_len != 0) {
+        st.empty_contexts_len -= 1;
+        const context = st.empty_contexts[st.empty_contexts_len].?;
+        st.empty_contexts[st.empty_contexts_len] = null;
+        // A pooled context stays visible to `gc.get_objects()`, so it may have been changed since.
+        if (contextmod.isUnused(context)) return context;
+        py.decref(context);
+    }
+    return null;
 }
 
 pub fn recycleEmptyContext(loop_obj: *py.Object, context: *py.Object) bool {

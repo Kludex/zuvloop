@@ -70,8 +70,13 @@ pub fn recycle(owner: *py.Object, loop: ?*py.Object, context: *?*py.Object) void
         if (!unique) return;
     }
     const context_obj: *ContextObject = @ptrCast(@alignCast(current));
-    if (!isEmpty(current) or context_obj.weakrefs != null or context_obj.entered != 0) return;
+    if (!isUnused(current) or context_obj.weakrefs != null) return;
     if (loopmod.isRunningThread(loop_obj) and loopmod.recycleEmptyContext(loop_obj, current)) context.* = null;
+}
+
+/// Reports whether `context` holds no variables and nothing is running in it.
+pub fn isUnused(context: *py.Object) bool {
+    return isEmpty(context) and @as(*ContextObject, @ptrCast(@alignCast(context))).entered == 0;
 }
 
 /// Refuses to load against a `contextvars.Context` whose layout is not the one

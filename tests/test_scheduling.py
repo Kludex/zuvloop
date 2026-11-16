@@ -187,6 +187,29 @@ def test_call_soon_never_pools_a_context_the_gc_is_about_to_clear() -> None:
         loop.close()
 
 
+def test_call_soon_discards_a_pooled_context_that_was_changed() -> None:
+    loop = zuvloop.new_event_loop()
+    variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable", default="default")
+
+    async def main() -> str:
+        # `type()` instead of `isinstance()`: a dead weak proxy raises when asked for its class.
+        known = {id(found) for found in gc.get_objects() if type(found) is contextvars.Context}
+        loop.call_soon(int)
+        await asyncio.sleep(0)
+        for found in gc.get_objects():
+            if type(found) is contextvars.Context and id(found) not in known:
+                found.run(variable.set, "changed")
+        del found
+        future: asyncio.Future[str] = loop.create_future()
+        loop.call_soon(lambda: future.set_result(variable.get()))
+        return await future
+
+    try:
+        assert contextvars.Context().run(loop.run_until_complete, main()) == "default"
+    finally:
+        loop.close()
+
+
 def test_call_soon_exposes_its_context_before_running() -> None:
     loop = zuvloop.new_event_loop()
     variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable", default="default")
