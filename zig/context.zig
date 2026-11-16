@@ -90,7 +90,7 @@ pub fn register() py.Error!void {
     // Read before the probe is entered, after which a context watcher may share it with another thread.
     const second = c.PyContext_New() orelse return py.Error.Python;
     defer py.decref(second);
-    const shared_map = if (@as(*ContextObject, @ptrCast(@alignCast(second))).variables == mirror.variables)
+    const shared_map = if (matches and @as(*ContextObject, @ptrCast(@alignCast(second))).variables == mirror.variables)
         mirror.variables
     else
         null;
