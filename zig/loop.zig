@@ -47,6 +47,8 @@ pub const State = struct {
     empty_contexts: [context_pool_capacity]?*py.Object = .{null} ** context_pool_capacity,
     empty_contexts_len: usize = 0,
     threadsafe_candidate: ?*py.Object = null,
+    /// A queued `call_soon` handle may be untracked. Cleared once the queue is empty.
+    untracked_handles: bool = false,
     dns_requests: ?*dns.Request = null,
     transport_head: ?*transportmod.Transport = null,
     flush_head: ?*transportmod.Transport = null,
@@ -437,9 +439,10 @@ fn runReady(self: *LoopObject) void {
         } else {
             runOne(obj);
         }
-        handlemod.trackIfShared(obj);
+        if (st.untracked_handles) handlemod.trackIfShared(obj);
         py.decref(obj);
     }
+    if (st.ready.len == 0) st.untracked_handles = false;
 }
 
 fn reportSlowCallback(self: *LoopObject, h: *py.Object, elapsed: f64, cpu_elapsed: f64) void {
@@ -645,8 +648,10 @@ fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py
     // pending, so a long queue is walked again and again. Past this length the handle queued before
     // this one stops being tracked if only the queue holds it: its caller dropped it a call ago, so
     // nothing else can reach it before it runs, and `traverse` reports its references instead.
-    if (st.ready.len > 1024 and c.PyGC_IsEnabled() != 0) {
+    // Free-threaded builds are left alone: their collector does not gain from it.
+    if (!@hasDecl(c, "Py_GIL_DISABLED") and st.ready.len > 1024 and c.PyGC_IsEnabled() != 0) {
         handlemod.untrackIfQueueOnly(st.ready.at(st.ready.len - 2).?);
+        st.untracked_handles = true;
     }
     startIdle(st);
     return @ptrCast(h);
@@ -1000,7 +1005,7 @@ fn teardown(st: *State) void {
     st.closed = true;
 
     clearThreadsafeCandidate(st, false);
-    for (0..st.ready.len) |i| handlemod.trackIfShared(st.ready.at(i).?);
+    if (st.untracked_handles) for (0..st.ready.len) |i| handlemod.trackIfShared(st.ready.at(i).?);
     st.ready.deinit();
     st.threadsafe_ready.deinit();
     st.timers.deinit();

@@ -487,9 +487,14 @@ def test_handle_the_exception_handler_keeps_is_collected_with_its_cycle(loop: zu
             raise ValueError("boom")
 
         loop.set_exception_handler(lambda _loop, context: kept.append(context["handle"]))
-        fill_ready_queue(loop)
-        loop.call_soon(fail, kept)
-        loop.call_soon(loop.stop)
+
+        def schedule() -> None:
+            fill_ready_queue(loop)
+            loop.call_soon(fail, kept)
+            loop.call_soon(loop.stop)
+
+        # Scheduled from a callback, so the handles wait across a turn of the loop.
+        loop.call_soon(schedule)
         loop.run_forever()
         loop.set_exception_handler(None)
         return weakref.ref(kept[0])

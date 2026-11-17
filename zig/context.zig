@@ -58,8 +58,14 @@ pub fn release(loop: ?*py.Object, context: *?*py.Object, captured: bool) void {
     const current = context.* orelse return;
     context.* = null;
     const context_obj: *ContextObject = @ptrCast(@alignCast(current));
+    // `Py_REFCNT(o) == 1` proves nothing without the GIL: another thread can still take a
+    // reference from the collector's view of the object while this one decides.
     // The GC may clear the context before its handle, which leaves it without the shared empty map.
-    if (captured and py.isUniquelyReferenced(current) and
+    if (captured and
+        (if (@hasDecl(c, "Py_GIL_DISABLED"))
+            c.PyUnstable_Object_IsUniquelyReferenced(current) != 0
+        else
+            c.Py_REFCNT(current) == 1) and
         isEmpty(current) and context_obj.weakrefs == null and context_obj.entered == 0)
     {
         if (loop) |loop_obj| {
