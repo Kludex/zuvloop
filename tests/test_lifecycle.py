@@ -440,12 +440,12 @@ def test_retained_pending_handle_keeps_its_loop_and_callback_reachable() -> None
     del handle
 
 
-def test_pending_handle_revived_through_a_weak_reference_keeps_its_loop_and_callback_reachable() -> None:
+def test_weakly_referenced_pending_handle_keeps_its_loop_and_callback_reachable() -> None:
     loop = zuvloop.new_event_loop()
     fill_ready_queue(loop)
     callback = CountsCalls()
     handle_ref = weakref.ref(loop.call_soon(callback))
-    # The next call finds that only the queue holds the first handle.
+    # Only the queue holds the first handle now, but its weak reference keeps it tracked.
     loop.call_soon(int)
     handle = handle_ref()
     loop_ref = weakref.ref(loop)
@@ -464,7 +464,7 @@ def test_pending_handle_revived_through_a_weak_reference_keeps_its_loop_and_call
     del handle
 
 
-def test_revived_pending_handle_cycle_is_collected_after_close() -> None:
+def test_weakly_referenced_pending_handle_cycle_is_collected_after_close() -> None:
     loop = zuvloop.new_event_loop()
     fill_ready_queue(loop)
     holder: list[zuvloop.Handle | None] = []
@@ -479,7 +479,7 @@ def test_revived_pending_handle_cycle_is_collected_after_close() -> None:
     assert handle_ref() is None
 
 
-def test_revived_pending_handle_cycle_does_not_retain_an_abandoned_loop() -> None:
+def test_weakly_referenced_pending_handle_cycle_does_not_retain_an_abandoned_loop() -> None:
     loop = zuvloop.new_event_loop()
     fill_ready_queue(loop)
     holder: list[zuvloop.Handle | None] = []
