@@ -120,6 +120,16 @@ pub inline fn boolRef(v: bool) *Object {
     return o;
 }
 
+/// Reports whether the caller holds the only reference to `o`.
+pub inline fn isUniquelyReferenced(o: *Object) bool {
+    // `Py_REFCNT(o) == 1` proves nothing without the GIL: another thread can still take a
+    // reference from the collector's view of the object while this one decides.
+    return if (@hasDecl(c, "Py_GIL_DISABLED"))
+        c.PyUnstable_Object_IsUniquelyReferenced(o) != 0
+    else
+        c.Py_REFCNT(o) == 1;
+}
+
 pub inline fn typeOf(o: *Object) *c.PyTypeObject {
     return @ptrCast(o.ob_type);
 }

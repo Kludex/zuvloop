@@ -437,6 +437,7 @@ fn runReady(self: *LoopObject) void {
         } else {
             runOne(obj);
         }
+        handlemod.trackIfShared(obj);
         py.decref(obj);
     }
 }
@@ -640,6 +641,13 @@ fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py
         py.decref(h);
         return py.errNoMemory();
     };
+    // The collector runs every couple of thousand allocations and walks every tracked handle still
+    // pending, so a long queue is walked again and again. Past this length the handle queued before
+    // this one stops being tracked if only the queue holds it: its caller dropped it a call ago, so
+    // nothing else can reach it before it runs, and `traverse` reports its references instead.
+    if (st.ready.len > 1024 and c.PyGC_IsEnabled() != 0) {
+        handlemod.untrackIfQueueOnly(st.ready.at(st.ready.len - 2).?);
+    }
     startIdle(st);
     return @ptrCast(h);
 }
@@ -992,6 +1000,7 @@ fn teardown(st: *State) void {
     st.closed = true;
 
     clearThreadsafeCandidate(st, false);
+    for (0..st.ready.len) |i| handlemod.trackIfShared(st.ready.at(i).?);
     st.ready.deinit();
     st.threadsafe_ready.deinit();
     st.timers.deinit();
@@ -1230,7 +1239,7 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
             r = if (tshandle.owns(handle))
                 tshandle.traverseQueued(handle, visitproc, arg)
             else
-                py.visit(handle, visitproc, arg);
+                handlemod.traverseQueued(handle, visitproc, arg);
             if (r != 0) return r;
         }
         for (0..st.threadsafe_ready.len) |i| {

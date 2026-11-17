@@ -387,6 +387,119 @@ def test_retained_threadsafe_handle_keeps_its_loop_reachable() -> None:
     gc.collect()
 
 
+class CountsCalls:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self) -> None:
+        self.calls += 1
+
+
+def fill_ready_queue(loop: zuvloop.EventLoop) -> None:
+    """Queues enough callbacks that the loop stops tracking the handles scheduled after them."""
+    for _ in range(1024):
+        loop.call_soon(int)
+
+
+def test_pending_callbacks_do_not_retain_an_abandoned_loop() -> None:
+    loop = zuvloop.new_event_loop()
+    fill_ready_queue(loop)
+    callbacks = [CountsCalls() for _ in range(3)]
+    for callback in callbacks:
+        loop.call_soon(callback)
+    loop_ref = weakref.ref(loop)
+    callback_refs = [weakref.ref(callback) for callback in callbacks]
+
+    with pytest.warns(ResourceWarning, match="unclosed event loop"):
+        del callback, callbacks, loop
+        gc.collect()
+
+    assert loop_ref() is None
+    assert [ref() for ref in callback_refs] == [None, None, None]
+
+
+def test_retained_pending_handle_keeps_its_loop_and_callback_reachable() -> None:
+    loop = zuvloop.new_event_loop()
+    fill_ready_queue(loop)
+    callback = CountsCalls()
+    handle = loop.call_soon(callback)
+    loop.call_soon(int)
+    loop_ref = weakref.ref(loop)
+    callback_ref = weakref.ref(callback)
+
+    del callback, loop
+    gc.collect()
+
+    retained_loop = loop_ref()
+    retained_callback = callback_ref()
+    assert retained_loop is not None
+    assert retained_callback is not None
+    retained_loop.run_until_complete(asyncio.sleep(0))
+    assert retained_callback.calls == 1
+    retained_loop.close()
+    del handle
+
+
+def test_pending_handle_revived_through_a_weak_reference_keeps_its_loop_and_callback_reachable() -> None:
+    loop = zuvloop.new_event_loop()
+    fill_ready_queue(loop)
+    callback = CountsCalls()
+    handle_ref = weakref.ref(loop.call_soon(callback))
+    # The next call finds that only the queue holds the first handle.
+    loop.call_soon(int)
+    handle = handle_ref()
+    loop_ref = weakref.ref(loop)
+    callback_ref = weakref.ref(callback)
+
+    del callback, loop
+    gc.collect()
+
+    retained_loop = loop_ref()
+    retained_callback = callback_ref()
+    assert retained_loop is not None
+    assert retained_callback is not None
+    retained_loop.run_until_complete(asyncio.sleep(0))
+    assert retained_callback.calls == 1
+    retained_loop.close()
+    del handle
+
+
+def test_close_tracks_a_revived_pending_handle_cycle() -> None:
+    loop = zuvloop.new_event_loop()
+    fill_ready_queue(loop)
+    holder: list[zuvloop.Handle | None] = []
+    handle_ref = weakref.ref(loop.call_soon(holder.clear))
+    loop.call_soon(int)
+    holder.append(handle_ref())
+    loop.close()
+
+    del holder
+    gc.collect()
+
+    assert handle_ref() is None
+
+
+def test_handle_the_exception_handler_keeps_is_collected_with_its_cycle(loop: zuvloop.EventLoop) -> None:
+    def keep_the_failed_handle() -> weakref.ref[zuvloop.Handle]:
+        kept: list[zuvloop.Handle] = []
+
+        def fail(_: list[zuvloop.Handle]) -> None:
+            raise ValueError("boom")
+
+        loop.set_exception_handler(lambda _loop, context: kept.append(context["handle"]))
+        fill_ready_queue(loop)
+        loop.call_soon(fail, kept)
+        loop.call_soon(loop.stop)
+        loop.run_forever()
+        loop.set_exception_handler(None)
+        return weakref.ref(kept[0])
+
+    handle_ref = keep_the_failed_handle()
+    gc.collect()
+
+    assert handle_ref() is None
+
+
 def test_asyncio_run_accepts_the_loop_factory() -> None:
     async def main() -> str:
         return type(running_loop()).__name__

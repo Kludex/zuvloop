@@ -21,7 +21,9 @@ pub const Flags = packed struct(u32) {
     /// Vectorcall is borrowing the callback and its arguments.
     running: bool = false,
     args_cleared: bool = false,
-    _: u28 = 0,
+    /// The collector does not track the handle. The loop reports its references while it is queued.
+    untracked: bool = false,
+    _: u27 = 0,
 };
 
 pub const Handle = extern struct {
@@ -207,7 +209,7 @@ fn clearArgs(self: *Handle) void {
 fn dealloc(obj: ?*py.Object) callconv(.c) void {
     const self: *Handle = @ptrCast(@alignCast(obj.?));
     const tp = py.typeOf(obj.?);
-    c.PyObject_GC_UnTrack(obj);
+    if (!self.flags.untracked) c.PyObject_GC_UnTrack(obj);
     c.PyObject_ClearWeakRefs(obj);
     clearArgs(self);
     py.clear(&self.callback);
@@ -221,6 +223,37 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
     const self: *Handle = @ptrCast(@alignCast(obj.?));
     const refs = [_]?*py.Object{ self.loop, self.callback, self.context };
     return visitHandle(obj.?, &refs, self.argv()[0..@intCast(self.nargs())], visitproc, arg);
+}
+
+/// Stops the collector from tracking a queued handle that only the ready queue holds.
+pub fn untrackIfQueueOnly(obj: *py.Object) void {
+    if (py.typeOf(obj) != handle_type.?) return;
+    const self: *Handle = @ptrCast(@alignCast(obj));
+    if (c.Py_REFCNT(obj) != 1) return;
+    c.PyObject_GC_UnTrack(obj);
+    self.flags.untracked = true;
+}
+
+/// Visits a queued handle for the loop. The loop is the only owner of an untracked handle,
+/// so it reports the references the handle holds as its own.
+pub fn traverseQueued(obj: *py.Object, visitproc: c.visitproc, arg: ?*anyopaque) c_int {
+    if (py.typeOf(obj) != handle_type.?) return py.visit(obj, visitproc, arg);
+    const self: *Handle = @ptrCast(@alignCast(obj));
+    if (!self.flags.untracked) return py.visit(obj, visitproc, arg);
+    // A weak reference can hand the handle out again. Its references are then its own, and it
+    // may outlive the loop, so reporting them here would let the collector clear them under it.
+    if (c.Py_REFCNT(obj) != 1) return 0;
+    return traverse(obj, visitproc, arg);
+}
+
+/// Resumes tracking an untracked handle that leaves the ready queue while something else holds it.
+/// Outside the queue the loop no longer reports it, so only tracking lets a cycle through it be collected.
+pub fn trackIfShared(obj: *py.Object) void {
+    if (py.typeOf(obj) != handle_type.?) return;
+    const self: *Handle = @ptrCast(@alignCast(obj));
+    if (!self.flags.untracked or py.isUniquelyReferenced(obj)) return;
+    self.flags.untracked = false;
+    c.PyObject_GC_Track(obj);
 }
 
 fn clear_(obj: ?*py.Object) callconv(.c) c_int {
