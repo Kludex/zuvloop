@@ -223,9 +223,11 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
     return visitHandle(obj.?, &refs, self.argv()[0..@intCast(self.nargs())], visitproc, arg);
 }
 
-/// Stops the collector from tracking a queued handle that only the ready queue holds.
-pub fn untrackIfQueueOnly(obj: *py.Object) void {
-    if (py.typeOf(obj) == handle_type.? and c.Py_REFCNT(obj) == 1) c.PyObject_GC_UnTrack(obj);
+/// Stops the collector from tracking a queued handle that only the ready queue holds, and reports whether it did.
+pub fn untrackIfQueueOnly(obj: *py.Object) bool {
+    if (py.typeOf(obj) != handle_type.? or c.Py_REFCNT(obj) != 1) return false;
+    c.PyObject_GC_UnTrack(obj);
+    return true;
 }
 
 /// Visits a queued handle for the loop. The loop is the only owner of an untracked handle,

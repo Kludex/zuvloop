@@ -650,8 +650,7 @@ fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py
     // nothing else can reach it before it runs, and `traverse` reports its references instead.
     // Free-threaded builds are left alone: their collector does not gain from it.
     if (!@hasDecl(c, "Py_GIL_DISABLED") and st.ready.len > 1024 and c.PyGC_IsEnabled() != 0) {
-        handlemod.untrackIfQueueOnly(st.ready.at(st.ready.len - 2).?);
-        st.untracked_handles = true;
+        if (handlemod.untrackIfQueueOnly(st.ready.at(st.ready.len - 2).?)) st.untracked_handles = true;
     }
     startIdle(st);
     return @ptrCast(h);
