@@ -127,7 +127,7 @@ def test_call_soon_large_queue(
 
 
 @pytest.mark.benchmark
-@pytest.mark.parametrize("empty_context", [True, False], ids=["empty-context", "pytest-context"])
+@pytest.mark.parametrize("empty_context", [True, False], ids=["empty-context", "context-with-a-variable"])
 def test_call_soon_large_queue_with_gc(
     benchmark: BenchmarkFixture,
     loop: asyncio.AbstractEventLoop,
@@ -136,10 +136,13 @@ def test_call_soon_large_queue_with_gc(
     """The large queue with the garbage collector running, which `pytest-codspeed` turns off while it measures.
 
     The collector walks every tracked object a pending callback leaves behind, so this is the only
-    benchmark here that sees that cost. Under pytest the current context holds a variable and every
-    callback copies it. A script usually schedules from an empty context, which leaves less to walk.
+    benchmark here that sees that cost. A callback scheduled from a context that holds a variable
+    copies it, which leaves the collector one more object to walk than an empty context does.
     """
     iterations = 100_000
+    context = contextvars.Context()
+    if not empty_context:
+        context.run(contextvars.ContextVar[int]("held").set, 1)
 
     async def work() -> None:
         done = loop.create_future()
@@ -156,14 +159,13 @@ def test_call_soon_large_queue_with_gc(
         await done
 
     def run() -> None:
+        was_enabled = gc.isenabled()
         gc.enable()
         try:
-            if empty_context:
-                contextvars.Context().run(loop.run_until_complete, work())
-            else:
-                loop.run_until_complete(work())
+            context.run(loop.run_until_complete, work())
         finally:
-            gc.disable()
+            if not was_enabled:
+                gc.disable()
 
     benchmark(run)
 
