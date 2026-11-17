@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
+import gc
 import math
 import os
 import socket
@@ -122,6 +124,48 @@ def test_call_soon_large_queue(
         await done
 
     benchmark(drive(loop, work))
+
+
+@pytest.mark.benchmark
+@pytest.mark.parametrize("empty_context", [True, False], ids=["empty-context", "pytest-context"])
+def test_call_soon_large_queue_with_gc(
+    benchmark: BenchmarkFixture,
+    loop: asyncio.AbstractEventLoop,
+    empty_context: bool,
+) -> None:
+    """The large queue with the garbage collector running, which `pytest-codspeed` turns off while it measures.
+
+    The collector walks every tracked object a pending callback leaves behind, so this is the only
+    benchmark here that sees that cost. Under pytest the current context holds a variable and every
+    callback copies it. A script usually schedules from an empty context, which leaves less to walk.
+    """
+    iterations = 100_000
+
+    async def work() -> None:
+        done = loop.create_future()
+        seen = 0
+
+        def step() -> None:
+            nonlocal seen
+            seen += 1
+            if seen == iterations:
+                done.set_result(None)
+
+        for _ in range(iterations):
+            loop.call_soon(step)
+        await done
+
+    def run() -> None:
+        gc.enable()
+        try:
+            if empty_context:
+                contextvars.Context().run(loop.run_until_complete, work())
+            else:
+                loop.run_until_complete(work())
+        finally:
+            gc.disable()
+
+    benchmark(run)
 
 
 @pytest.mark.benchmark

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import gc
 import math
 import os
 import socket
@@ -57,6 +58,8 @@ def loop_factories() -> dict[str, Factory]:
 
 
 def run_on(factory: Factory, benchmark: Benchmark) -> float:
+    # Otherwise this sample pays to collect what the previous loop left behind.
+    gc.collect()
     loop = factory()
     try:
         if benchmark.stopped_loop_work is not None:
