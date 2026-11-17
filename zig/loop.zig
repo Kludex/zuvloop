@@ -1004,7 +1004,6 @@ fn teardown(st: *State) void {
     st.closed = true;
 
     clearThreadsafeCandidate(st, false);
-    if (st.untracked_handles) for (0..st.ready.len) |i| handlemod.trackIfShared(st.ready.at(i).?);
     st.ready.deinit();
     st.threadsafe_ready.deinit();
     st.timers.deinit();

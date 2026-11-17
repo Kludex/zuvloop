@@ -464,7 +464,7 @@ def test_pending_handle_revived_through_a_weak_reference_keeps_its_loop_and_call
     del handle
 
 
-def test_close_tracks_a_revived_pending_handle_cycle() -> None:
+def test_revived_pending_handle_cycle_is_collected_after_close() -> None:
     loop = zuvloop.new_event_loop()
     fill_ready_queue(loop)
     holder: list[zuvloop.Handle | None] = []
@@ -476,6 +476,23 @@ def test_close_tracks_a_revived_pending_handle_cycle() -> None:
     del holder
     gc.collect()
 
+    assert handle_ref() is None
+
+
+def test_revived_pending_handle_cycle_does_not_retain_an_abandoned_loop() -> None:
+    loop = zuvloop.new_event_loop()
+    fill_ready_queue(loop)
+    holder: list[zuvloop.Handle | None] = []
+    handle_ref = weakref.ref(loop.call_soon(holder.clear))
+    loop.call_soon(int)
+    holder.append(handle_ref())
+    loop_ref = weakref.ref(loop)
+
+    with pytest.warns(ResourceWarning, match="unclosed event loop"):
+        del holder, loop
+        gc.collect()
+
+    assert loop_ref() is None
     assert handle_ref() is None
 
 

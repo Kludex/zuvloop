@@ -223,25 +223,27 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
     return visitHandle(obj.?, &refs, self.argv()[0..@intCast(self.nargs())], visitproc, arg);
 }
 
-/// Stops the collector from tracking a queued handle that only the ready queue holds, and reports whether it did.
+/// Stops the collector from tracking a queued handle that nothing but the ready queue can reach,
+/// and reports whether it did.
 pub fn untrackIfQueueOnly(obj: *py.Object) bool {
     if (py.typeOf(obj) != handle_type.? or c.Py_REFCNT(obj) != 1) return false;
+    // A weak reference could hand the handle out again while it waits, so it stays tracked.
+    const weaklist_offset: usize = @bitCast(handle_type.?.tp_weaklistoffset);
+    const weakrefs: *?*py.Object = @ptrFromInt(@intFromPtr(obj) +% weaklist_offset);
+    if (weakrefs.* != null) return false;
     c.PyObject_GC_UnTrack(obj);
     return true;
 }
 
-/// Visits a queued handle for the loop. The loop is the only owner of an untracked handle,
-/// so it reports the references the handle holds as its own.
+/// Visits a queued handle for the loop. Nothing else can reach an untracked handle before it
+/// runs, so the loop is its only owner and reports the references it holds as its own.
 pub fn traverseQueued(obj: *py.Object, visitproc: c.visitproc, arg: ?*anyopaque) c_int {
     if (py.typeOf(obj) != handle_type.? or c.PyObject_GC_IsTracked(obj) != 0) return py.visit(obj, visitproc, arg);
-    // A weak reference can hand the handle out again. Its references are then its own, and it
-    // may outlive the loop, so reporting them here would let the collector clear them under it.
-    if (c.Py_REFCNT(obj) != 1) return 0;
     return traverse(obj, visitproc, arg);
 }
 
-/// Resumes tracking an untracked handle that leaves the ready queue while something else holds it.
-/// Outside the queue the loop no longer reports it, so only tracking lets a cycle through it be collected.
+/// Resumes tracking an untracked handle that something took hold of while it ran, such as the
+/// exception handler. The loop no longer reports it, so only tracking lets a cycle through it be collected.
 pub fn trackIfShared(obj: *py.Object) void {
     if (py.typeOf(obj) != handle_type.? or c.Py_REFCNT(obj) == 1) return;
     if (c.PyObject_GC_IsTracked(obj) == 0) c.PyObject_GC_Track(obj);
