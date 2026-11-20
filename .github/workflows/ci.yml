@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest, windows-11-arm]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest, windows-11-arm]
         python-version: ["3.14"]
         include:
           - os: macos-latest
@@ -92,7 +92,7 @@ jobs:
         run: uv sync --locked --python "$PYTHON_VERSION" --group dev --group bench
 
       - name: Verify the hashed build constraints
-        if: runner.os == 'Linux'
+        if: matrix.os == 'ubuntu-latest'
         run: |
           uv pip compile .github/build-requirements.in --universal --generate-hashes \
             --no-header --no-annotate --constraint .github/build-constraints.txt \
@@ -125,7 +125,7 @@ jobs:
           uv run ruff format --check
 
       - name: Install ZLint
-        if: runner.os == 'Linux'
+        if: matrix.os == 'ubuntu-latest'
         run: |
           curl -fsSL \
             https://github.com/DonIsaac/zlint/releases/download/v0.9.1/zlint-linux-x86_64 \
@@ -137,7 +137,7 @@ jobs:
           echo /tmp >> "$GITHUB_PATH"
 
       - name: Lint and format Zig
-        if: runner.os == 'Linux'
+        if: matrix.os == 'ubuntu-latest'
         run: ./scripts/check-zig
 
       - name: Type check
@@ -309,8 +309,8 @@ jobs:
   # and the tests only ever run on the host. Two bugs have shipped that a
   # compile for the other target would have caught on the way in.
   #
-  # One job for every target: each compile is under a minute, and six jobs spent
-  # longer queued for a runner than compiling.
+  # Only the targets no job builds natively: `test` and `musl` compile the rest
+  # and run the suite on them, which a compile alone cannot match.
   cross-compile:
     runs-on: ubuntu-24.04-arm
 
@@ -334,14 +334,10 @@ jobs:
 
       # The headers are the host's, which is enough: this compiles the Zig, and
       # what differs between targets is `std.c`, not `Python.h`.
-      - name: Compile for every supported target
+      - name: Compile for the targets without a native job
         run: |
           include="$(uv run python -c 'import sysconfig; print(sysconfig.get_path("include"))')"
-          for target in \
-            x86_64-linux-gnu aarch64-linux-gnu \
-            x86_64-linux-musl aarch64-linux-musl \
-            x86_64-macos aarch64-macos
-          do
+          for target in aarch64-linux-musl x86_64-macos; do
             echo "::group::$target"
             HATCH_ZIG_PYTHON_INCLUDE="$include" \
               zig build -Dtarget="$target" -Doptimize=ReleaseFast
