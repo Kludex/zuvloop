@@ -5,7 +5,7 @@ import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping
 from typing import IO, TYPE_CHECKING, Protocol, TypedDict
 
 from . import _zuvloop
@@ -51,12 +51,12 @@ class SpawnOptions(TypedDict, total=False):
     """The `subprocess.Popen` arguments a spawn forwards."""
 
     executable: str | None
-    env: dict[str, str] | None
-    cwd: str | os.PathLike[str] | None
+    env: Mapping[str, str] | None
+    cwd: str | bytes | os.PathLike[str] | os.PathLike[bytes] | None
     start_new_session: bool
     startupinfo: _StartupInfo | None
     creationflags: int
-    pass_fds: Sequence[int]
+    pass_fds: Iterable[int]
     user: str | int | None
     group: str | int | None
     extra_groups: Iterable[str | int] | None
@@ -83,8 +83,8 @@ class Popen:
         args: list[str],
         *,
         executable: str | None = None,
-        env: dict[str, str] | None = None,
-        cwd: str | os.PathLike[str] | None = None,
+        env: Mapping[str, str] | None = None,
+        cwd: str | bytes | os.PathLike[str] | os.PathLike[bytes] | None = None,
         stdin: Stdio = None,
         stdout: Stdio = None,
         stderr: Stdio = None,
@@ -92,7 +92,7 @@ class Popen:
         windows_verbatim: bool = False,
         startupinfo: _StartupInfo | None = None,
         creationflags: int = 0,
-        pass_fds: Sequence[int] = (),
+        pass_fds: Iterable[int] = (),
         user: str | int | None = None,
         group: str | int | None = None,
         extra_groups: Iterable[str | int] | None = None,
