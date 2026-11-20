@@ -138,6 +138,14 @@ async def test_getaddrinfo_answers_as_the_stdlib_does(host: str, port: str | Non
     assert mine == theirs
 
 
+async def test_getaddrinfo_without_a_type_answers_as_the_stdlib_does() -> None:
+    """Windows reports socket type 0 here, which `SocketKind` has no member for."""
+    loop = running_loop()
+    theirs = sorted(socket.getaddrinfo("127.0.0.1", 80))
+    mine = sorted(await loop.getaddrinfo("127.0.0.1", 80))
+    assert mine == theirs
+
+
 async def test_getaddrinfo_without_a_host_or_a_port_reports_no_name() -> None:
     """libuv rejects the pair as EINVAL; the resolver would call it a missing name."""
     loop = running_loop()
