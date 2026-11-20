@@ -19,7 +19,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Protocol
 
 from . import _zuvloop
-from ._process import _SIGKILL, Popen
+from ._process import _SIGKILL, Popen, Stdio
 from ._sendfile import SendfileOperations
 from ._server import Server
 
@@ -34,6 +34,13 @@ if sys.platform == "win32":
     _AF_UNIX = -1
 else:
     _AF_UNIX = socket.AF_UNIX
+
+
+class _Pipe(Protocol):
+    """What a pipe transport needs of the object it is given."""
+
+    def fileno(self) -> int: ...
+    def close(self) -> None: ...
 
 
 class _BufferedStreamReader(Protocol):
@@ -738,14 +745,14 @@ class ConnectionOperations(SendfileOperations):
             raise
         return transport
 
-    async def subprocess_shell(
+    async def subprocess_shell[ProtocolT: asyncio.BaseProtocol](
         self,
-        protocol_factory: Callable[[], asyncio.BaseProtocol],
+        protocol_factory: Callable[[], ProtocolT],
         cmd: str | bytes,
         *,
-        stdin: Any = subprocess.PIPE,
-        stdout: Any = subprocess.PIPE,
-        stderr: Any = subprocess.PIPE,
+        stdin: Stdio = subprocess.PIPE,
+        stdout: Stdio = subprocess.PIPE,
+        stderr: Stdio = subprocess.PIPE,
         universal_newlines: bool = False,
         shell: bool = True,
         bufsize: int = 0,
@@ -753,7 +760,7 @@ class ConnectionOperations(SendfileOperations):
         errors: str | None = None,
         text: bool | None = None,
         **kwargs: Any,
-    ) -> tuple[asyncio.SubprocessTransport, Any]:
+    ) -> tuple[asyncio.SubprocessTransport, ProtocolT]:
         if not isinstance(cmd, (bytes, str)):
             raise ValueError("cmd must be a string")
         _check_subprocess_text(universal_newlines, shell, bufsize, encoding, errors, text, expect_shell=True)
@@ -761,14 +768,14 @@ class ConnectionOperations(SendfileOperations):
         transport = await self._make_subprocess_transport(protocol, cmd, True, stdin, stdout, stderr, bufsize, **kwargs)
         return transport, protocol
 
-    async def subprocess_exec(
+    async def subprocess_exec[ProtocolT: asyncio.BaseProtocol](
         self,
-        protocol_factory: Callable[[], asyncio.BaseProtocol],
+        protocol_factory: Callable[[], ProtocolT],
         program: Any,
         *args: Any,
-        stdin: Any = subprocess.PIPE,
-        stdout: Any = subprocess.PIPE,
-        stderr: Any = subprocess.PIPE,
+        stdin: Stdio = subprocess.PIPE,
+        stdout: Stdio = subprocess.PIPE,
+        stderr: Stdio = subprocess.PIPE,
         universal_newlines: bool = False,
         shell: bool = False,
         bufsize: int = 0,
@@ -776,7 +783,7 @@ class ConnectionOperations(SendfileOperations):
         errors: str | None = None,
         text: bool | None = None,
         **kwargs: Any,
-    ) -> tuple[asyncio.SubprocessTransport, Any]:
+    ) -> tuple[asyncio.SubprocessTransport, ProtocolT]:
         _check_subprocess_text(universal_newlines, shell, bufsize, encoding, errors, text, expect_shell=False)
         popen_args = (program, *args)
         for arg in popen_args:
@@ -791,13 +798,12 @@ class ConnectionOperations(SendfileOperations):
     async def _make_subprocess_transport(
         self,
         protocol: asyncio.BaseProtocol,
-        args: Any,
+        args: str | bytes | Sequence[str | bytes],
         shell: bool,
-        stdin: Any,
-        stdout: Any,
-        stderr: Any,
+        stdin: Stdio,
+        stdout: Stdio,
+        stderr: Stdio,
         bufsize: int,
-        extra: Any = None,
         **kwargs: Any,
     ) -> asyncio.SubprocessTransport:
         # asyncio's own transport drives the process; it needs `connect_read_pipe`
@@ -817,7 +823,6 @@ class ConnectionOperations(SendfileOperations):
             stderr,
             bufsize,
             waiter=waiter,
-            extra=extra,
             **kwargs,
         )
         try:
@@ -832,19 +837,19 @@ class ConnectionOperations(SendfileOperations):
             raise RuntimeError("subprocess setup did not create a subprocess transport")
         return transport
 
-    async def connect_read_pipe(
-        self, protocol_factory: Callable[[], asyncio.BaseProtocol], pipe: Any
-    ) -> tuple[asyncio.ReadTransport, Any]:
+    async def connect_read_pipe[ProtocolT: asyncio.BaseProtocol](
+        self, protocol_factory: Callable[[], ProtocolT], pipe: _Pipe
+    ) -> tuple[asyncio.ReadTransport, ProtocolT]:
         return await self._connect_pipe(protocol_factory, pipe, _zuvloop.KIND_PIPE)
 
-    async def connect_write_pipe(
-        self, protocol_factory: Callable[[], asyncio.BaseProtocol], pipe: Any
-    ) -> tuple[asyncio.WriteTransport, Any]:
+    async def connect_write_pipe[ProtocolT: asyncio.BaseProtocol](
+        self, protocol_factory: Callable[[], ProtocolT], pipe: _Pipe
+    ) -> tuple[asyncio.WriteTransport, ProtocolT]:
         return await self._connect_pipe(protocol_factory, pipe, _zuvloop.KIND_PIPE_WRITE)
 
-    async def _connect_pipe(
-        self, protocol_factory: Callable[[], asyncio.BaseProtocol], pipe: Any, kind: int
-    ) -> tuple[_zuvloop.Transport, Any]:
+    async def _connect_pipe[ProtocolT: asyncio.BaseProtocol](
+        self, protocol_factory: Callable[[], ProtocolT], pipe: _Pipe, kind: int
+    ) -> tuple[_zuvloop.Transport, ProtocolT]:
         fd = pipe.fileno()
         pipe_stat = os.fstat(fd)
         mode = pipe_stat.st_mode
@@ -903,7 +908,7 @@ class _HangupWatch:
 
     __slots__ = ("_fd", "_loop", "_pipe", "_transport")
 
-    def __init__(self, loop: ConnectionOperations, pipe: Any, fd: int, transport: _zuvloop.Transport) -> None:
+    def __init__(self, loop: ConnectionOperations, pipe: _Pipe, fd: int, transport: _zuvloop.Transport) -> None:
         self._loop = loop
         self._pipe = pipe
         self._fd = fd
@@ -1032,18 +1037,19 @@ class _SubprocessTransport(base_subprocess.BaseSubprocessTransport):
 
     def _start(
         self,
-        args: Any,
+        args: str | bytes | Sequence[str | bytes],
         shell: bool,
-        stdin: Any,
-        stdout: Any,
-        stderr: Any,
+        stdin: Stdio,
+        stdout: Stdio,
+        stderr: Stdio,
         bufsize: int,
         **kwargs: Any,
     ) -> None:
         windows_verbatim = False
-        argv = ["/bin/sh", "-c", args] if shell else [os.fsdecode(arg) for arg in args]
-        if sys.platform == "win32":
-            if shell:
+        # A shell spawn is the one handed a single command rather than a list.
+        if isinstance(args, (str, bytes)):
+            argv = ["/bin/sh", "-c", os.fsdecode(args)]
+            if sys.platform == "win32":
                 # CPython's choice of shell, made per spawn as it makes it.
                 # `CreateProcess` does not search for a program it is given by
                 # name, and a relative fallback would resolve against the working
@@ -1058,6 +1064,8 @@ class _SubprocessTransport(base_subprocess.BaseSubprocessTransport):
                 # libuv's MSVCRT-style argv escaping switched off.
                 argv = [comspec, "/c", f'"{os.fsdecode(args)}"']
                 windows_verbatim = True
+        else:
+            argv = [os.fsdecode(arg) for arg in args]
         if not isinstance(self._loop, ConnectionOperations):  # pragma: no cover - constructed by this loop only
             raise RuntimeError("subprocess transport requires a zuvloop event loop")
         self._proc = Popen(  # type: ignore[assignment]  # a Popen-shaped object, not a Popen
