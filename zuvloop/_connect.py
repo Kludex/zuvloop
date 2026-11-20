@@ -1051,6 +1051,9 @@ class _SubprocessTransport(base_subprocess.BaseSubprocessTransport):
         argv = [*_SHELL, args] if shell else [os.fsdecode(arg) for arg in args]
         if sys.platform == "win32":
             if shell:
+                # A relative fallback would resolve against the working directory.
+                if not os.environ.get("ComSpec") and not os.path.isabs(_SHELL[0]):
+                    raise FileNotFoundError("shell not found: neither %ComSpec% nor %SystemRoot% is set.")
                 # cmd.exe has quoting rules of its own: hand it the command
                 # exactly as CPython's subprocess would have written it, with
                 # libuv's MSVCRT-style argv escaping switched off.
