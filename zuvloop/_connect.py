@@ -864,13 +864,15 @@ class ConnectionOperations(SendfileOperations):
             # poll of its own. XNU and Solaris named FIFOs cannot provide this
             # notification: they either reject the read poll or report unread
             # data as a false hangup (CPython gh-145030). Character devices also
-            # report no hangup at all.
+            # report no hangup at all. Windows polls sockets only, and its pipes
+            # report the hangup through the write itself.
             named_fifo_without_close_event = (
                 sys.platform in {"darwin", "ios", "tvos", "watchos", "sunos5"} and pipe_stat.st_nlink > 0
             )
             if (
                 kind == _zuvloop.KIND_PIPE_WRITE
                 and stat.S_ISFIFO(mode)
+                and sys.platform != "win32"
                 and not sys.platform.startswith("aix")
                 and not named_fifo_without_close_event
             ):
