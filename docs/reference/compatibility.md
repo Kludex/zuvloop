@@ -89,10 +89,11 @@ supported on Linux, macOS and Windows. The minimum 3.13.0 release, 3.14.0 and bo
 variants of 3.15 are continuously exercised rather than inferred from the
 newest local interpreter.
 
-!!! note "Python 3.13 has no call graphs or `_ThreadSafeHandle`"
-    Both arrived in 3.14. On 3.13, a slow-callback span carries an
-    `asyncio.call_graph` attribute only when its task has already finished,
-    and `call_soon_threadsafe` returns a subtype of `asyncio.Handle`. Free-threaded 3.13 is not supported.
+!!! note "Python 3.13 has no awaited-by chain or `_ThreadSafeHandle`"
+    Both arrived in 3.14. On 3.13, the `asyncio.call_graph` attribute of a
+    slow-callback span lists the task's own coroutine stack, without the tasks
+    awaiting it, and `call_soon_threadsafe` returns a subtype of
+    `asyncio.Handle`. Free-threaded 3.13 is not supported.
 
 Linux glibc, Linux musl and macOS execute the full in-repository suite. Windows
 builds run the portable suite natively; tests that require
