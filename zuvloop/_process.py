@@ -66,16 +66,16 @@ class Popen:
         extra_groups: Iterable[str | int] | None = None,
         umask: int = -1,
         process_group: int | None = None,
+        close_fds: bool = True,
+        restore_signals: bool = True,
+        preexec_fn: Callable[[], object] | None = None,
+        pipesize: int = -1,
         on_exit: Callable[[int], object],
-        **unsupported: Any,
     ) -> None:
         if startupinfo is not None:
             raise ValueError("startupinfo is not supported by zuvloop's subprocess transport")
         if creationflags:
             raise ValueError("creationflags is not supported by zuvloop's subprocess transport")
-        if unsupported:
-            name = next(iter(unsupported))
-            raise ValueError(f"{name} is not supported by zuvloop's subprocess transport")
 
         file = executable or args[0]
         cwd_text = None if cwd is None else os.fsdecode(cwd)
@@ -105,14 +105,16 @@ class Popen:
         # Linux spawns: its child-side close preserves Popen's default even when
         # another thread is opening or renumbering inheritable descriptors. On
         # macOS libuv uses POSIX_SPAWN_CLOEXEC_DEFAULT and is already safe.
-        # libuv cannot change the child's groups, umask or process group either.
-        # Windows has none of those: stdlib rejects the credentials and ignores
-        # the umask and the process group.
+        # libuv cannot change the child's groups, umask or process group either,
+        # nor run a hook in it, keep its signal dispositions or size its pipes.
+        # Windows has none of those: stdlib rejects the credentials and the hook,
+        # and ignores the rest.
+        posix_only = umask != -1 or process_group is not None or not close_fds or not restore_signals or pipesize != -1
         if (
             sys.platform == "linux"
             or pass_fds
-            or any(value is not None for value in (user, group, extra_groups))
-            or ((umask != -1 or process_group is not None) and sys.platform != "win32")
+            or any(value is not None for value in (user, group, extra_groups, preexec_fn))
+            or (posix_only and sys.platform != "win32")
         ):
             process = subprocess.Popen(
                 args,
@@ -130,6 +132,10 @@ class Popen:
                 extra_groups=extra_groups,
                 umask=umask,
                 process_group=process_group,
+                close_fds=close_fds,
+                restore_signals=restore_signals,
+                preexec_fn=preexec_fn,
+                pipesize=pipesize,
             )
             self._stdlib = process
             self.stdin = process.stdin
