@@ -14,10 +14,8 @@ Two things hold that together, and neither is visible at the call site:
 * `awaitCompletion` then calls `PyEval_SaveThread()`, releasing that section, before it
   blocks. That is what stops the two sides deadlocking on each other.
 
-`verification/ThreadSafeHandle.tla` states the same protocol, and TLC finds a lost wakeup
-if the first of those is removed. These tests are the runtime half, on a real
-free-threaded build, where the symptom would be a thread that never returns rather than a
-wrong answer.
+Remove the first and a wakeup is lost. On a free-threaded build the symptom is a thread
+that never returns rather than a wrong answer.
 
 Which is why each test first reaches the window it aims at and says so. A `cancel()` that
 arrives before the loop picks the handle up wins outright, and one that arrives after the
@@ -92,7 +90,7 @@ def test_a_call_arriving_mid_run_waits_for_the_callback(callers: int, cancelling
             handle.cancelled()
         returned.append(time.monotonic())
 
-    threads = [threading.Thread(target=caller, name=f"caller-{index}") for index in range(callers)]
+    threads = [threading.Thread(target=caller, name=f"caller-{index}", daemon=True) for index in range(callers)]
     for thread in threads:
         thread.start()
     loop.run_forever()
@@ -127,9 +125,10 @@ def test_a_cancel_arriving_first_stops_the_callback() -> None:
         for index in range(0, 64, 2):
             handles[index].cancel()
 
-    thread = threading.Thread(target=cancel_every_other)
+    thread = threading.Thread(target=cancel_every_other, daemon=True)
     thread.start()
     join_all([thread])
+    assert not thread.is_alive(), "a cancel never returned"
     loop.run_forever()
     loop.close()
 
@@ -159,7 +158,7 @@ def test_racing_cancels_never_produce_a_second_run() -> None:
                 target.cancel()
                 agreed.append(target.cancelled())
 
-            thread = threading.Thread(target=cancel_and_report)
+            thread = threading.Thread(target=cancel_and_report, daemon=True)
             thread.start()
             await asyncio.sleep(0)
             await asyncio.to_thread(thread.join, WAIT)
@@ -210,14 +209,14 @@ def test_racing_cancelled_against_the_end_of_a_run_loses_no_waiter() -> None:
     threads arrive whenever they arrive, across enough rounds to land inside the window.
     """
     loop = zuvloop.new_event_loop()
-    stuck: list[str] = []
 
     async def main() -> None:
         running = asyncio.get_running_loop()
         for round_index in range(400):
             handle = running.call_soon_threadsafe(round_index.bit_length)
             threads = [
-                threading.Thread(target=handle.cancelled, name=f"round-{round_index}-{index}") for index in range(4)
+                threading.Thread(target=handle.cancelled, name=f"round-{round_index}-{index}", daemon=True)
+                for index in range(4)
             ]
             for thread in threads:
                 thread.start()
@@ -225,11 +224,10 @@ def test_racing_cancelled_against_the_end_of_a_run_loses_no_waiter() -> None:
             # Joined off the loop thread: a waiter that was dropped is waiting on this
             # loop, so joining here would hang instead of failing.
             await asyncio.to_thread(join_all, threads)
-            stuck.extend(thread.name for thread in threads if thread.is_alive())
+            stuck = [thread.name for thread in threads if thread.is_alive()]
+            assert stuck == [], f"cancelled() never returned on {stuck}"
 
     try:
         loop.run_until_complete(main())
     finally:
         loop.close()
-
-    assert stuck == [], f"cancelled() never returned on {stuck}"
