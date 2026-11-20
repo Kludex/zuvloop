@@ -94,7 +94,7 @@ combine-as-imports = true
 
 [tool.mypy]
 strict = true
-python_version = "3.14"
+python_version = "3.12"
 files = ["zuvloop", "tests", "benchmarks", "scripts"]
 exclude = ["^vendor/"]
 

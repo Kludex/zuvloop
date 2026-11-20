@@ -711,10 +711,11 @@ async def test_completed_task_call_graph_does_not_render_its_exception() -> None
     assert "secret exception" not in graph
 
 
-# TODO: drop when 3.13 support ends.
-@pytest.mark.skipif(sys.version_info < (3, 14), reason="asyncio call graphs arrived in 3.14")
 async def test_the_stdlib_call_graph_apis_work_on_this_loop() -> None:
     """3.14's introspection reads real asyncio.Task objects, which is what zuvloop schedules."""
+    # TODO: drop when 3.13 support ends. Skipped in the body so the type checker sees the version check.
+    if sys.version_info < (3, 14):  # pragma: no cover - coverage is measured on 3.14
+        pytest.skip("asyncio call graphs arrived in 3.14")
     import io
 
     started = asyncio.Event()

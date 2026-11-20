@@ -144,6 +144,7 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           uv run mypy
+          uv run mypy --python-version 3.14
           uv run python -m mypy.stubtest zuvloop --allowlist stubtest_allowlist.txt
 
       # The POSIX-only test modules reach for signals and socket families
