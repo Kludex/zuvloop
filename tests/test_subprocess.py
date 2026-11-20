@@ -349,7 +349,7 @@ async def test_a_child_keeps_ignored_signals_when_asked_not_to_restore_them() ->
 
 
 async def test_a_pipe_size_is_accepted() -> None:
-    process = await asyncio.create_subprocess_exec("/bin/cat", stdin=PIPE, stdout=PIPE, pipesize=1 << 17)
+    process = await asyncio.create_subprocess_exec("/bin/cat", stdin=PIPE, stdout=PIPE, pipesize=4096)
     stdout, _stderr = await process.communicate(b"sized")
     assert stdout == b"sized"
 

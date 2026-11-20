@@ -24,6 +24,13 @@ contract; non-empty `pass_fds`, `user`, `group`, `extra_groups`, `umask`,
 most of them. asyncio's own subprocess transport drives both
 implementations, so protocol callbacks and exit bookkeeping stay identical.
 
+/// warning | `close_fds=False` has no effect on Windows
+
+On Windows the child is always spawned with `uv_spawn`, which takes no
+`close_fds` option. The argument is accepted and ignored, so an inheritable
+handle you expect the child to receive may not reach it.
+///
+
 libuv reaps children it spawns and reports status through its exit callback.
 The Linux stdlib path uses one bounded, process-wide reaper thread for all
 children rather than a thread per child.
