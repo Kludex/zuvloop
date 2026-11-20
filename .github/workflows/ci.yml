@@ -144,13 +144,17 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           uv run mypy
+          # The default target is the 3.12 floor, which skips every `sys.version_info >= (3, 14)` branch.
+          uv run mypy --python-version 3.14
           uv run python -m mypy.stubtest zuvloop --allowlist stubtest_allowlist.txt
 
       # The POSIX-only test modules reach for signals and socket families
       # typeshed rightly refuses on Windows; the library itself has to hold.
       - name: Type check
         if: runner.os == 'Windows'
-        run: uv run mypy zuvloop
+        run: |
+          uv run mypy zuvloop
+          uv run mypy zuvloop --python-version 3.14
 
       - name: Test
         if: runner.os != 'Windows'

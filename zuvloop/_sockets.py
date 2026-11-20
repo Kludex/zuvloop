@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import sys
 from collections.abc import Buffer, Callable
 
 from ._base import LoopBase
@@ -138,4 +139,8 @@ def _attempt[T](future: asyncio.Future[T], op: Callable[[], T]) -> bool:
     return True
 
 
-type _SocketAddress = tuple[str | bytes | int, ...] | str | Buffer | int
+if sys.version_info >= (3, 14):
+    type _SocketAddress = tuple[str | bytes | int, ...] | str | Buffer | int
+else:  # pragma: no cover - coverage is measured on 3.14
+    # TODO: drop when 3.13 support ends. A bare `int` address, a Bluetooth HCI device ID, arrived in 3.14.
+    type _SocketAddress = tuple[str | bytes | int, ...] | str | Buffer
