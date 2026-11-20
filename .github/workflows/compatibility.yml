@@ -147,7 +147,7 @@ jobs:
 
   uvicorn:
     name: uvicorn 0.52.3 full suite
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
 
     steps:
@@ -194,7 +194,7 @@ jobs:
 
   anyio:
     name: AnyIO core upstream suite
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
 
     steps:
@@ -247,7 +247,7 @@ jobs:
 
   websockets:
     name: websockets upstream and public API
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
 
     steps:
@@ -290,7 +290,7 @@ jobs:
 
   aioquic:
     name: aioquic QUIC integration suite
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
 
     steps:
@@ -331,7 +331,7 @@ jobs:
 
   tornado:
     name: Tornado full suite
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
 
     steps:
@@ -374,7 +374,7 @@ jobs:
 
   httpx2:
     name: HTTPX2 full repository suite
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
 
     steps:

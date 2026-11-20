@@ -308,19 +308,11 @@ jobs:
   # The Zig layer reaches libc through `std.c`, whose shape differs per target,
   # and the tests only ever run on the host. Two bugs have shipped that a
   # compile for the other target would have caught on the way in.
+  #
+  # One job for every target: each compile is under a minute, and six jobs spent
+  # longer queued for a runner than compiling.
   cross-compile:
-    runs-on: ubuntu-latest
-
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - x86_64-linux-gnu
-          - aarch64-linux-gnu
-          - x86_64-linux-musl
-          - aarch64-linux-musl
-          - x86_64-macos
-          - aarch64-macos
+    runs-on: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -342,12 +334,19 @@ jobs:
 
       # The headers are the host's, which is enough: this compiles the Zig, and
       # what differs between targets is `std.c`, not `Python.h`.
-      - name: Compile for ${{ matrix.target }}
-        env:
-          TARGET: ${{ matrix.target }}
+      - name: Compile for every supported target
         run: |
-          HATCH_ZIG_PYTHON_INCLUDE="$(uv run python -c 'import sysconfig; print(sysconfig.get_path("include"))')" \
-            zig build -Dtarget="$TARGET" -Doptimize=ReleaseFast
+          include="$(uv run python -c 'import sysconfig; print(sysconfig.get_path("include"))')"
+          for target in \
+            x86_64-linux-gnu aarch64-linux-gnu \
+            x86_64-linux-musl aarch64-linux-musl \
+            x86_64-macos aarch64-macos
+          do
+            echo "::group::$target"
+            HATCH_ZIG_PYTHON_INCLUDE="$include" \
+              zig build -Dtarget="$target" -Doptimize=ReleaseFast
+            echo "::endgroup::"
+          done
 
 
   # The wheels are built `ReleaseFast`, which disables every bounds and overflow
@@ -459,7 +458,7 @@ jobs:
             -k "not parallel_event_loops and not ready_chain_with_idle_connections"
 
   docs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
