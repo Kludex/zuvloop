@@ -45,7 +45,8 @@ jobs:
           use-cache: false
           version: 0.16.0
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: zig-toolchain
         if: matrix.os == 'windows-11-arm'
         with:
           path: ${{ runner.temp }}/zig-x86_64-windows
@@ -57,7 +58,17 @@ jobs:
       - name: Install x86-64 Zig under emulation
         if: matrix.os == 'windows-11-arm'
         shell: pwsh
+        env:
+          ZIG_TOOLCHAIN_RESTORED: ${{ steps.zig-toolchain.outputs.cache-hit }}
         run: ./scripts/setup-zig-x86_64-windows.ps1
+
+      # Saved before any build or test code runs, so nothing later in the job
+      # can alter the toolchain the next run restores without re-verifying.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.os == 'windows-11-arm' && steps.zig-toolchain.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/zig-x86_64-windows
+          key: zig-x86_64-windows-${{ hashFiles('scripts/setup-zig-x86_64-windows.ps1') }}
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -197,7 +208,8 @@ jobs:
           enable-cache: true
           version: 0.12.3
 
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: zig-toolchain
         if: matrix.archs == 'ARM64'
         with:
           path: ${{ runner.temp }}/zig-x86_64-windows
@@ -206,7 +218,17 @@ jobs:
       - name: Install x86-64 Zig under emulation
         if: matrix.archs == 'ARM64'
         shell: pwsh
+        env:
+          ZIG_TOOLCHAIN_RESTORED: ${{ steps.zig-toolchain.outputs.cache-hit }}
         run: ./scripts/setup-zig-x86_64-windows.ps1
+
+      # Saved before any build or test code runs, so nothing later in the job
+      # can alter the toolchain the next run restores without re-verifying.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.archs == 'ARM64' && steps.zig-toolchain.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/zig-x86_64-windows
+          key: zig-x86_64-windows-${{ hashFiles('scripts/setup-zig-x86_64-windows.ps1') }}
 
       - name: Cache cibuildwheel tools
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
