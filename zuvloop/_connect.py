@@ -32,7 +32,12 @@ if sys.platform == "win32":
     # No `AF_UNIX` in the socket module there; a value no family equals keeps
     # the comparisons meaningful.
     _AF_UNIX = -1
-    _SHELL = (os.environ.get("ComSpec", "cmd.exe"), "/c")
+    # CPython's fallback: `CreateProcess` does not search for a program it is
+    # given by name, so a bare `cmd.exe` would not be found.
+    _SHELL = (
+        os.environ.get("ComSpec") or os.path.join(os.environ.get("SystemRoot", ""), "System32", "cmd.exe"),
+        "/c",
+    )
 else:
     _AF_UNIX = socket.AF_UNIX
     _SHELL = ("/bin/sh", "-c")
