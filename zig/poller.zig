@@ -4,6 +4,7 @@ const std = @import("std");
 const py = @import("py.zig");
 const c = py.c;
 const uv = @import("uv.zig");
+const win32 = @import("win32.zig");
 const handlemod = @import("handle.zig");
 const Handle = handlemod.Handle;
 const loopmod = @import("loop.zig");
@@ -184,19 +185,25 @@ fn remove(self_obj: *py.Object, arg: *py.Object, comptime writer: bool) py.Error
         // Dropping the error can run a finalizer, so no poller is held across it.
         c.PyErr_Clear();
         // A detached socket also reports -1, with its descriptor still open.
-        dead = if (uv.is_windows) true else std.c.fcntl(found, std.c.F.GETFD) == -1;
+        dead = if (uv.is_windows) probe: {
+            var kind: c_int = 0;
+            var len: c_int = @sizeOf(c_int);
+            const status = win32.getsockopt(uv.asSock(found), std.c.SOL.SOCKET, std.c.SO.TYPE, @ptrCast(&kind), &len);
+            break :probe status != 0;
+        } else std.c.fcntl(found, std.c.F.GETFD) == -1;
         break :known found;
     };
     const poller = st.pollers.get(fd) orelse return py.boolRef(false);
     const slot = if (writer) &poller.writer else &poller.reader;
-    const h = slot.* orelse return py.boolRef(false);
     if (dead) {
         // The descriptor is gone, so the other direction can never fire, and
         // restarting its poll would abort inside libuv.
+        const watched = slot.* != null;
         _ = st.pollers.remove(fd);
         destroy(poller);
-        return py.boolRef(true);
+        return py.boolRef(watched);
     }
+    const h = slot.* orelse return py.boolRef(false);
     slot.* = null;
     h.flags.cancelled = true;
     defer py.decref(h);

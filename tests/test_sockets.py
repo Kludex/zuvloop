@@ -407,6 +407,20 @@ async def test_removing_one_direction_of_a_closed_socket_drops_the_other() -> No
     await asyncio.sleep(0)
 
 
+async def test_removing_the_unwatched_direction_of_a_closed_socket_drops_the_watched_one() -> None:
+    loop = running_loop()
+    left, right = socket.socketpair()
+    try:
+        loop.add_reader(left, print)
+        left.close()
+        assert loop.remove_writer(left) is False
+        with pytest.raises(ValueError, match="negative"):
+            loop.remove_reader(left)
+    finally:
+        right.close()
+    await asyncio.sleep(0)
+
+
 async def test_remove_reader_finds_a_closed_socket_after_its_writer_was_removed_by_number() -> None:
     loop = running_loop()
     left, right = socket.socketpair()
