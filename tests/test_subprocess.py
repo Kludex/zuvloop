@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import errno
+import gc
 import os
 import signal
 import socket
 import sys
+import time
+import weakref
 from asyncio.subprocess import Process
 from collections.abc import Callable
 from pathlib import Path
@@ -14,6 +18,7 @@ from typing import NoReturn
 
 import pytest
 
+import zuvloop
 from tests.conftest import running_loop
 from zuvloop._process import ProcessReaper
 
@@ -232,6 +237,42 @@ async def test_a_shell_command_may_be_bytes() -> None:
     process = await asyncio.create_subprocess_shell(b"printf hello", stdout=PIPE)
     stdout, _stderr = await process.communicate()
     assert stdout == b"hello"
+
+
+async def test_the_exit_is_reported_in_the_context_of_the_spawn() -> None:
+    spawner: contextvars.ContextVar[str] = contextvars.ContextVar("spawner", default="nobody")
+    loop = running_loop()
+    seen = loop.create_future()
+
+    class Witness(asyncio.SubprocessProtocol):
+        def process_exited(self) -> None:
+            seen.set_result(spawner.get())
+
+    spawner.set("this task")
+    transport, _protocol = await loop.subprocess_exec(
+        Witness, sys.executable, "-c", "pass", stdin=None, stdout=None, stderr=None
+    )
+    assert await seen == "this task"
+    transport.close()
+
+
+def test_a_closed_loop_is_released_once_its_children_are_reaped() -> None:
+    async def spawn() -> None:
+        process = await asyncio.create_subprocess_exec(sys.executable, "-c", "pass")
+        await process.wait()
+
+    loop = zuvloop.new_event_loop()
+    loop.run_until_complete(spawn())
+    released = weakref.ref(loop)
+    loop.close()
+    del loop
+    # The reaper thread drops its last pass a moment after reporting the exit.
+    for _ in range(500):  # pragma: no branch - exhaustion fails via the assertion below
+        gc.collect()
+        if released() is None:
+            break
+        time.sleep(0.01)  # pragma: no cover - only when the reaper thread is slow to return
+    assert released() is None
 
 
 async def test_a_non_string_argument_is_rejected() -> None:

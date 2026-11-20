@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import os
 import signal
 import subprocess
@@ -126,6 +127,9 @@ class Popen:
         self.returncode: int | None = None
         self.pid: int
         self._on_exit = on_exit
+        # The exit is reported from a reaper thread or a libuv callback, neither
+        # of which is where the protocol was created.
+        self._context = contextvars.copy_context()
         self._stdlib: subprocess.Popen[bytes] | None = None
         self._handle: _zuvloop.Process | None = None
 
@@ -241,7 +245,7 @@ class Popen:
 
     def exited(self, returncode: int) -> None:
         self.returncode = returncode
-        self._on_exit(returncode)
+        self._context.run(self._on_exit, returncode)
 
     def poll(self) -> int | None:
         return self.returncode
@@ -282,26 +286,33 @@ class ProcessReaper:
             with self.condition:
                 while not self.processes:
                     self.condition.wait()
-                processes = tuple(self.processes.items())
-
-            completed = False
-            for pid, (process, loop, wrapper) in processes:
-                returncode = process.poll()
-                if returncode is None:
-                    continue
-                completed = True
-                with self.condition:
-                    current = self.processes.get(pid)
-                    if current is not None and current[0] is process:
-                        del self.processes[pid]
-                try:
-                    loop.call_soon_threadsafe(wrapper.exited, returncode)
-                except RuntimeError:  # pragma: no cover - loop closed while child exited
-                    pass
-
-            if not completed:
+            if not self.poll():
                 with self.condition:
                     self.condition.wait(0.01)
+
+    def poll(self) -> bool:
+        """Report the children that have exited; whether any had.
+
+        A frame of its own, so that the loops and children of one pass are not
+        kept alive by the thread while it waits for the next.
+        """
+        with self.condition:
+            processes = tuple(self.processes.items())
+        completed = False
+        for pid, (process, loop, wrapper) in processes:
+            returncode = process.poll()
+            if returncode is None:
+                continue
+            completed = True
+            with self.condition:
+                current = self.processes.get(pid)
+                if current is not None and current[0] is process:
+                    del self.processes[pid]
+            try:
+                loop.call_soon_threadsafe(wrapper.exited, returncode)
+            except RuntimeError:  # pragma: no cover - loop closed while child exited
+                pass
+        return completed
 
 
 process_reaper = ProcessReaper()
