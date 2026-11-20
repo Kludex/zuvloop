@@ -6,6 +6,7 @@ import contextvars
 import functools
 import gc
 import socket
+import sys
 import threading
 import time
 import weakref
@@ -589,6 +590,8 @@ async def test_call_soon_threadsafe_validates_its_arguments() -> None:
         loop.call_soon_threadsafe()  # type: ignore[call-arg]
 
 
+# TODO: drop when 3.13 support ends.
+@pytest.mark.skipif(sys.version_info < (3, 14), reason="asyncio.events._ThreadSafeHandle arrived in 3.14")
 async def test_call_soon_threadsafe_returns_the_stdlib_threadsafe_handle() -> None:
     loop = running_loop()
     handle = loop.call_soon_threadsafe(lambda: None)

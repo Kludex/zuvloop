@@ -822,7 +822,7 @@ class ConnectionOperations(SendfileOperations):
         )
         try:
             await waiter
-        except SystemExit, KeyboardInterrupt:  # pragma: no cover - not raised by a spawn
+        except (SystemExit, KeyboardInterrupt):  # pragma: no cover - not raised by a spawn
             raise
         except BaseException:
             transport.close()

@@ -930,6 +930,8 @@ async def test_a_refused_connection_leaves_no_reference_cycle(closed_port: int) 
     assert not [ref for ref in gc.get_referrers(caught.value) if isinstance(ref, list)]
 
 
+# TODO: drop when 3.13 support ends.
+@pytest.mark.skipif(sys.version_info < (3, 13, 1), reason="3.13.0's staggered_race keeps the exceptions in a cycle")
 async def test_a_refused_race_leaves_no_reference_cycle(closed_port: int) -> None:
     loop = running_loop()
     with pytest.raises(ConnectionRefusedError) as caught:
@@ -2041,7 +2043,7 @@ async def test_a_poll_error_does_not_unregister_the_reader() -> None:
         def on_readable() -> None:
             try:
                 data = sock.recv(1024)
-            except BlockingIOError, ConnectionRefusedError, ConnectionResetError:
+            except (BlockingIOError, ConnectionRefusedError, ConnectionResetError):
                 return  # the rejection, consumed, or a bare error wake; the registration stays
             if not received.done():  # pragma: no cover - whether a duplicate wake arrives is the platform's choice
                 received.set_result(data)

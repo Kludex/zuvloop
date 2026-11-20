@@ -71,8 +71,8 @@ for address literals.
 
 ## Requirements
 
-- Python 3.14+
-- Standard and free-threaded CPython builds
+- Python 3.13+
+- Standard CPython builds, and free-threaded builds on 3.14+
 - Linux, macOS or Windows
 - Prebuilt wheels for Linux x86-64/AArch64, macOS x86-64/arm64 and Windows AMD64/ARM64
 
@@ -178,7 +178,7 @@ pinned upstream suites from aiohttp, uvicorn, AnyIO, websockets, aioquic, Tornad
 zuvloop swapped underneath. The third runs the native sanitizer build and a 500-cycle
 resource-ownership soak.
 
-The compatibility run also tests CPython 3.14.0, the newest 3.14 patch, and standard and free-threaded
+The compatibility run also tests CPython 3.13.0, the newest 3.13 patch, 3.14.0, the newest 3.14 patch, and standard and free-threaded
 3.15 builds, then exercises gRPC AsyncIO, asyncpg, Psycopg and redis-py against real local services.
 The immutable commits and exact commands in `.github/workflows/compatibility.yml` are the source
 of truth.
