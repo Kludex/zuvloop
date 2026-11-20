@@ -261,8 +261,11 @@ def test_a_closed_loop_is_released_once_its_children_are_reaped() -> None:
     loop.close()
     del loop
     # The reaper thread drops its last pass a moment after reporting the exit.
-    time.sleep(0.1)
-    gc.collect()
+    for _ in range(500):  # pragma: no branch - exhaustion fails via the assertion below
+        gc.collect()
+        if released() is None:
+            break
+        time.sleep(0.01)  # pragma: no cover - only when the reaper thread is slow to return
     assert released() is None
 
 
