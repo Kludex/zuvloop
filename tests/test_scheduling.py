@@ -160,6 +160,38 @@ def test_call_soon_discards_a_pooled_context_the_gc_cleared() -> None:
         loop.close()
 
 
+def test_call_soon_context_read_from_another_thread_is_the_one_the_callback_ran_in() -> None:
+    loop = zuvloop.new_event_loop()
+    variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable", default="default")
+
+    def read_as_the_callback_starts(handle: zuvloop.Handle) -> contextvars.Context:
+        both_ready = threading.Barrier(2)
+        contexts: list[contextvars.Context] = []
+
+        def read() -> None:
+            both_ready.wait()
+            contexts.append(handle.get_context())
+
+        reader = threading.Thread(target=read)
+        reader.start()
+        both_ready.wait()
+        loop.run_forever()
+        reader.join()
+        return contexts[0]
+
+    try:
+        # The two threads only collide on a free-threaded build, and only about once in a hundred tries.
+        for _ in range(2000):
+            # Only an empty context is allocated late enough for the two threads to meet.
+            handle = contextvars.Context().run(loop.call_soon, variable.set, "set by the callback")
+            loop.call_soon(loop.stop)
+            context = read_as_the_callback_starts(handle)
+            assert context is handle.get_context()
+            assert context.get(variable) == "set by the callback"
+    finally:
+        loop.close()
+
+
 def test_call_soon_exposes_its_context_before_running() -> None:
     loop = zuvloop.new_event_loop()
     variable: contextvars.ContextVar[str] = contextvars.ContextVar("variable", default="default")

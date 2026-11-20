@@ -48,8 +48,24 @@ pub fn materialize(loop: ?*py.Object, context: *?*py.Object) py.Error!*py.Object
         if (loopmod.isRunningThread(loop_obj)) loopmod.takeEmptyContext(loop_obj) else null
     else
         null;
-    context.* = created orelse c.PyContext_New() orelse return py.Error.Python;
-    return context.*.?;
+    const context_obj = created orelse c.PyContext_New() orelse return py.Error.Python;
+    // Allocating can suspend the caller's critical section, so another thread may have won.
+    if (context.*) |winner| {
+        py.decref(context_obj);
+        return winner;
+    }
+    context.* = context_obj;
+    return context_obj;
+}
+
+/// `materialize` for the path that runs the callback. A getter on another thread materializes
+/// inside `owner`'s critical section, so entering it here stops both from creating a context.
+pub fn materializeToRun(owner: *py.Object, loop: ?*py.Object, context: *?*py.Object) py.Error!*py.Object {
+    // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
+    var critical_section: py.CriticalSection = undefined;
+    py.beginCriticalSection(&critical_section, owner);
+    defer py.endCriticalSection(&critical_section);
+    return materialize(loop, context);
 }
 
 /// Releases a context or moves an unused captured one into the loop pool.
