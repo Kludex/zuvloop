@@ -32,10 +32,8 @@ if sys.platform == "win32":
     # No `AF_UNIX` in the socket module there; a value no family equals keeps
     # the comparisons meaningful.
     _AF_UNIX = -1
-    _SHELL = (os.environ.get("ComSpec", "cmd.exe"), "/c")
 else:
     _AF_UNIX = socket.AF_UNIX
-    _SHELL = ("/bin/sh", "-c")
 
 
 class _BufferedStreamReader(Protocol):
@@ -194,40 +192,48 @@ class ConnectionOperations(SendfileOperations):
 
         # One slot per address, filled in the order they were tried.
         errors: list[list[OSError]] = []
-        winner: socket.socket | None = None
-        if happy_eyeballs_delay is None:
-            for info in infos:
-                try:
-                    winner = await self._connect_one(errors, info, local_infos)
-                    break
-                except OSError:
-                    continue
-        else:
-            # Each attempt starts `happy_eyeballs_delay` after the last, and the
-            # first to connect wins - so an address on a broken route costs that
-            # delay rather than a full connect timeout. RFC 8305.
-            winner = (
-                await staggered.staggered_race(
-                    (self._attempt(errors, info, local_infos) for info in infos),
-                    happy_eyeballs_delay,
-                    loop=self,
-                )
-            )[0]
+        flattened: list[OSError] = []
+        try:
+            winner: socket.socket | None = None
+            if happy_eyeballs_delay is None:
+                for info in infos:
+                    try:
+                        winner = await self._connect_one(errors, info, local_infos)
+                        break
+                    except OSError:
+                        continue
+            else:
+                # Each attempt starts `happy_eyeballs_delay` after the last, and the
+                # first to connect wins - so an address on a broken route costs that
+                # delay rather than a full connect timeout. RFC 8305.
+                winner = (
+                    await staggered.staggered_race(
+                        (self._attempt(errors, info, local_infos) for info in infos),
+                        happy_eyeballs_delay,
+                        loop=self,
+                    )
+                )[0]
 
-        if winner is not None:
-            return winner
-        flattened = [exc for slot in errors for exc in slot]
-        if all_errors:
-            raise ExceptionGroup("create_connection failed", flattened)
-        if len(flattened) == 1:
-            raise flattened[0]
-        if not flattened:  # pragma: no cover - every attempt records its failure
-            raise OSError("Multiple exceptions: (no error was recorded)")
-        # All the same complaint reads better as one of them than as a list.
-        model = str(flattened[0])
-        if all(str(exc) == model for exc in flattened):
-            raise flattened[0]
-        raise OSError(f"Multiple exceptions: {', '.join(str(exc) for exc in flattened)}")
+            if winner is not None:
+                return winner
+            flattened.extend(exc for slot in errors for exc in slot)
+            if all_errors:
+                raise ExceptionGroup("create_connection failed", flattened)
+            if len(flattened) == 1:
+                raise flattened[0]
+            if not flattened:  # pragma: no cover - every attempt records its failure
+                raise OSError("Multiple exceptions: (no error was recorded)")
+            # All the same complaint reads better as one of them than as a list.
+            model = str(flattened[0])
+            if all(str(exc) == model for exc in flattened):
+                raise flattened[0]
+            raise OSError(f"Multiple exceptions: {', '.join(str(exc) for exc in flattened)}")
+        finally:
+            # The raised exception's traceback holds these frames, so lists left
+            # holding the exception would keep it in a reference cycle.
+            for slot in errors:
+                slot.clear()
+            flattened.clear()
 
     def _attempt(
         self,
@@ -864,13 +870,15 @@ class ConnectionOperations(SendfileOperations):
             # poll of its own. XNU and Solaris named FIFOs cannot provide this
             # notification: they either reject the read poll or report unread
             # data as a false hangup (CPython gh-145030). Character devices also
-            # report no hangup at all.
+            # report no hangup at all. Windows polls sockets only, and its pipes
+            # report the hangup through the write itself.
             named_fifo_without_close_event = (
                 sys.platform in {"darwin", "ios", "tvos", "watchos", "sunos5"} and pipe_stat.st_nlink > 0
             )
             if (
                 kind == _zuvloop.KIND_PIPE_WRITE
                 and stat.S_ISFIFO(mode)
+                and sys.platform != "win32"
                 and not sys.platform.startswith("aix")
                 and not named_fifo_without_close_event
             ):
@@ -1033,13 +1041,22 @@ class _SubprocessTransport(base_subprocess.BaseSubprocessTransport):
         **kwargs: Any,
     ) -> None:
         windows_verbatim = False
-        argv = [*_SHELL, args] if shell else [os.fsdecode(arg) for arg in args]
+        argv = ["/bin/sh", "-c", args] if shell else [os.fsdecode(arg) for arg in args]
         if sys.platform == "win32":
             if shell:
+                # CPython's choice of shell, made per spawn as it makes it.
+                # `CreateProcess` does not search for a program it is given by
+                # name, and a relative fallback would resolve against the working
+                # directory.
+                comspec = os.environ.get("ComSpec")
+                if not comspec:
+                    comspec = os.path.join(os.environ.get("SystemRoot", ""), "System32", "cmd.exe")
+                    if not os.path.isabs(comspec):
+                        raise FileNotFoundError("shell not found: neither %ComSpec% nor %SystemRoot% is set.")
                 # cmd.exe has quoting rules of its own: hand it the command
                 # exactly as CPython's subprocess would have written it, with
                 # libuv's MSVCRT-style argv escaping switched off.
-                argv = [*_SHELL, f'"{os.fsdecode(args)}"']
+                argv = [comspec, "/c", f'"{os.fsdecode(args)}"']
                 windows_verbatim = True
         if not isinstance(self._loop, ConnectionOperations):  # pragma: no cover - constructed by this loop only
             raise RuntimeError("subprocess transport requires a zuvloop event loop")

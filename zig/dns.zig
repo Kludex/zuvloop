@@ -244,12 +244,21 @@ var family_cache: [64]?*py.Object = @splat(null);
 var kind_cache: [64]?*py.Object = @splat(null);
 
 fn cachedEnum(cache: []?*py.Object, ctor: ?*py.Object, value: c_int) ?*py.Object {
-    if (value < 0 or value >= cache.len) return c.PyObject_CallFunction(ctor, "i", value);
+    if (value < 0 or value >= cache.len) return enumOrInt(ctor, value);
     const slot = &cache[@intCast(value)];
     if (slot.*) |member| return py.newref(member);
-    const member = c.PyObject_CallFunction(ctor, "i", value) orelse return null;
+    const member = enumOrInt(ctor, value) orelse return null;
     slot.* = py.newref(member);
     return member;
+}
+
+/// `socket._intenum_converter`: a value the enum does not name stays an `int`.
+/// Windows reports socket type 0 when the caller asked for none.
+fn enumOrInt(ctor: ?*py.Object, value: c_int) ?*py.Object {
+    if (c.PyObject_CallFunction(ctor, "i", value)) |member| return member;
+    if (c.PyErr_ExceptionMatches(py.exc_value_error) == 0) return null;
+    c.PyErr_Clear();
+    return c.PyLong_FromLong(value);
 }
 
 fn buildResults(res: ?*netdb.addrinfo) py.Error!*py.Object {

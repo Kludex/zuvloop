@@ -923,6 +923,20 @@ async def test_connection_refused_is_reported(closed_port: int) -> None:
         await loop.create_connection(Collector, "127.0.0.1", closed_port)
 
 
+async def test_a_refused_connection_leaves_no_reference_cycle(closed_port: int) -> None:
+    loop = running_loop()
+    with pytest.raises(ConnectionRefusedError) as caught:
+        await loop.create_connection(Collector, "127.0.0.1", closed_port)
+    assert not [ref for ref in gc.get_referrers(caught.value) if isinstance(ref, list)]
+
+
+async def test_a_refused_race_leaves_no_reference_cycle(closed_port: int) -> None:
+    loop = running_loop()
+    with pytest.raises(ConnectionRefusedError) as caught:
+        await loop.create_connection(Collector, "127.0.0.1", closed_port, happy_eyeballs_delay=0.25)
+    assert not [ref for ref in gc.get_referrers(caught.value) if isinstance(ref, list)]
+
+
 async def test_create_connection_rejects_conflicting_arguments() -> None:
     loop = running_loop()
     with socket.socket() as sock:
