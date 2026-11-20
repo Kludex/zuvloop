@@ -17,9 +17,10 @@ pub const Poller = struct {
     state: *State,
     reader: ?*Handle = null,
     writer: ?*Handle = null,
-    /// What the caller last registered, so a socket closed since - whose
-    /// `fileno()` is now -1 - can still be found for removal, as a selector does.
-    fileobj: ?*py.Object = null,
+    /// What the caller registered each direction with, so a socket closed since -
+    /// whose `fileno()` is now -1 - can still be found for removal, as a selector does.
+    reader_obj: ?*py.Object = null,
+    writer_obj: ?*py.Object = null,
     fd: c_int,
     events: c_int = 0,
 
@@ -81,12 +82,15 @@ fn onClosed(handle: ?*uv.Handle) callconv(.c) void {
 fn destroy(self: *Poller) void {
     const reader = self.reader;
     const writer = self.writer;
-    const fileobj = self.fileobj;
+    const reader_obj = self.reader_obj;
+    const writer_obj = self.writer_obj;
     self.reader = null;
     self.writer = null;
-    self.fileobj = null;
+    self.reader_obj = null;
+    self.writer_obj = null;
     self.state.closeExternalHandle(uv.asHandle(self.uvPoll()), onClosed);
-    py.xdecref(fileobj);
+    py.xdecref(reader_obj);
+    py.xdecref(writer_obj);
     if (reader) |h| {
         h.flags.cancelled = true;
         py.decref(h);
@@ -160,8 +164,9 @@ fn add(self_obj: *py.Object, args: []const ?*py.Object, comptime writer: bool) p
     slot.* = h;
     defer if (superseded) |old| py.decref(old);
     if (superseded) |old| old.flags.cancelled = true;
-    const previous = poller.fileobj;
-    poller.fileobj = py.newref(args[0].?);
+    const obj_slot = if (writer) &poller.writer_obj else &poller.reader_obj;
+    const previous = obj_slot.*;
+    obj_slot.* = py.newref(args[0].?);
     defer py.xdecref(previous);
     try rearm(st, poller);
     return py.noneRef();
@@ -169,28 +174,36 @@ fn add(self_obj: *py.Object, args: []const ?*py.Object, comptime writer: bool) p
 
 fn remove(self_obj: *py.Object, arg: *py.Object, comptime writer: bool) py.Error!*py.Object {
     const st = loopmod.asLoop(self_obj).state();
-    const fd = py.asFd(arg) catch |err| {
-        if (c.PyErr_ExceptionMatches(c.PyExc_ValueError) == 0) return err;
+    var dead = false;
+    const fd = py.asFd(arg) catch |err| known: {
+        if (c.PyErr_ExceptionMatches(py.exc_value_error) == 0) return err;
         var it = st.pollers.valueIterator();
-        while (it.next()) |entry| {
-            const poller = entry.*;
-            if (poller.fileobj != arg) continue;
-            c.PyErr_Clear();
-            const found = (if (writer) poller.writer else poller.reader) != null;
-            // The descriptor is gone, so the other direction can never fire, and
-            // restarting its poll would abort inside libuv.
-            _ = st.pollers.remove(poller.fd);
-            destroy(poller);
-            return py.boolRef(found);
-        }
-        return err;
+        const found = while (it.next()) |entry| {
+            if (entry.*.reader_obj == arg or entry.*.writer_obj == arg) break entry.*.fd;
+        } else return err;
+        // Dropping the error can run a finalizer, so no poller is held across it.
+        c.PyErr_Clear();
+        // A detached socket also reports -1, with its descriptor still open.
+        dead = if (uv.is_windows) true else std.c.fcntl(found, std.c.F.GETFD) == -1;
+        break :known found;
     };
     const poller = st.pollers.get(fd) orelse return py.boolRef(false);
     const slot = if (writer) &poller.writer else &poller.reader;
     const h = slot.* orelse return py.boolRef(false);
+    if (dead) {
+        // The descriptor is gone, so the other direction can never fire, and
+        // restarting its poll would abort inside libuv.
+        _ = st.pollers.remove(fd);
+        destroy(poller);
+        return py.boolRef(true);
+    }
     slot.* = null;
     h.flags.cancelled = true;
     defer py.decref(h);
+    const obj_slot = if (writer) &poller.writer_obj else &poller.reader_obj;
+    const obj = obj_slot.*;
+    obj_slot.* = null;
+    defer py.xdecref(obj);
     try rearm(st, poller);
     return py.boolRef(true);
 }
@@ -225,7 +238,9 @@ pub fn traverse(st: *State, visitproc: c.visitproc, arg: ?*anyopaque) c_int {
         if (r != 0) return r;
         r = py.visit(@ptrCast(entry.*.writer), visitproc, arg);
         if (r != 0) return r;
-        r = py.visit(entry.*.fileobj, visitproc, arg);
+        r = py.visit(entry.*.reader_obj, visitproc, arg);
+        if (r != 0) return r;
+        r = py.visit(entry.*.writer_obj, visitproc, arg);
         if (r != 0) return r;
     }
     return 0;

@@ -407,6 +407,36 @@ async def test_removing_one_direction_of_a_closed_socket_drops_the_other() -> No
     await asyncio.sleep(0)
 
 
+async def test_remove_reader_finds_a_closed_socket_after_its_writer_was_removed_by_number() -> None:
+    loop = running_loop()
+    left, right = socket.socketpair()
+    try:
+        loop.add_reader(left, print)
+        loop.add_writer(left.fileno(), print)
+        assert loop.remove_writer(left.fileno()) is True
+        left.close()
+        assert loop.remove_reader(left) is True
+    finally:
+        right.close()
+    await asyncio.sleep(0)
+
+
+async def test_removing_one_direction_of_a_detached_socket_keeps_the_other() -> None:
+    loop = running_loop()
+    left, right = socket.socketpair()
+    written = loop.create_future()
+    loop.add_reader(left, print)
+    loop.add_writer(left, written.set_result, "writable")
+    fd = left.detach()
+    try:
+        assert loop.remove_reader(left) is True
+        assert await written == "writable"
+        assert loop.remove_writer(fd) is True
+    finally:
+        socket.close(fd)
+        right.close()
+
+
 async def test_remove_reader_rejects_a_closed_socket_it_never_watched() -> None:
     loop = running_loop()
     left, right = socket.socketpair()
