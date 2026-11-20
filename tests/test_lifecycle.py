@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures
 import gc
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -456,6 +457,22 @@ async def test_a_child_inherits_what_it_is_asked_not_to_close() -> None:
     finally:
         os.close(read_fd)
         os.close(write_fd)
+
+
+async def test_a_killed_child_reports_what_the_platform_reports() -> None:
+    """A signal number on POSIX; on Windows the exit code `TerminateProcess` is given."""
+    process = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(60)")
+    process.kill()
+    assert await process.wait() == (1 if sys.platform == "win32" else -signal.SIGKILL)
+
+
+async def test_a_signal_windows_cannot_send_is_refused_there() -> None:
+    process = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(60)")
+    if sys.platform == "win32":
+        with pytest.raises(ValueError, match="Unsupported signal"):
+            process.send_signal(signal.SIGINT)
+    process.kill()
+    await process.wait()
 
 
 async def test_a_child_spawned_with_windows_arguments_can_be_killed() -> None:
