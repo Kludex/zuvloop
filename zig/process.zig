@@ -136,8 +136,10 @@ fn onExit(handle: ?*uv.Process, status: i64, signal: c_int) callconv(.c) void {
     defer st.pythonExit();
 
     // asyncio reports a signalled child as a negative signal number, the same
-    // convention `subprocess` uses.
-    self.returncode = if (signal != 0) -signal else @intCast(status);
+    // convention `subprocess` uses. Windows has no signals: libuv names the one
+    // it was asked to send, but the child ended by `TerminateProcess`, and its
+    // exit code is what `subprocess` reports there.
+    self.returncode = if (signal != 0 and !uv.is_windows) -signal else @intCast(status);
     self.flags.exited = true;
 
     if (self.on_exit) |callback| {
