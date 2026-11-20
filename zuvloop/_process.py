@@ -125,7 +125,9 @@ class Popen:
                 # A string reaches `CreateProcess` as written, which is what the
                 # shell's own quoting needs; a list would be escaped again.
                 " ".join(args) if windows_verbatim else args,
-                executable=executable,
+                # As CPython's own shell spawn does: the unquoted shell path in
+                # that string is not parsed when the program is named here.
+                executable=file if windows_verbatim else executable,
                 env=env,
                 cwd=cwd,
                 stdin=stdin,
@@ -219,18 +221,17 @@ class Popen:
 
     def send_signal(self, signum: int) -> None:
         if self._stdlib is not None:
-            self._stdlib.send_signal(signum)
+            # Windows' `Popen.send_signal` knows no signal 9; `kill` is the same
+            # signal on POSIX.
+            self._stdlib.kill() if signum == _SIGKILL else self._stdlib.send_signal(signum)
         else:  # pragma: no cover - platform path exercised by macOS CI
             assert self._handle is not None
             self._handle.send_signal(signum)
 
     def kill(self) -> None:
         # `BaseSubprocessTransport.close()` reaches for this on a child that is
-        # still running. Windows' `Popen.send_signal` knows no signal 9.
-        if self._stdlib is not None:
-            self._stdlib.kill()
-        else:  # pragma: no cover - platform path exercised by macOS CI
-            self.send_signal(_SIGKILL)
+        # still running.
+        self.send_signal(_SIGKILL)
 
 
 class ProcessReaper:
