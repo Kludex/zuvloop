@@ -17,6 +17,27 @@ static inline unsigned long long zuvloop_read_x18(void) {
 #endif
 #include <Python.h>
 
+// TODO: drop when 3.12 support ends. These public names arrived in 3.13.
+#if PY_VERSION_HEX < 0x030D0000
+typedef _PyTime_t PyTime_t;
+static inline int PyTime_MonotonicRaw(PyTime_t *result) {
+    *result = _PyTime_GetMonotonicClock();
+    return 0;
+}
+static inline int PyObject_VisitManagedDict(PyObject *object, visitproc visit, void *arg) {
+    return _PyObject_VisitManagedDict(object, visit, arg);
+}
+static inline void PyObject_ClearManagedDict(PyObject *object) {
+    _PyObject_ClearManagedDict(object);
+}
+#define Py_CONSTANT_NONE 0
+#define Py_CONSTANT_FALSE 1
+#define Py_CONSTANT_TRUE 2
+static inline PyObject *Py_GetConstantBorrowed(unsigned int constant_id) {
+    return constant_id == Py_CONSTANT_NONE ? Py_None : constant_id == Py_CONSTANT_TRUE ? Py_True : Py_False;
+}
+#endif
+
 typedef struct {
     uintptr_t storage[2];
 } zuvloop_critical_section;

@@ -34,12 +34,16 @@ fn exec(module: ?*py.Object) callconv(.c) c_int {
     return 0;
 }
 
+// TODO: drop when 3.12 support ends. `Py_mod_gil` arrived in 3.13.
+const gil_slot = if (@hasDecl(c, "Py_mod_gil"))
+    [_]c.PyModuleDef_Slot{.{ .slot = c.Py_mod_gil, .value = c.Py_MOD_GIL_NOT_USED }}
+else
+    [_]c.PyModuleDef_Slot{};
+
 var slots = [_]c.PyModuleDef_Slot{
     .{ .slot = c.Py_mod_exec, .value = @ptrCast(@constCast(&exec)) },
     .{ .slot = c.Py_mod_multiple_interpreters, .value = c.Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED },
-    .{ .slot = c.Py_mod_gil, .value = c.Py_MOD_GIL_NOT_USED },
-    .{ .slot = 0, .value = null },
-};
+} ++ gil_slot ++ [_]c.PyModuleDef_Slot{.{ .slot = 0, .value = null }};
 
 var moddef = c.PyModuleDef{
     .m_base = std.mem.zeroes(c.PyModuleDef_Base),
