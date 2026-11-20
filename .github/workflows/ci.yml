@@ -152,7 +152,9 @@ jobs:
       # typeshed rightly refuses on Windows; the library itself has to hold.
       - name: Type check
         if: runner.os == 'Windows'
-        run: uv run mypy zuvloop
+        run: |
+          uv run mypy zuvloop
+          uv run mypy zuvloop --python-version 3.14
 
       - name: Test
         if: runner.os != 'Windows'
