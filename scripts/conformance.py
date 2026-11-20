@@ -121,8 +121,13 @@ def lib_root() -> Path:
             urllib.request.urlretrieve(URL, tarball)
         prefix = f"{ARCHIVE_ROOT}/"
         with tarfile.open(tarball) as archive:
-            wanted = [f"{prefix}{name}" for name in WANTED]
-            members = [m for m in archive.getmembers() if m.name.startswith(tuple(wanted))]
+            wanted = tuple(f"{prefix}{name}" for name in WANTED)
+            # TODO: drop when 3.12 support ends. Early 3.12 keeps its certificates beside the tests.
+            members = [
+                m
+                for m in archive.getmembers()
+                if m.name.startswith(wanted) or (m.name.startswith(f"{prefix}Lib/test/") and m.name.endswith(".pem"))
+            ]
             archive.extractall(CACHE, members=members, filter="data")
     (root / "test" / "test_asyncio" / "test_zuvloop_conformance.py").write_text(HARNESS)
     return root

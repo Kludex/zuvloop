@@ -89,22 +89,22 @@ class SocketOperations(LoopBase):
         try:
             sock.connect(address)
             return
-        except BlockingIOError, InterruptedError:
+        except (BlockingIOError, InterruptedError):
             pass
 
-        future: asyncio.Future[None] = self.create_future()
+        future: asyncio.Future[None] | None = self.create_future()
         fd = sock.fileno()
 
         def check() -> None:
-            if future.done():  # pragma: no cover - guards a wakeup the tests cannot force
+            if future is None or future.done():  # pragma: no cover - guards a wakeup the tests cannot force
                 return
             try:
                 err = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
                 if err:
                     raise OSError(err, f"Connect call failed {address!r}")
-            except BlockingIOError, InterruptedError:
+            except (BlockingIOError, InterruptedError):
                 pass
-            except SystemExit, KeyboardInterrupt:
+            except (SystemExit, KeyboardInterrupt):
                 raise
             except BaseException as exc:
                 future.set_exception(exc)
@@ -112,9 +112,12 @@ class SocketOperations(LoopBase):
                 future.set_result(None)
 
         token = self._watch(fd, True, check)
+        assert future is not None
         try:
             await future
         finally:
+            # An error's traceback keeps this frame and `check`'s, which would keep the future that holds the error.
+            future = None
             self._unwatch(fd, True, token)
 
 
@@ -126,7 +129,7 @@ def _attempt[T](future: asyncio.Future[T], op: Callable[[], T]) -> bool:
         return True
     try:
         result = op()
-    except BlockingIOError, InterruptedError:
+    except (BlockingIOError, InterruptedError):
         return False
     except OSError as exc:
         future.set_exception(exc)

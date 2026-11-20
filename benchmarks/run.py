@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import gc
 import math
 import os
 import socket
@@ -57,6 +58,8 @@ def loop_factories() -> dict[str, Factory]:
 
 
 def run_on(factory: Factory, benchmark: Benchmark) -> float:
+    # Otherwise this sample pays to collect what the previous loop left behind.
+    gc.collect()
     loop = factory()
     try:
         if benchmark.stopped_loop_work is not None:
@@ -214,12 +217,16 @@ async def bench_ready_with_io(connection_count: int = 250, iterations: int = 20_
 
     server = await loop.create_server(Hold, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
-    pairs = await asyncio.gather(
-        *(loop.create_connection(asyncio.Protocol, "127.0.0.1", port) for _ in range(connection_count))
-    )
-    clients = [transport for transport, _protocol in pairs]
-    while len(accepted) < connection_count:
-        await asyncio.sleep(0)
+    clients: list[asyncio.BaseTransport] = []
+    # macOS resets connections that overflow the listen backlog, so each burst is accepted before the next.
+    while len(clients) < connection_count:
+        burst = min(50, connection_count - len(clients))
+        pairs = await asyncio.gather(
+            *(loop.create_connection(asyncio.Protocol, "127.0.0.1", port) for _ in range(burst))
+        )
+        clients += [transport for transport, _protocol in pairs]
+        while len(accepted) < len(clients):
+            await asyncio.sleep(0)
 
     started = time.perf_counter()
     for _ in range(iterations):

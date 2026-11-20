@@ -13,7 +13,7 @@ does not install an OpenTelemetry SDK or anything vendor-specific — see
 
 | | |
 | --- | --- |
-| Python | CPython 3.14 or newer, including free-threaded builds |
+| Python | CPython 3.12 or newer. Free-threaded builds need 3.14 or newer |
 | Platform | Linux, macOS, Windows |
 
 Windows uses libuv's native Windows backend. Unix-domain sockets and
@@ -60,7 +60,7 @@ you are unsure what you have, ask:
 
 ```console
 $ python -c "import zuvloop; print(zuvloop.libuv_version())"
-1.52.1
+1.53.0
 ```
 ///
 
