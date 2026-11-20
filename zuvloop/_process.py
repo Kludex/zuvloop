@@ -118,6 +118,19 @@ class Popen:
             or pass_fds
             or any(value is not None for value in (user, group, extra_groups, preexec_fn))
             or (posix_only and sys.platform != "win32")
+            # `uv_spawn` starts the child with every signal at its default and
+            # none blocked. A child is meant to keep what its parent ignores or
+            # blocks, bar the three signals `restore_signals` resets.
+            or (
+                sys.platform != "win32"
+                and (
+                    bool(signal.pthread_sigmask(signal.SIG_BLOCK, ()))
+                    or any(
+                        signal.getsignal(number) is signal.SIG_IGN
+                        for number in signal.valid_signals() - {signal.SIGPIPE, signal.SIGXFSZ}
+                    )
+                )
+            )
             or startupinfo is not None
             or creationflags
             or not close_fds
