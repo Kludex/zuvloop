@@ -40,7 +40,7 @@ class _Pipe(Protocol):
     """What a pipe transport needs of the object it is given."""
 
     def fileno(self) -> int: ...
-    def close(self) -> None: ...
+    def close(self) -> object: ...
 
 
 class _BufferedStreamReader(Protocol):
@@ -771,8 +771,8 @@ class ConnectionOperations(SendfileOperations):
     async def subprocess_exec[ProtocolT: asyncio.BaseProtocol](
         self,
         protocol_factory: Callable[[], ProtocolT],
-        program: Any,
-        *args: Any,
+        program: str | bytes,
+        *args: str | bytes,
         stdin: Stdio = subprocess.PIPE,
         stdout: Stdio = subprocess.PIPE,
         stderr: Stdio = subprocess.PIPE,
