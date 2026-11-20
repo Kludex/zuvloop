@@ -771,8 +771,8 @@ class ConnectionOperations(SendfileOperations):
     async def subprocess_exec[ProtocolT: asyncio.BaseProtocol](
         self,
         protocol_factory: Callable[[], ProtocolT],
-        program: str | bytes,
-        *args: str | bytes,
+        program: Any,
+        *args: Any,
         stdin: Stdio = subprocess.PIPE,
         stdout: Stdio = subprocess.PIPE,
         stderr: Stdio = subprocess.PIPE,

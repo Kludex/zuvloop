@@ -278,7 +278,7 @@ def test_a_closed_loop_is_released_once_its_children_are_reaped() -> None:
 async def test_a_non_string_argument_is_rejected() -> None:
     loop = running_loop()
     with pytest.raises(TypeError, match="bytes or text string"):
-        await loop.subprocess_exec(asyncio.SubprocessProtocol, "/bin/echo", 42)  # type: ignore[arg-type]
+        await loop.subprocess_exec(asyncio.SubprocessProtocol, "/bin/echo", 42)
     with pytest.raises(ValueError, match="cmd must be a string"):
         await loop.subprocess_shell(asyncio.SubprocessProtocol, 42)  # type: ignore[arg-type]
 
