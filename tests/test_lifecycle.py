@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures
 import gc
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -24,6 +25,14 @@ pytestmark = pytest.mark.anyio
 # A socketpair is an AF_UNIX socket on POSIX - a pipe to libuv - and an
 # AF_INET socket on Windows, where only the TCP spelling can adopt it.
 PAIR_KIND = 0 if sys.platform == "win32" else 1
+
+# Windows' own spawn arguments; elsewhere the defaults, which every platform takes.
+if sys.platform == "win32":
+    NEW_GROUP = subprocess.CREATE_NEW_PROCESS_GROUP
+    HIDDEN = subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESHOWWINDOW, wShowWindow=subprocess.SW_HIDE)
+else:
+    NEW_GROUP = 0
+    HIDDEN = None
 
 
 def test_run_returns_the_coroutine_result() -> None:
@@ -396,6 +405,37 @@ async def test_subprocess_credentials_are_validated_as_the_stdlib_validates_them
         await asyncio.create_subprocess_exec(sys.executable, "-c", "pass", group=-1)
     with pytest.raises(ValueError, match=stdlib_refusal):
         await asyncio.create_subprocess_exec(sys.executable, "-c", "pass", extra_groups=[-1])
+
+
+async def test_a_child_spawned_with_windows_arguments_echoes_its_stdin() -> None:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "import sys; sys.stdout.write(sys.stdin.read())",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        creationflags=NEW_GROUP,
+        startupinfo=HIDDEN,
+    )
+    output, _ = await process.communicate(b"hello")
+    assert output == b"hello"
+    assert process.returncode == 0
+
+
+async def test_a_shell_spawned_with_windows_arguments_runs_the_command() -> None:
+    process = await asyncio.create_subprocess_shell(
+        "echo hello world", stdout=asyncio.subprocess.PIPE, creationflags=NEW_GROUP
+    )
+    output, _ = await process.communicate()
+    assert output.split() == [b"hello", b"world"]
+
+
+async def test_a_child_spawned_with_windows_arguments_can_be_killed() -> None:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(60)", creationflags=NEW_GROUP
+    )
+    process.kill()
+    assert await process.wait() != 0
 
 
 def test_asyncio_run_accepts_the_loop_factory() -> None:

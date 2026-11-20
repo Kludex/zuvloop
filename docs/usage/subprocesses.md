@@ -10,8 +10,8 @@ stdout, _ = await process.communicate(b"round trip")
 `create_subprocess_exec` and `create_subprocess_shell` follow asyncio's public
 contract, including `env`, `cwd`, `pass_fds`, `start_new_session`, `user`,
 `group`, `extra_groups`, `umask`, `process_group`, `close_fds`,
-`restore_signals`, `preexec_fn` and `pipesize` where the host platform supports
-them.
+`restore_signals`, `preexec_fn`, `pipesize`, `startupinfo` and `creationflags`
+where the host platform supports them.
 
 ## How it is put together
 
@@ -24,9 +24,12 @@ contract; non-empty `pass_fds`, `user`, `group`, `extra_groups`, `umask`,
 most of them. asyncio's own subprocess transport drives both
 implementations, so protocol callbacks and exit bookkeeping stay identical.
 
+On Windows, `startupinfo` and non-zero `creationflags` select `subprocess.Popen`
+too, because `uv_spawn` takes neither.
+
 /// warning | `close_fds=False` has no effect on Windows
 
-On Windows the child is always spawned with `uv_spawn`, which takes no
+On Windows the child is spawned with `uv_spawn` by default, which takes no
 `close_fds` option. The argument is accepted and ignored, so an inheritable
 handle you expect the child to receive may not reach it.
 ///
