@@ -43,9 +43,13 @@ class _StartupInfo(Protocol):
     dwFlags: int
 
 
-# What a stdio argument may be: a descriptor, one of `subprocess`'s markers, an
-# open file, or nothing.
-type Stdio = int | IO[bytes] | IO[str] | None
+class _HasFileno(Protocol):
+    def fileno(self) -> int: ...
+
+
+# What a stdio argument may be: a descriptor, one of `subprocess`'s markers,
+# anything that has a descriptor, or nothing.
+type Stdio = int | _HasFileno | None
 
 
 class Popen:
@@ -65,9 +69,9 @@ class Popen:
         executable: str | None = None,
         env: Mapping[str, str] | None = None,
         cwd: str | bytes | os.PathLike[str] | os.PathLike[bytes] | None = None,
-        stdin: Stdio = None,
-        stdout: Stdio = None,
-        stderr: Stdio = None,
+        stdin: int | None = None,
+        stdout: int | None = None,
+        stderr: int | None = None,
         start_new_session: bool = False,
         windows_verbatim: bool = False,
         startupinfo: _StartupInfo | None = None,
@@ -88,9 +92,16 @@ class Popen:
         file = executable or args[0]
         cwd_text = None if cwd is None else os.fsdecode(cwd)
         env_items = None if env is None else [f"{key}={value}" for key, value in env.items()]
+        not_text = False
         for value in (file, *args, cwd_text, *(env_items or ())):
-            if value is not None and "\0" in value:
-                raise ValueError("embedded null byte")
+            if value is not None:
+                if "\0" in value:
+                    raise ValueError("embedded null byte")
+                try:
+                    value.encode()
+                except UnicodeEncodeError:
+                    # Bytes that were never text, decoded with surrogates.
+                    not_text = True
 
         # Before any pipe of ours can reuse a freshly closed number, and in the
         # parent, where the error beats the child's bare exit code 127.
@@ -127,6 +138,8 @@ class Popen:
             or pass_fds
             or any(value is not None for value in (user, group, extra_groups, preexec_fn))
             or (posix_only and sys.platform != "win32")
+            # `uv_spawn` takes UTF-8, which cannot spell such an argument.
+            or (not_text and sys.platform != "win32")
             # `uv_spawn` starts the child with every signal at its default and
             # none blocked. A child is meant to keep what its parent ignores or
             # blocks, bar the three signals `restore_signals` resets.
@@ -199,9 +212,9 @@ class Popen:
         file: str,
         env_items: list[str] | None,
         cwd: str | None,
-        stdin: Stdio,
-        stdout: Stdio,
-        stderr: Stdio,
+        stdin: int | None,
+        stdout: int | None,
+        stderr: int | None,
         start_new_session: bool,
         windows_verbatim: bool,
     ) -> None:
@@ -321,7 +334,7 @@ process_reaper = ProcessReaper()
 
 
 def open_stream(  # pragma: no cover - platform helper exercised by macOS CI
-    index: int, request: Stdio, child_fds: list[int]
+    index: int, request: int | None, child_fds: list[int]
 ) -> tuple[int, int | None]:
     """Returns the descriptor the child inherits, and ours if there is one.
 
@@ -345,5 +358,9 @@ def open_stream(  # pragma: no cover - platform helper exercised by macOS CI
         # Whatever stdout resolved to, which is a pipe back to us whenever one
         # was asked for - never our own stdout unless the child inherited it.
         return os.dup(child_fds[1]), None
-    fd = request if isinstance(request, int) else request.fileno()
-    return os.dup(fd), None
+    return os.dup(request), None
+
+
+def descriptor(stream: Stdio) -> int | None:
+    """What `subprocess` would read off a stream itself; its annotation asks for a whole file."""
+    return stream if stream is None or isinstance(stream, int) else stream.fileno()
