@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import socket
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, TypeAlias
 
 import pytest
 
@@ -12,12 +12,12 @@ from zuvloop import EventLoop, new_event_loop
 
 pytestmark = pytest.mark.anyio
 
-type Sockaddr = tuple[str, int] | tuple[str, int, int, int] | tuple[int, bytes]
-type AddrInfo = tuple[int, int, int, str, Sockaddr]
+Sockaddr: TypeAlias = tuple[str, int] | tuple[str, int, int, int] | tuple[int, bytes]
+AddrInfo: TypeAlias = tuple[int, int, int, str, Sockaddr]
 # What a lookup produced: the addresses, or the `(errno, strerror)` it failed with.
 # `Sequence` rather than `list` because the two APIs disagree on how narrowly they
 # type the family and the address, and only a covariant container accepts both.
-type Outcome = Sequence[AddrInfo] | tuple[int, str]
+Outcome: TypeAlias = Sequence[AddrInfo] | tuple[int, str]
 
 
 def test_getaddrinfo_uses_stdlib_idna_normalization() -> None:

@@ -4,9 +4,11 @@ import asyncio
 import socket
 from collections.abc import Callable, Coroutine, Iterable, Sequence
 from contextvars import Context
-from typing import Any, Literal, Protocol, final
+from typing import Any, Literal, Protocol, TypeVar, final
 
 from typing_extensions import disjoint_base
+
+T = TypeVar("T")
 
 class _FileDescriptorLike(Protocol):
     def fileno(self) -> int: ...
@@ -121,7 +123,7 @@ class Loop:
     slow_callback_duration: float
     slow_callback_cpu_time_enabled: bool
 
-    def create_task[T](
+    def create_task(
         self,
         coro: Coroutine[Any, Any, T],
         *,

@@ -30,6 +30,15 @@ void PyObject_ClearManagedDict(PyObject *object);
 PyObject *Py_GetConstantBorrowed(unsigned int constant_id);
 #endif
 
+// TODO: drop when 3.11 support ends. These public names arrived in 3.12.
+#if PY_VERSION_HEX < 0x030C0000
+#include <structmember.h>
+#define Py_TPFLAGS_ITEMS_AT_END 0
+void *PyObject_GetItemData(PyObject *object);
+PyObject *PyErr_GetRaisedException(void);
+void PyErr_SetRaisedException(PyObject *exception);
+#endif
+
 typedef struct {
     uintptr_t storage[2];
 } zuvloop_critical_section;

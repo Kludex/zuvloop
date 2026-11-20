@@ -483,6 +483,8 @@ async def test_a_child_spawned_with_windows_arguments_can_be_killed() -> None:
     assert await process.wait() != 0
 
 
+# TODO: drop when 3.11 support ends.
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="asyncio.run() gained loop_factory in 3.12")
 def test_asyncio_run_accepts_the_loop_factory() -> None:
     async def main() -> str:
         return type(running_loop()).__name__

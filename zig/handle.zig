@@ -29,6 +29,7 @@ pub const Handle = extern struct {
     loop: ?*py.Object,
     callback: ?*py.Object,
     context: ?*py.Object,
+    weaklist: py.LegacySlot,
     flags: Flags,
 
     fn argv(self: *Handle) [*]?*py.Object {
@@ -297,8 +298,8 @@ var handle_methods = [_]c.PyMethodDef{
     py.sentinel,
 };
 
-fn slots(methods: [*]c.PyMethodDef) [8]c.PyType_Slot {
-    return .{
+fn slots(methods: [*]c.PyMethodDef) [8 + py.legacySlots(Handle).len]c.PyType_Slot {
+    return py.legacySlots(Handle) ++ [_]c.PyType_Slot{
         .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
         .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
         .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&py.wrapClear(clear_))) },
@@ -313,7 +314,7 @@ fn slots(methods: [*]c.PyMethodDef) [8]c.PyType_Slot {
 var handle_slots = slots(&handle_methods);
 
 // asyncio's handles are weak-referenceable, so these must be too.
-const flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | c.Py_TPFLAGS_MANAGED_WEAKREF | c.Py_TPFLAGS_ITEMS_AT_END |
+const flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | py.tp_managed_weakref | c.Py_TPFLAGS_ITEMS_AT_END |
     c.Py_TPFLAGS_IMMUTABLETYPE | c.Py_TPFLAGS_DISALLOW_INSTANTIATION;
 
 var handle_spec = c.PyType_Spec{

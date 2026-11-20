@@ -23,13 +23,14 @@ import threading
 import time
 from collections.abc import Callable, Coroutine
 from functools import partial
+from typing import TypeAlias
 
 import uvloop
 
 import zuvloop
 
-type Factory = Callable[[], asyncio.AbstractEventLoop]
-type Workload = Callable[[asyncio.AbstractEventLoop], Callable[[], None]]
+Factory: TypeAlias = Callable[[], asyncio.AbstractEventLoop]
+Workload: TypeAlias = Callable[[asyncio.AbstractEventLoop], Callable[[], None]]
 
 PAYLOAD = os.urandom(1024)
 REPS = 40

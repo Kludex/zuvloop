@@ -7,7 +7,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable, Iterable, Mapping
-from typing import IO, TYPE_CHECKING, Protocol
+from typing import IO, TYPE_CHECKING, Protocol, TypeAlias
 
 from . import _zuvloop
 
@@ -49,7 +49,7 @@ class _HasFileno(Protocol):
 
 # What a stdio argument may be: a descriptor, one of `subprocess`'s markers,
 # anything that has a descriptor, or nothing.
-type Stdio = int | _HasFileno | None
+Stdio: TypeAlias = int | _HasFileno | None
 
 
 class Popen:

@@ -128,7 +128,11 @@ def lib_root() -> Path:
                 for m in archive.getmembers()
                 if m.name.startswith(wanted) or (m.name.startswith(f"{prefix}Lib/test/") and m.name.endswith(".pem"))
             ]
-            archive.extractall(CACHE, members=members, filter="data")
+            # TODO: drop when 3.11 support ends. `filter` arrived in 3.11.4.
+            if sys.version_info >= (3, 11, 4):
+                archive.extractall(CACHE, members=members, filter="data")
+            else:
+                archive.extractall(CACHE, members=members)
     (root / "test" / "test_asyncio" / "test_zuvloop_conformance.py").write_text(HARNESS)
     return root
 

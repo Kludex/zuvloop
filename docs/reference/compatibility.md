@@ -12,7 +12,7 @@ Compatibility is checked at four levels:
   inspect CPython's private server attributes.
 - Every pull request builds with native safety checks and the C sanitizer, then
   repeats the loop lifecycle and resource-ownership scenario 500 times.
-- The compatibility job builds and tests the declared floor (CPython 3.12.0),
+- The compatibility job builds and tests CPython 3.11.1, the newest CPython 3.11 patch, CPython 3.12.0,
   the newest CPython 3.12 patch, CPython 3.13.0, the newest CPython 3.13 patch, CPython 3.14.0, the newest CPython 3.14 patch, and standard and free-threaded CPython 3.15.
   It also adds service-backed smoke tests for gRPC AsyncIO, asyncpg, Psycopg
   and redis-py.
@@ -84,22 +84,26 @@ string as an unspecified host; zuvloop raises `OSError`. This is the whole of it
 
 ## Interpreter and platform policy
 
-CPython 3.12 and 3.13, and standard and free-threaded CPython 3.14 and 3.15, are
-supported on Linux, macOS and Windows. The minimum 3.12.0 release, 3.13.0, 3.14.0 and both
+CPython 3.11, 3.12 and 3.13, and standard and free-threaded CPython 3.14 and 3.15, are
+supported on Linux, macOS and Windows. CPython 3.11.1, 3.12.0, 3.13.0, 3.14.0 and both
 variants of 3.15 are continuously exercised rather than inferred from the
 newest local interpreter.
 
-!!! note "Python 3.12 and 3.13 have no awaited-by chain or `_ThreadSafeHandle`"
+!!! note "Python 3.11 to 3.13 have no awaited-by chain or `_ThreadSafeHandle`"
     Both arrived in 3.14. Before 3.14, the `asyncio.call_graph` attribute of a
     slow-callback span lists the task's own coroutine stack, without the tasks
     awaiting it, and `call_soon_threadsafe` returns a subtype of
     `asyncio.Handle`. Free-threaded 3.13 is not supported.
 
-!!! note "Early patch releases keep a refused connection's errors alive"
-    Before 3.12.8, and on 3.13.0, the standard library's `staggered_race`
+!!! note "Older releases keep a refused connection's errors alive"
+    On 3.11, before 3.12.8, and on 3.13.0, the standard library's `staggered_race`
     leaves the exceptions of a failed `create_connection()` race in a
     reference cycle. They are freed by the next garbage collection, not when
     the call returns.
+
+!!! note "3.11.0 is supported but not exercised"
+    The compatibility job starts at 3.11.1, the oldest 3.11 release its
+    installer provides.
 
 Linux glibc, Linux musl and macOS execute the full in-repository suite. Windows
 builds run the portable suite natively; tests that require

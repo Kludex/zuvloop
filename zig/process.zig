@@ -24,6 +24,7 @@ pub var process_type: ?*c.PyTypeObject = null;
 pub const Process = extern struct {
     ob_base: c.PyObject,
     loop: ?*py.Object,
+    weaklist: py.LegacySlot,
     state: ?*loopmod.State,
     on_exit: ?*py.Object,
     context: ?*py.Object,
@@ -363,7 +364,7 @@ var methods = [_]c.PyMethodDef{
     py.sentinel,
 };
 
-var slots = [_]c.PyType_Slot{
+var slots = py.legacySlots(Process) ++ [_]c.PyType_Slot{
     .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
     .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
     .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&py.wrapClear(clear_))) },
@@ -376,7 +377,7 @@ var spec = c.PyType_Spec{
     .name = "zuvloop._zuvloop.Process",
     .basicsize = 0,
     .itemsize = 0,
-    .flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | c.Py_TPFLAGS_MANAGED_WEAKREF |
+    .flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | py.tp_managed_weakref |
         c.Py_TPFLAGS_IMMUTABLETYPE | c.Py_TPFLAGS_DISALLOW_INSTANTIATION,
     .slots = &slots,
 };

@@ -42,6 +42,8 @@ pub const Datagram = extern struct {
     /// its layout, and leaving it NULL keeps `_extra` looking unset.
     base_extra: ?*py.Object,
     loop: ?*py.Object,
+    weaklist: py.LegacySlot,
+    dict: py.LegacySlot,
     state: ?*loopmod.State,
     protocol: ?*py.Object,
     extra: ?*py.Object,
@@ -637,7 +639,7 @@ var methods = [_]c.PyMethodDef{
     py.sentinel,
 };
 
-var slots = [_]c.PyType_Slot{
+var slots = py.legacySlots(Datagram) ++ [_]c.PyType_Slot{
     .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
     .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
     .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&py.wrapClear(clear_))) },
@@ -650,8 +652,8 @@ var spec = c.PyType_Spec{
     .name = "zuvloop._zuvloop.DatagramTransport",
     .basicsize = 0,
     .itemsize = 0,
-    .flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | c.Py_TPFLAGS_MANAGED_WEAKREF |
-        c.Py_TPFLAGS_MANAGED_DICT | c.Py_TPFLAGS_DISALLOW_INSTANTIATION,
+    .flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | py.tp_managed_weakref |
+        py.tp_managed_dict | c.Py_TPFLAGS_DISALLOW_INSTANTIATION,
     .slots = &slots,
 };
 

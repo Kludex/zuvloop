@@ -12,7 +12,7 @@ import tempfile
 from asyncio import constants, trsock
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Literal, NoReturn
+from typing import Literal, NoReturn, TypeAlias
 
 import pytest
 
@@ -25,7 +25,7 @@ pytestmark = pytest.mark.anyio
 requires_unix_sockets = pytest.mark.skipif(sys.platform == "win32", reason="Windows has no Unix sockets")
 
 # What `getaddrinfo` hands back: family, kind, protocol, canonical name, address.
-type AddrInfo = tuple[int, int, int, str, tuple[str, int] | tuple[str, int, int, int]]
+AddrInfo: TypeAlias = tuple[int, int, int, str, tuple[str, int] | tuple[str, int, int, int]]
 
 
 class Echo(asyncio.Protocol):
@@ -171,6 +171,8 @@ async def test_queued_write_snapshots_a_mutable_buffer() -> None:
         await writer.wait_closed()
 
 
+# TODO: drop when 3.11 support ends.
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="Python classes gained __buffer__ in 3.12")
 async def test_queued_write_snapshots_a_bytes_subclass_buffer() -> None:
     class MutableBytes(bytes):
         payload: bytearray
@@ -537,6 +539,8 @@ async def test_reentrant_writelines_cannot_queue_data_after_eof() -> None:
         await protocol.done
 
 
+# TODO: drop when 3.11 support ends.
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="Python classes gained __buffer__ in 3.12")
 async def test_reentrant_buffer_acquisition_cannot_queue_data_after_eof() -> None:
     server, port, _ = await start_echo()
     loop = running_loop()
@@ -933,7 +937,7 @@ async def test_a_refused_connection_leaves_no_reference_cycle(closed_port: int) 
 # TODO: drop when 3.13 support ends.
 @pytest.mark.skipif(
     sys.version_info < (3, 12, 8) or sys.version_info[:3] == (3, 13, 0),
-    reason="staggered_race keeps the exceptions in a cycle before 3.12.8 and on 3.13.0",
+    reason="staggered_race keeps the exceptions in a cycle on 3.11, before 3.12.8 and on 3.13.0",
 )
 async def test_a_refused_race_leaves_no_reference_cycle(closed_port: int) -> None:
     loop = running_loop()

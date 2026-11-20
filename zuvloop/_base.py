@@ -17,7 +17,7 @@ from collections.abc import Callable
 from contextvars import Context
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from . import _zuvloop
 from ._instrumentation import (
@@ -32,6 +32,9 @@ if TYPE_CHECKING:
     from collections.abc import Coroutine
 
 _ExceptionHandler = Callable[[asyncio.AbstractEventLoop, dict[str, Any]], object]
+
+
+T = TypeVar("T")
 
 
 class _ExecutorNotifier(Protocol):
@@ -227,7 +230,7 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
 
     if TYPE_CHECKING:
 
-        def create_task[T](
+        def create_task(
             self,
             coro: Coroutine[Any, Any, T],
             *,
@@ -244,7 +247,7 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
 
     # -- executors ---------------------------------------------------------
 
-    def run_in_executor[T](  # type: ignore[override]  # typeshed loses the return type
+    def run_in_executor(  # type: ignore[override]  # typeshed loses the return type
         self, executor: concurrent.futures.Executor | None, func: Callable[..., T], *args: Any
     ) -> asyncio.Future[T]:
         self._check_closed()

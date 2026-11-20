@@ -13,7 +13,7 @@ does not install an OpenTelemetry SDK or anything vendor-specific — see
 
 | | |
 | --- | --- |
-| Python | CPython 3.12 or newer. Free-threaded builds need 3.14 or newer |
+| Python | CPython 3.11 or newer. Free-threaded builds need 3.14 or newer |
 | Platform | Linux, macOS, Windows |
 
 Windows uses libuv's native Windows backend. Unix-domain sockets and

@@ -59,7 +59,9 @@ const Payload = extern struct {
 };
 
 pub var ts_type: ?*c.PyTypeObject = null;
-const payload_offset = @sizeOf(c.PyObject);
+// TODO: drop when 3.11 support ends. Its `Handle` keeps the weakref list in the body,
+// after the seven slots, so the payload goes past the base instead of over its slots.
+const payload_offset = @sizeOf(c.PyObject) + if (py.legacy_layout) 8 * @sizeOf(usize) else 0;
 threadlocal var running_payload: ?*Payload = null;
 
 inline fn payload(obj: *py.Object) *Payload {
@@ -86,6 +88,7 @@ pub fn create(
     context: ?*py.Object,
 ) py.Error!*py.Object {
     const obj = c._PyObject_GC_New(ts_type.?) orelse return py.Error.Python;
+    if (py.legacy_layout) @memset(@as([*]u8, @ptrCast(obj))[@sizeOf(c.PyObject)..payload_offset], 0);
     errdefer py.decref(obj);
     const self = payload(obj);
     self.* = std.mem.zeroes(Payload);
@@ -188,6 +191,11 @@ fn cancel(self_obj: *py.Object) py.Error!*py.Object {
         }
     }
     return py.noneRef();
+}
+
+// TODO: drop when 3.11 support ends. `asyncio.Handle.get_context` arrived in 3.12.
+fn getContextMethod(self_obj: *py.Object) py.Error!*py.Object {
+    return getContext(self_obj, null) orelse py.Error.Python;
 }
 
 fn cancelled(self_obj: *py.Object) py.Error!*py.Object {
@@ -314,6 +322,7 @@ var getsets = [_]c.PyGetSetDef{
 var methods = [_]c.PyMethodDef{
     py.methodNoArgs("cancel", cancel, "Cancel the callback, waiting out a run in progress on another thread."),
     py.methodNoArgs("cancelled", cancelled, "Return True if the callback was cancelled."),
+    py.methodNoArgs("get_context", getContextMethod, "Return the context the callback runs in."),
     py.methodNoArgs("_run", runMethod, "Run the callback unless it was cancelled."),
     py.sentinel,
 };
@@ -351,7 +360,7 @@ pub fn register(module: *py.Object) py.Error!void {
         return py.Error.Python;
     defer py.decref(base);
     const base_tp: *c.PyTypeObject = @ptrCast(base);
-    if (base_tp.tp_basicsize < payload_offset + @sizeOf(Payload) and !handle_base) {
+    if (if (py.legacy_layout) base_tp.tp_basicsize != payload_offset else base_tp.tp_basicsize < payload_offset + @sizeOf(Payload) and !handle_base) {
         return py.errRuntime("the asyncio handle base class has an incompatible layout");
     }
     ts_type = @ptrCast(c.PyType_FromModuleAndSpec(module, &spec, base) orelse return py.Error.Python);

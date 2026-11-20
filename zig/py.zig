@@ -73,6 +73,29 @@ pub fn initConstants() Error!void {
     }
 }
 
+// TODO: drop when 3.11 support ends. Managed weakrefs and dicts arrived in 3.12, so
+// 3.11 types reserve an ordinary slot for each and name its offset in `Py_tp_members`.
+pub const legacy_layout = c.PY_VERSION_HEX < 0x030C0000;
+pub const LegacySlot = [if (legacy_layout) 1 else 0]?*Object;
+pub const tp_managed_weakref: c_ulong = if (legacy_layout) 0 else c.Py_TPFLAGS_MANAGED_WEAKREF;
+pub const tp_managed_dict: c_ulong = if (legacy_layout) 0 else c.Py_TPFLAGS_MANAGED_DICT;
+
+/// The `Py_tp_members` slot naming `T`'s `weaklist` and, if it has one, `dict` slot; empty from 3.12.
+pub fn legacySlots(comptime T: type) [if (legacy_layout) 1 else 0]c.PyType_Slot {
+    if (!legacy_layout) return .{};
+    const members = struct {
+        var defs = [_]c.PyMemberDef{
+            .{ .name = "__weaklistoffset__", .type = c.T_PYSSIZET, .offset = @offsetOf(T, "weaklist"), .flags = c.READONLY, .doc = null },
+            if (@hasField(T, "dict"))
+                .{ .name = "__dictoffset__", .type = c.T_PYSSIZET, .offset = @offsetOf(T, "dict"), .flags = c.READONLY, .doc = null }
+            else
+                std.mem.zeroes(c.PyMemberDef),
+            std.mem.zeroes(c.PyMemberDef),
+        };
+    };
+    return .{.{ .slot = c.Py_tp_members, .pfunc = @ptrCast(&members.defs) }};
+}
+
 pub inline fn incref(o: anytype) void {
     // TODO: drop when 3.13 support ends. Zig cannot translate its inline `Py_INCREF`.
     if (@hasDecl(c, "Py_GIL_DISABLED") or c.PY_VERSION_HEX < 0x030E0000)

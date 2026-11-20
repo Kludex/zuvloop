@@ -11,6 +11,7 @@ import threading
 import time
 import weakref
 from collections.abc import Callable, Coroutine
+from typing import TypeAlias
 
 import pytest
 
@@ -19,7 +20,7 @@ from tests.conftest import collect_contexts, running_loop
 
 pytestmark = pytest.mark.anyio
 
-type ScheduleCallback = Callable[[functools.partial[None], *tuple[int, ...]], asyncio.Handle | zuvloop.Handle]
+ScheduleCallback: TypeAlias = Callable[[functools.partial[None], *tuple[int, ...]], asyncio.Handle | zuvloop.Handle]
 
 
 @pytest.fixture(params=["soon", "later", "at", "threadsafe"])
@@ -931,6 +932,8 @@ async def test_task_factory_receives_creation_keywords() -> None:
     assert received == {"name": "named", "context": task_context}
 
 
+# TODO: drop when 3.11 support ends.
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="asyncio.eager_task_factory arrived in 3.12")
 async def test_eager_task_factory_is_supported() -> None:
     loop = running_loop()
     loop.set_task_factory(asyncio.eager_task_factory)

@@ -4,9 +4,10 @@ import argparse
 import json
 import re
 from pathlib import Path
+from typing import TypeAlias
 
-type JsonScalar = None | bool | int | float | str
-type JsonValue = JsonScalar | list[JsonValue] | dict[str, JsonValue]
+JsonScalar: TypeAlias = None | bool | int | float | str
+JsonValue: TypeAlias = "JsonScalar | list[JsonValue] | dict[str, JsonValue]"
 
 
 def require_object(value: JsonValue, label: str) -> dict[str, JsonValue]:

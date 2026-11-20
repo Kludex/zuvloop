@@ -96,6 +96,8 @@ pub const Transport = extern struct {
     /// is what it is - `get_extra_info` reads our own `extra` instead.
     base_extra: ?*py.Object,
     loop: ?*py.Object,
+    weaklist: py.LegacySlot,
+    dict: py.LegacySlot,
     state: ?*loopmod.State,
     protocol: ?*py.Object,
     server: ?*py.Object,
@@ -1258,7 +1260,7 @@ var getsets = [_]c.PyGetSetDef{
     .{ .name = null, .get = null, .set = null, .doc = null, .closure = null },
 };
 
-var slots = [_]c.PyType_Slot{
+var slots = py.legacySlots(Transport) ++ [_]c.PyType_Slot{
     .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
     .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
     .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&py.wrapClear(clear_))) },
@@ -1277,8 +1279,8 @@ var spec = c.PyType_Spec{
     // callers - test suites especially - rely on being able to set them.
     // Not immutable: CPython forbids an immutable type deriving from a mutable
     // base, and `asyncio.Transport` is an ordinary class.
-    .flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | c.Py_TPFLAGS_MANAGED_WEAKREF |
-        c.Py_TPFLAGS_MANAGED_DICT | c.Py_TPFLAGS_DISALLOW_INSTANTIATION,
+    .flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | py.tp_managed_weakref |
+        py.tp_managed_dict | c.Py_TPFLAGS_DISALLOW_INSTANTIATION,
     .slots = &slots,
 };
 

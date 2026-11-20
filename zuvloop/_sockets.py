@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import socket
-from collections.abc import Buffer, Callable
+from collections.abc import Callable
+from typing import TypeAlias, TypeVar
+
+from typing_extensions import Buffer
 
 from ._base import LoopBase
+
+T = TypeVar("T")
 
 
 class SocketOperations(LoopBase):
@@ -29,12 +34,12 @@ class SocketOperations(LoopBase):
         del self._sock_watchers[fd, write]
         (self.remove_writer if write else self.remove_reader)(fd)
 
-    async def _retry_until_ready[T](self, sock: socket.socket, op: Callable[[], T], *, write: bool = False) -> T:
+    async def _retry_until_ready(self, sock: socket.socket, op: Callable[[], T], *, write: bool = False) -> T:
         """Run `op`, retrying it each time `sock` reports itself ready."""
         self._check_non_blocking(sock)
         return await self._retry_ready(sock.fileno(), write, op)
 
-    async def _retry_ready[T](self, fd: int, write: bool, op: Callable[[], T]) -> T:
+    async def _retry_ready(self, fd: int, write: bool, op: Callable[[], T]) -> T:
         future: asyncio.Future[T] = self.create_future()
         if _attempt(future, op):
             return await future
@@ -121,7 +126,7 @@ class SocketOperations(LoopBase):
             self._unwatch(fd, True, token)
 
 
-def _attempt[T](future: asyncio.Future[T], op: Callable[[], T]) -> bool:
+def _attempt(future: asyncio.Future[T], op: Callable[[], T]) -> bool:
     """Settle `future` from one attempt at `op`; False means "not ready yet"."""
     if future.done():  # pragma: no cover - guards a wakeup the tests cannot force
         # Watching is level-triggered, so a partially drained descriptor could
@@ -138,4 +143,4 @@ def _attempt[T](future: asyncio.Future[T], op: Callable[[], T]) -> bool:
     return True
 
 
-type _SocketAddress = tuple[str | bytes | int, ...] | str | Buffer | int
+_SocketAddress: TypeAlias = tuple[str | bytes | int, ...] | str | Buffer | int

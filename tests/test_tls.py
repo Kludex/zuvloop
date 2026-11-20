@@ -250,10 +250,13 @@ async def test_start_tls_consumes_a_buffered_client_hello(
                 loop.create_task(relay(client, remote)),
                 loop.create_task(relay(remote, client)),
             ]
-            _done, pending = await asyncio.wait(relays, return_when=asyncio.FIRST_COMPLETED)
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*relays, return_exceptions=True)
+            try:
+                await asyncio.wait(relays, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                # Also on cancellation: 3.11's `Server.wait_closed()` does not wait for this proxy to finish.
+                for task in relays:
+                    task.cancel()
+                await asyncio.gather(*relays, return_exceptions=True)
         finally:
             client.close()
             remote.close()

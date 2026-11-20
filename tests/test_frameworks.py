@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import socket
 from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import TypeAlias
 
 import pytest
 
@@ -35,9 +36,9 @@ pytestmark = pytest.mark.anyio
 # partial-write path rather than in one go.
 LARGE = b"x" * (1 << 20)
 
-type Message = dict[str, object]
-type Send = Callable[[Message], Awaitable[None]]
-type Receive = Callable[[], Awaitable[Message]]
+Message: TypeAlias = dict[str, object]
+Send: TypeAlias = Callable[[Message], Awaitable[None]]
+Receive: TypeAlias = Callable[[], Awaitable[Message]]
 
 
 def bound_socket() -> socket.socket:

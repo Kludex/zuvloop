@@ -40,10 +40,17 @@ const gil_slot = if (@hasDecl(c, "Py_mod_gil"))
 else
     [_]c.PyModuleDef_Slot{};
 
+// TODO: drop when 3.11 support ends. `Py_mod_multiple_interpreters` arrived in 3.12.
+const interpreters_slot = if (@hasDecl(c, "Py_mod_multiple_interpreters"))
+    [_]c.PyModuleDef_Slot{
+        .{ .slot = c.Py_mod_multiple_interpreters, .value = c.Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED },
+    }
+else
+    [_]c.PyModuleDef_Slot{};
+
 var slots = [_]c.PyModuleDef_Slot{
     .{ .slot = c.Py_mod_exec, .value = @ptrCast(@constCast(&exec)) },
-    .{ .slot = c.Py_mod_multiple_interpreters, .value = c.Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED },
-} ++ gil_slot ++ [_]c.PyModuleDef_Slot{.{ .slot = 0, .value = null }};
+} ++ interpreters_slot ++ gil_slot ++ [_]c.PyModuleDef_Slot{.{ .slot = 0, .value = null }};
 
 var moddef = c.PyModuleDef{
     .m_base = std.mem.zeroes(c.PyModuleDef_Base),

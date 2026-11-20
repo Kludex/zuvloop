@@ -12,6 +12,48 @@ int PyTime_MonotonicRaw(PyTime_t *result) {
     return 0;
 }
 
+#if PY_VERSION_HEX < 0x030C0000
+// 3.11 types carry an ordinary `__dict__` slot, which `_PyObject_GetDictPtr` locates.
+int PyObject_VisitManagedDict(PyObject *object, visitproc visit, void *arg) {
+    PyObject **dict = _PyObject_GetDictPtr(object);
+    if (dict != NULL) {
+        Py_VISIT(*dict);
+    }
+    return 0;
+}
+
+void PyObject_ClearManagedDict(PyObject *object) {
+    PyObject **dict = _PyObject_GetDictPtr(object);
+    if (dict != NULL) {
+        Py_CLEAR(*dict);
+    }
+}
+
+void *PyObject_GetItemData(PyObject *object) {
+    return (char *)object + Py_TYPE(object)->tp_basicsize;
+}
+
+PyObject *PyErr_GetRaisedException(void) {
+    PyObject *type, *value, *traceback;
+    PyErr_Fetch(&type, &value, &traceback);
+    if (type == NULL) {
+        return NULL;
+    }
+    PyErr_NormalizeException(&type, &value, &traceback);
+    if (traceback != NULL) {
+        PyException_SetTraceback(value, traceback);
+        Py_DECREF(traceback);
+    }
+    Py_DECREF(type);
+    return value;
+}
+
+void PyErr_SetRaisedException(PyObject *exception) {
+    PyObject *type = (PyObject *)Py_TYPE(exception);
+    Py_INCREF(type);
+    PyErr_Restore(type, exception, PyException_GetTraceback(exception));
+}
+#else
 int PyObject_VisitManagedDict(PyObject *object, visitproc visit, void *arg) {
     return _PyObject_VisitManagedDict(object, visit, arg);
 }
@@ -19,6 +61,7 @@ int PyObject_VisitManagedDict(PyObject *object, visitproc visit, void *arg) {
 void PyObject_ClearManagedDict(PyObject *object) {
     _PyObject_ClearManagedDict(object);
 }
+#endif
 
 PyObject *Py_GetConstantBorrowed(unsigned int constant_id) {
     switch (constant_id) {

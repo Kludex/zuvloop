@@ -16,7 +16,7 @@ from asyncio.base_events import (  # type: ignore[attr-defined]  # private CPyth
 )
 from asyncio.streams import StreamReaderProtocol
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeAlias, TypeVar
 
 from . import _zuvloop
 from ._process import _SIGKILL, Popen, Stdio, descriptor
@@ -24,8 +24,10 @@ from ._sendfile import SendfileOperations
 from ._server import Server
 
 # What `getaddrinfo` hands back: family, kind, protocol, canonical name, address.
-type _AddrInfo = tuple[int, int, int, str, tuple[str, int] | tuple[str, int, int, int]]
-type _DatagramAddress = tuple[str, int] | str | bytes
+ProtocolT = TypeVar("ProtocolT", bound=asyncio.BaseProtocol)
+
+_AddrInfo: TypeAlias = tuple[int, int, int, str, tuple[str, int] | tuple[str, int, int, int]]
+_DatagramAddress: TypeAlias = tuple[str, int] | str | bytes
 _SSLArg = ssl_module.SSLContext | bool | None
 
 if sys.platform == "win32":
@@ -745,7 +747,7 @@ class ConnectionOperations(SendfileOperations):
             raise
         return transport
 
-    async def subprocess_shell[ProtocolT: asyncio.BaseProtocol](
+    async def subprocess_shell(
         self,
         protocol_factory: Callable[[], ProtocolT],
         cmd: str | bytes,
@@ -768,7 +770,7 @@ class ConnectionOperations(SendfileOperations):
         transport = await self._make_subprocess_transport(protocol, cmd, True, stdin, stdout, stderr, bufsize, **kwargs)
         return transport, protocol
 
-    async def subprocess_exec[ProtocolT: asyncio.BaseProtocol](
+    async def subprocess_exec(
         self,
         protocol_factory: Callable[[], ProtocolT],
         program: str | bytes,
@@ -837,17 +839,17 @@ class ConnectionOperations(SendfileOperations):
             raise RuntimeError("subprocess setup did not create a subprocess transport")
         return transport
 
-    async def connect_read_pipe[ProtocolT: asyncio.BaseProtocol](
+    async def connect_read_pipe(
         self, protocol_factory: Callable[[], ProtocolT], pipe: _Pipe
     ) -> tuple[asyncio.ReadTransport, ProtocolT]:
         return await self._connect_pipe(protocol_factory, pipe, _zuvloop.KIND_PIPE)
 
-    async def connect_write_pipe[ProtocolT: asyncio.BaseProtocol](
+    async def connect_write_pipe(
         self, protocol_factory: Callable[[], ProtocolT], pipe: _Pipe
     ) -> tuple[asyncio.WriteTransport, ProtocolT]:
         return await self._connect_pipe(protocol_factory, pipe, _zuvloop.KIND_PIPE_WRITE)
 
-    async def _connect_pipe[ProtocolT: asyncio.BaseProtocol](
+    async def _connect_pipe(
         self, protocol_factory: Callable[[], ProtocolT], pipe: _Pipe, kind: int
     ) -> tuple[_zuvloop.Transport, ProtocolT]:
         fd = pipe.fileno()
