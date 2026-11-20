@@ -112,12 +112,13 @@ class SocketOperations(LoopBase):
                 future.set_result(None)
 
         token = self._watch(fd, True, check)
+        assert future is not None
         try:
-            await future  # type: ignore[misc]  # `create_future()` returns `Future[Any]`, so mypy keeps the `None`
+            await future
         finally:
-            self._unwatch(fd, True, token)
             # An error's traceback keeps this frame and `check`'s, which would keep the future that holds the error.
             future = None
+            self._unwatch(fd, True, token)
 
 
 def _attempt[T](future: asyncio.Future[T], op: Callable[[], T]) -> bool:
