@@ -127,6 +127,19 @@ class Popen:
             or pass_fds
             or any(value is not None for value in (user, group, extra_groups, preexec_fn))
             or (posix_only and sys.platform != "win32")
+            # `uv_spawn` starts the child with every signal at its default and
+            # none blocked. A child is meant to keep what its parent ignores or
+            # blocks, bar the three signals `restore_signals` resets.
+            or (
+                sys.platform != "win32"
+                and (
+                    bool(signal.pthread_sigmask(signal.SIG_BLOCK, ()))
+                    or any(
+                        signal.getsignal(number) is signal.SIG_IGN
+                        for number in signal.valid_signals() - {signal.SIGPIPE, signal.SIGXFSZ}
+                    )
+                )
+            )
             or startupinfo is not None
             or creationflags
             or not close_fds
@@ -202,7 +215,9 @@ class Popen:
                     # is what closes it from here.
                     setattr(self, _NAMES[index], open(mine, "wb" if index == 0 else "rb", 0))
 
-            flags = (_zuvloop.PROCESS_DETACHED if start_new_session else 0) | (
+            # A session is POSIX's; stdlib ignores the argument on Windows, where
+            # libuv would detach the child from its console instead.
+            flags = (_zuvloop.PROCESS_DETACHED if start_new_session and sys.platform != "win32" else 0) | (
                 _zuvloop.PROCESS_WINDOWS_VERBATIM if windows_verbatim else 0
             )
             self._handle = loop._spawn_process(file, args, env_items, cwd, child_fds, flags, 0, 0, self.exited)
@@ -236,6 +251,14 @@ class Popen:
             self._stdlib.kill() if signum == _SIGKILL else self._stdlib.send_signal(signum)
         else:  # pragma: no cover - platform path exercised by macOS CI
             assert self._handle is not None
+            if sys.platform == "win32":
+                # What `subprocess` can deliver there: an end to the process, or
+                # a console event. libuv would end it for any signal at all.
+                if signum in (signal.CTRL_C_EVENT, signal.CTRL_BREAK_EVENT):
+                    os.kill(self.pid, signum)
+                    return
+                if signum not in (signal.SIGTERM, _SIGKILL):
+                    raise ValueError(f"Unsupported signal: {signum}")
             self._handle.send_signal(signum)
 
     def kill(self) -> None:
