@@ -27,7 +27,9 @@ pub const Process = extern struct {
     state: ?*loopmod.State,
     on_exit: ?*py.Object,
     context: ?*py.Object,
-    returncode: c_int,
+    /// Wide enough for a Windows exit code, an unsigned 32-bit value: a crash
+    /// reports one above `maxInt(c_int)`.
+    returncode: i64,
     flags: Flags,
 
     inline fn handle(self: *Process) *uv.Process {
@@ -136,13 +138,15 @@ fn onExit(handle: ?*uv.Process, status: i64, signal: c_int) callconv(.c) void {
     defer st.pythonExit();
 
     // asyncio reports a signalled child as a negative signal number, the same
-    // convention `subprocess` uses.
-    self.returncode = if (signal != 0) -signal else @intCast(status);
+    // convention `subprocess` uses. Windows has no signals: libuv names the one
+    // it was asked to send, but the child ended by `TerminateProcess`, and its
+    // exit code is what `subprocess` reports there.
+    self.returncode = if (signal != 0 and !uv.is_windows) -@as(i64, signal) else status;
     self.flags.exited = true;
 
     if (self.on_exit) |callback| {
         const loop = loopmod.asLoop(self.loop.?);
-        const code = py.int(@as(c.Py_ssize_t, self.returncode)) orelse {
+        const code = py.int(self.returncode) orelse {
             loopmod.captureFatal(loop);
             closeHandle(self);
             return;
@@ -203,7 +207,7 @@ fn getPid(self_obj: *py.Object) py.Error!*py.Object {
 fn getReturncode(self_obj: *py.Object) py.Error!*py.Object {
     const self = asProcess(self_obj);
     if (!self.flags.exited) return py.noneRef();
-    return py.int(@as(c.Py_ssize_t, self.returncode)) orelse py.Error.Python;
+    return py.int(self.returncode) orelse py.Error.Python;
 }
 
 fn sendSignal(self_obj: *py.Object, signum: *py.Object) py.Error!*py.Object {

@@ -381,6 +381,17 @@ async def test_a_child_keeps_ignored_signals_when_asked_not_to_restore_them() ->
     assert stdout == b"survived\n"
 
 
+async def test_a_child_keeps_a_signal_its_parent_ignores() -> None:
+    """Only SIGPIPE and the file-size signals are restored by default."""
+    previous = signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+    try:
+        process = await asyncio.create_subprocess_exec("/bin/sh", "-c", "kill -USR1 $$; echo survived", stdout=PIPE)
+        stdout, _stderr = await process.communicate()
+    finally:
+        signal.signal(signal.SIGUSR1, previous)
+    assert stdout == b"survived\n"
+
+
 async def test_a_pipe_size_is_accepted() -> None:
     process = await asyncio.create_subprocess_exec("/bin/cat", stdin=PIPE, stdout=PIPE, pipesize=4096)
     stdout, _stderr = await process.communicate(b"sized")
