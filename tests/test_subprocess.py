@@ -312,9 +312,46 @@ async def test_stderr_can_be_merged_into_stdout() -> None:
     assert stdout == b"outerr"
 
 
-async def test_an_unsupported_popen_argument_is_rejected() -> None:
-    with pytest.raises(ValueError, match="preexec_fn is not supported"):
-        await asyncio.create_subprocess_exec("/bin/echo", stdout=PIPE, preexec_fn=lambda: None)
+async def test_an_unknown_popen_argument_is_rejected() -> None:
+    with pytest.raises(TypeError, match="unexpected keyword argument 'no_such_argument'"):
+        await asyncio.create_subprocess_exec("/bin/echo", stdout=PIPE, no_such_argument=1)  # type: ignore[call-arg]
+
+
+async def test_a_hook_runs_in_the_child_before_the_program() -> None:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import os; print(os.getcwd())", stdout=PIPE, preexec_fn=lambda: os.chdir("/")
+    )
+    stdout, _stderr = await process.communicate()
+    assert stdout == b"/\n"
+
+
+async def test_a_child_inherits_descriptors_when_asked_not_to_close_them() -> None:
+    read_fd, write_fd = os.pipe()
+    os.set_inheritable(write_fd, True)
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", WRITE_TO_FD, str(write_fd), close_fds=False
+        )
+        assert await process.wait() == 0
+        assert os.read(read_fd, 64) == b"through-the-pipe"
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+async def test_a_child_keeps_ignored_signals_when_asked_not_to_restore_them() -> None:
+    """Python ignores SIGPIPE, so a child that keeps the disposition survives one."""
+    process = await asyncio.create_subprocess_exec(
+        "/bin/sh", "-c", "kill -PIPE $$; echo survived", stdout=PIPE, restore_signals=False
+    )
+    stdout, _stderr = await process.communicate()
+    assert stdout == b"survived\n"
+
+
+async def test_a_pipe_size_is_accepted() -> None:
+    process = await asyncio.create_subprocess_exec("/bin/cat", stdin=PIPE, stdout=PIPE, pipesize=4096)
+    stdout, _stderr = await process.communicate(b"sized")
+    assert stdout == b"sized"
 
 
 async def test_default_popen_arguments_are_accepted() -> None:
