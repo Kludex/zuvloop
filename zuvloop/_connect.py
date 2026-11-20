@@ -32,15 +32,8 @@ if sys.platform == "win32":
     # No `AF_UNIX` in the socket module there; a value no family equals keeps
     # the comparisons meaningful.
     _AF_UNIX = -1
-    # CPython's fallback: `CreateProcess` does not search for a program it is
-    # given by name, so a bare `cmd.exe` would not be found.
-    _SHELL = (
-        os.environ.get("ComSpec") or os.path.join(os.environ.get("SystemRoot", ""), "System32", "cmd.exe"),
-        "/c",
-    )
 else:
     _AF_UNIX = socket.AF_UNIX
-    _SHELL = ("/bin/sh", "-c")
 
 
 class _BufferedStreamReader(Protocol):
@@ -1048,16 +1041,22 @@ class _SubprocessTransport(base_subprocess.BaseSubprocessTransport):
         **kwargs: Any,
     ) -> None:
         windows_verbatim = False
-        argv = [*_SHELL, args] if shell else [os.fsdecode(arg) for arg in args]
+        argv = ["/bin/sh", "-c", args] if shell else [os.fsdecode(arg) for arg in args]
         if sys.platform == "win32":
             if shell:
-                # A relative fallback would resolve against the working directory.
-                if not os.environ.get("ComSpec") and not os.path.isabs(_SHELL[0]):
-                    raise FileNotFoundError("shell not found: neither %ComSpec% nor %SystemRoot% is set.")
+                # CPython's choice of shell, made per spawn as it makes it.
+                # `CreateProcess` does not search for a program it is given by
+                # name, and a relative fallback would resolve against the working
+                # directory.
+                comspec = os.environ.get("ComSpec")
+                if not comspec:
+                    comspec = os.path.join(os.environ.get("SystemRoot", ""), "System32", "cmd.exe")
+                    if not os.path.isabs(comspec):
+                        raise FileNotFoundError("shell not found: neither %ComSpec% nor %SystemRoot% is set.")
                 # cmd.exe has quoting rules of its own: hand it the command
                 # exactly as CPython's subprocess would have written it, with
                 # libuv's MSVCRT-style argv escaping switched off.
-                argv = [*_SHELL, f'"{os.fsdecode(args)}"']
+                argv = [comspec, "/c", f'"{os.fsdecode(args)}"']
                 windows_verbatim = True
         if not isinstance(self._loop, ConnectionOperations):  # pragma: no cover - constructed by this loop only
             raise RuntimeError("subprocess transport requires a zuvloop event loop")
