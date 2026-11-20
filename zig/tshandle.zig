@@ -334,20 +334,25 @@ var slots = [_]c.PyType_Slot{
 // a mutable Python class, and CPython refuses an immutable subtype of one.
 const flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | c.Py_TPFLAGS_DISALLOW_INSTANTIATION;
 
+// TODO: drop when 3.13 support ends. `_ThreadSafeHandle` arrived in 3.14, and
+// `Handle` is one slot short of the payload, so the subtype grows itself.
+const handle_base = c.PY_VERSION_HEX < 0x030E0000;
+
 var spec = c.PyType_Spec{
     .name = "zuvloop._zuvloop.ThreadSafeHandle",
-    .basicsize = 0,
+    .basicsize = if (handle_base) payload_offset + @sizeOf(Payload) else 0,
     .itemsize = 0,
     .flags = flags,
     .slots = &slots,
 };
 
 pub fn register(module: *py.Object) py.Error!void {
-    const base = py.importFrom("asyncio.events", "_ThreadSafeHandle") orelse return py.Error.Python;
+    const base = py.importFrom("asyncio.events", if (handle_base) "Handle" else "_ThreadSafeHandle") orelse
+        return py.Error.Python;
     defer py.decref(base);
     const base_tp: *c.PyTypeObject = @ptrCast(base);
-    if (base_tp.tp_basicsize < payload_offset + @sizeOf(Payload)) {
-        return py.errRuntime("asyncio.events._ThreadSafeHandle has an incompatible layout");
+    if (base_tp.tp_basicsize < payload_offset + @sizeOf(Payload) and !handle_base) {
+        return py.errRuntime("the asyncio handle base class has an incompatible layout");
     }
     ts_type = @ptrCast(c.PyType_FromModuleAndSpec(module, &spec, base) orelse return py.Error.Python);
     if (c.PyModule_AddObjectRef(module, "ThreadSafeHandle", @ptrCast(ts_type)) < 0) return py.Error.Python;

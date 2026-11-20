@@ -79,7 +79,7 @@ class Server(asyncio.AbstractServer):
         for _ in range(self._backlog):
             try:
                 conn, _addr = sock.accept()
-            except BlockingIOError, InterruptedError:
+            except (BlockingIOError, InterruptedError):
                 return
             except OSError as exc:
                 if exc.errno in (errno.EMFILE, errno.ENFILE, errno.ENOBUFS, errno.ENOMEM):

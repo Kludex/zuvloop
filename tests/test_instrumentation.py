@@ -58,6 +58,8 @@ async def test_slow_callbacks_are_reported_without_debug_mode(telemetry: Telemet
     assert telemetry.counted("zuvloop.slow_callbacks") >= 1
 
 
+# TODO: drop when 3.13 support ends.
+@pytest.mark.skipif(sys.version_info < (3, 14), reason="asyncio call graphs arrived in 3.14")
 async def test_slow_callback_attributes_are_bounded(telemetry: Telemetry) -> None:
     loop = running_loop()
     loop.slow_callback_duration = 0.01
@@ -119,6 +121,8 @@ async def test_a_slow_callback_span_covers_the_time_it_took(telemetry: Telemetry
     assert measured >= 0.05
 
 
+# TODO: drop when 3.13 support ends.
+@pytest.mark.skipif(sys.version_info < (3, 14), reason="asyncio call graphs arrived in 3.14")
 async def test_slow_callbacks_inside_a_task_carry_the_call_graph(telemetry: Telemetry) -> None:
     loop = running_loop()
     loop.set_debug(True)
@@ -693,6 +697,8 @@ async def test_completed_task_call_graph_does_not_render_its_exception() -> None
     assert "secret exception" not in graph
 
 
+# TODO: drop when 3.13 support ends.
+@pytest.mark.skipif(sys.version_info < (3, 14), reason="asyncio call graphs arrived in 3.14")
 async def test_the_stdlib_call_graph_apis_work_on_this_loop() -> None:
     """3.14's introspection reads real asyncio.Task objects, which is what zuvloop schedules."""
     import io

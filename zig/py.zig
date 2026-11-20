@@ -73,8 +73,11 @@ pub fn initConstants() Error!void {
     }
 }
 
+// TODO: drop when 3.13 support ends. Zig cannot translate its inline refcount helpers.
+const shim_refcount = @hasDecl(c, "Py_GIL_DISABLED") or c.PY_VERSION_HEX < 0x030E0000;
+
 pub inline fn incref(o: anytype) void {
-    if (@hasDecl(c, "Py_GIL_DISABLED")) c.zuvloop_Py_INCREF(@ptrCast(o)) else c.Py_INCREF(@ptrCast(o));
+    if (shim_refcount) c.zuvloop_Py_INCREF(@ptrCast(o)) else c.Py_INCREF(@ptrCast(o));
 }
 
 pub inline fn decref(o: anytype) void {

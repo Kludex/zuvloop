@@ -12,8 +12,8 @@ Compatibility is checked at four levels:
   inspect CPython's private server attributes.
 - Every pull request builds with native safety checks and the C sanitizer, then
   repeats the loop lifecycle and resource-ownership scenario 500 times.
-- The compatibility job builds and tests the declared floor (CPython 3.14.0),
-  the newest CPython 3.14 patch, and standard and free-threaded CPython 3.15.
+- The compatibility job builds and tests CPython 3.13, CPython 3.14.0, the
+  newest CPython 3.14 patch, and standard and free-threaded CPython 3.15.
   It also adds service-backed smoke tests for gRPC AsyncIO, asyncpg, Psycopg
   and redis-py.
 
@@ -84,9 +84,15 @@ string as an unspecified host; zuvloop raises `OSError`. This is the whole of it
 
 ## Interpreter and platform policy
 
-Standard and free-threaded CPython 3.14 and 3.15 are supported on Linux, macOS
-and Windows. The minimum 3.14.0 release and both variants of 3.15 are
-continuously exercised rather than inferred from the newest local interpreter.
+CPython 3.13, and standard and free-threaded CPython 3.14 and 3.15, are
+supported on Linux, macOS and Windows. CPython 3.13, the 3.14.0 release and both
+variants of 3.15 are continuously exercised rather than inferred from the
+newest local interpreter.
+
+!!! note "Python 3.13 has no call graphs or `_ThreadSafeHandle`"
+    Both arrived in 3.14. On 3.13, slow-callback spans carry no
+    `asyncio.call_graph` attribute, and `call_soon_threadsafe` returns a
+    subtype of `asyncio.Handle`. Free-threaded 3.13 is not supported.
 
 Linux glibc, Linux musl and macOS execute the full in-repository suite. Windows
 builds run the portable suite natively; tests that require
