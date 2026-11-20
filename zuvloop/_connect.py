@@ -19,7 +19,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Protocol
 
 from . import _zuvloop
-from ._process import _SIGKILL, Popen, Stdio
+from ._process import _SIGKILL, Popen, Stdio, descriptor
 from ._sendfile import SendfileOperations
 from ._server import Server
 
@@ -40,7 +40,7 @@ class _Pipe(Protocol):
     """What a pipe transport needs of the object it is given."""
 
     def fileno(self) -> int: ...
-    def close(self) -> None: ...
+    def close(self) -> object: ...
 
 
 class _BufferedStreamReader(Protocol):
@@ -771,8 +771,8 @@ class ConnectionOperations(SendfileOperations):
     async def subprocess_exec[ProtocolT: asyncio.BaseProtocol](
         self,
         protocol_factory: Callable[[], ProtocolT],
-        program: Any,
-        *args: Any,
+        program: str | bytes,
+        *args: str | bytes,
         stdin: Stdio = subprocess.PIPE,
         stdout: Stdio = subprocess.PIPE,
         stderr: Stdio = subprocess.PIPE,
@@ -818,9 +818,9 @@ class ConnectionOperations(SendfileOperations):
             protocol,
             args,
             shell,
-            stdin,
-            stdout,
-            stderr,
+            descriptor(stdin),
+            descriptor(stdout),
+            descriptor(stderr),
             bufsize,
             waiter=waiter,
             **kwargs,
@@ -1071,9 +1071,10 @@ class _SubprocessTransport(base_subprocess.BaseSubprocessTransport):
         self._proc = Popen(  # type: ignore[assignment]  # a Popen-shaped object, not a Popen
             self._loop,
             argv,
-            stdin=stdin,
-            stdout=stdout,
-            stderr=stderr,
+            # Descriptors already; the base class's signature is what says otherwise.
+            stdin=descriptor(stdin),
+            stdout=descriptor(stdout),
+            stderr=descriptor(stderr),
             windows_verbatim=windows_verbatim,
             on_exit=self._process_exited,
             **kwargs,

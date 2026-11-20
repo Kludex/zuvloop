@@ -287,8 +287,36 @@ async def test_an_argument_may_hold_bytes_that_are_not_text() -> None:
     assert int(stdout) == 1
 
 
-async def test_a_non_string_argument_is_rejected() -> None:
+async def test_a_stream_needs_only_a_descriptor() -> None:
+    class Descriptor:
+        def __init__(self, fd: int) -> None:
+            self.fd = fd
+
+        def fileno(self) -> int:
+            return self.fd
+
     loop = running_loop()
+    exited = loop.create_future()
+
+    class Witness(asyncio.SubprocessProtocol):
+        def process_exited(self) -> None:
+            exited.set_result(None)
+
+    read_fd, write_fd = os.pipe()
+    try:
+        transport, _protocol = await loop.subprocess_exec(
+            Witness, "/bin/echo", "through", stdin=None, stdout=Descriptor(write_fd), stderr=None
+        )
+        await exited
+        transport.close()
+        assert os.read(read_fd, 64) == b"through\n"
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+async def test_a_non_string_argument_is_rejected() -> None:
+    loop: asyncio.AbstractEventLoop = running_loop()
     with pytest.raises(TypeError, match="bytes or text string"):
         await loop.subprocess_exec(asyncio.SubprocessProtocol, "/bin/echo", 42)
     with pytest.raises(ValueError, match="cmd must be a string"):
