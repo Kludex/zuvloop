@@ -4,15 +4,15 @@ import asyncio
 import socket
 from collections.abc import Callable, Coroutine, Iterable, Sequence
 from contextvars import Context
-from typing import IO, TYPE_CHECKING, Any, Literal, Protocol, final
+from typing import Any, Literal, Protocol, final
 
 from typing_extensions import disjoint_base
 
-if TYPE_CHECKING:
-    from ._connect import _HangupWatch
-
 class _FileDescriptorLike(Protocol):
     def fileno(self) -> int: ...
+
+class _Closable(Protocol):
+    def close(self) -> None: ...
 
 KIND_TCP: Literal[0]
 KIND_PIPE: Literal[1]
@@ -93,7 +93,7 @@ class Process:
 class Transport(asyncio.Transport):
     @property
     def _protocol_paused(self) -> bool: ...
-    def _adopt_pipe(self, pipe: IO[bytes] | _HangupWatch, /) -> None: ...
+    def _adopt_pipe(self, pipe: _Closable, /) -> None: ...
     def get_extra_info(self, name: str, default: Any = None) -> Any: ...
     def is_closing(self) -> bool: ...
     def close(self) -> None: ...

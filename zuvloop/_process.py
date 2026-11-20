@@ -6,8 +6,8 @@ import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Iterable, Sequence
-from typing import IO, TYPE_CHECKING, Any, Protocol
+from collections.abc import Callable, Iterable, Mapping
+from typing import IO, TYPE_CHECKING, Protocol
 
 from . import _zuvloop
 
@@ -43,6 +43,11 @@ class _StartupInfo(Protocol):
     dwFlags: int
 
 
+# What a stdio argument may be: a descriptor, one of `subprocess`'s markers, an
+# open file, or nothing.
+type Stdio = int | IO[bytes] | IO[str] | None
+
+
 class Popen:
     """The surface `asyncio.BaseSubprocessTransport` expects, over `uv_spawn`.
 
@@ -58,16 +63,16 @@ class Popen:
         args: list[str],
         *,
         executable: str | None = None,
-        env: dict[str, str] | None = None,
-        cwd: str | os.PathLike[str] | None = None,
-        stdin: Any = None,
-        stdout: Any = None,
-        stderr: Any = None,
+        env: Mapping[str, str] | None = None,
+        cwd: str | bytes | os.PathLike[str] | os.PathLike[bytes] | None = None,
+        stdin: Stdio = None,
+        stdout: Stdio = None,
+        stderr: Stdio = None,
         start_new_session: bool = False,
         windows_verbatim: bool = False,
         startupinfo: _StartupInfo | None = None,
         creationflags: int = 0,
-        pass_fds: Sequence[int] = (),
+        pass_fds: Iterable[int] = (),
         user: str | int | None = None,
         group: str | int | None = None,
         extra_groups: Iterable[str | int] | None = None,
@@ -194,9 +199,9 @@ class Popen:
         file: str,
         env_items: list[str] | None,
         cwd: str | None,
-        stdin: Any,
-        stdout: Any,
-        stderr: Any,
+        stdin: Stdio,
+        stdout: Stdio,
+        stderr: Stdio,
         start_new_session: bool,
         windows_verbatim: bool,
     ) -> None:
@@ -316,7 +321,7 @@ process_reaper = ProcessReaper()
 
 
 def open_stream(  # pragma: no cover - platform helper exercised by macOS CI
-    index: int, request: Any, child_fds: list[int]
+    index: int, request: Stdio, child_fds: list[int]
 ) -> tuple[int, int | None]:
     """Returns the descriptor the child inherits, and ours if there is one.
 

@@ -233,6 +233,12 @@ async def test_text_mode_arguments_are_rejected() -> None:
         await loop.subprocess_shell(asyncio.SubprocessProtocol, "echo hi", shell=False)
 
 
+async def test_a_shell_command_may_be_bytes() -> None:
+    process = await asyncio.create_subprocess_shell(b"printf hello", stdout=PIPE)
+    stdout, _stderr = await process.communicate()
+    assert stdout == b"hello"
+
+
 async def test_the_exit_is_reported_in_the_context_of_the_spawn() -> None:
     spawner: contextvars.ContextVar[str] = contextvars.ContextVar("spawner", default="nobody")
     loop = running_loop()
