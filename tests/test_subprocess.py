@@ -368,9 +368,9 @@ async def test_default_popen_arguments_are_accepted() -> None:
 
 
 async def test_non_default_popen_arguments_are_rejected() -> None:
-    with pytest.raises(ValueError, match="startupinfo is not supported"):
+    with pytest.raises(ValueError, match="startupinfo is only supported on Windows"):
         await asyncio.create_subprocess_exec("/bin/echo", stdout=PIPE, startupinfo=object())
-    with pytest.raises(ValueError, match="creationflags is not supported"):
+    with pytest.raises(ValueError, match="creationflags is only supported on Windows"):
         await asyncio.create_subprocess_exec("/bin/echo", stdout=PIPE, creationflags=1)
 
 

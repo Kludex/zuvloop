@@ -36,6 +36,12 @@ class _ExitReceiver(Protocol):
     def exited(self, returncode: int) -> None: ...
 
 
+class _StartupInfo(Protocol):
+    """`subprocess.STARTUPINFO`, which only exists on Windows."""
+
+    dwFlags: int
+
+
 class Popen:
     """The surface `asyncio.BaseSubprocessTransport` expects, over `uv_spawn`.
 
@@ -58,7 +64,7 @@ class Popen:
         stderr: Any = None,
         start_new_session: bool = False,
         windows_verbatim: bool = False,
-        startupinfo: None = None,
+        startupinfo: _StartupInfo | None = None,
         creationflags: int = 0,
         pass_fds: Sequence[int] = (),
         user: str | int | None = None,
@@ -72,10 +78,6 @@ class Popen:
         pipesize: int = -1,
         on_exit: Callable[[int], object],
     ) -> None:
-        if startupinfo is not None:
-            raise ValueError("startupinfo is not supported by zuvloop's subprocess transport")
-        if creationflags:
-            raise ValueError("creationflags is not supported by zuvloop's subprocess transport")
 
         file = executable or args[0]
         cwd_text = None if cwd is None else os.fsdecode(cwd)
@@ -108,17 +110,24 @@ class Popen:
         # libuv cannot change the child's groups, umask or process group either,
         # nor run a hook in it, keep its signal dispositions or size its pipes.
         # Windows has none of those: stdlib rejects the credentials and the hook,
-        # and ignores the rest.
+        # and ignores the rest. `uv_spawn` takes no startup info or creation
+        # flags, which are Windows' own and rejected by stdlib elsewhere.
         posix_only = umask != -1 or process_group is not None or not close_fds or not restore_signals or pipesize != -1
         if (
             sys.platform == "linux"
             or pass_fds
             or any(value is not None for value in (user, group, extra_groups, preexec_fn))
             or (posix_only and sys.platform != "win32")
+            or startupinfo is not None
+            or creationflags
         ):
             process = subprocess.Popen(
-                args,
-                executable=executable,
+                # A string reaches `CreateProcess` as written, which is what the
+                # shell's own quoting needs; a list would be escaped again.
+                " ".join(args) if windows_verbatim else args,
+                # As CPython's own shell spawn does: the unquoted shell path in
+                # that string is not parsed when the program is named here.
+                executable=file if windows_verbatim else executable,
                 env=env,
                 cwd=cwd,
                 stdin=stdin,
@@ -136,6 +145,8 @@ class Popen:
                 restore_signals=restore_signals,
                 preexec_fn=preexec_fn,
                 pipesize=pipesize,
+                startupinfo=startupinfo,
+                creationflags=creationflags,
             )
             self._stdlib = process
             self.stdin = process.stdin
@@ -210,7 +221,9 @@ class Popen:
 
     def send_signal(self, signum: int) -> None:
         if self._stdlib is not None:
-            self._stdlib.send_signal(signum)
+            # Windows' `Popen.send_signal` knows no signal 9; `kill` is the same
+            # signal on POSIX.
+            self._stdlib.kill() if signum == _SIGKILL else self._stdlib.send_signal(signum)
         else:  # pragma: no cover - platform path exercised by macOS CI
             assert self._handle is not None
             self._handle.send_signal(signum)
