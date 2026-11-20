@@ -228,10 +228,16 @@ async def test_text_mode_arguments_are_rejected() -> None:
         await loop.subprocess_shell(asyncio.SubprocessProtocol, "echo hi", shell=False)
 
 
+async def test_a_shell_command_may_be_bytes() -> None:
+    process = await asyncio.create_subprocess_shell(b"printf hello", stdout=PIPE)
+    stdout, _stderr = await process.communicate()
+    assert stdout == b"hello"
+
+
 async def test_a_non_string_argument_is_rejected() -> None:
     loop = running_loop()
     with pytest.raises(TypeError, match="bytes or text string"):
-        await loop.subprocess_exec(asyncio.SubprocessProtocol, "/bin/echo", 42)
+        await loop.subprocess_exec(asyncio.SubprocessProtocol, "/bin/echo", 42)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="cmd must be a string"):
         await loop.subprocess_shell(asyncio.SubprocessProtocol, 42)  # type: ignore[arg-type]
 

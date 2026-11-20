@@ -3,4 +3,5 @@
 zuvloop\._connect\._AddrInfo
 zuvloop\._connect\._DatagramAddress
 zuvloop\._instrumentation\._(counter|gauge|histogram|meter|tracer)
+zuvloop\._process\.Stdio
 zuvloop\._sockets\._SocketAddress
