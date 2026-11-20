@@ -82,10 +82,11 @@ def test_closing_after_the_queue_has_wrapped() -> None:
 
     loop = zuvloop.new_event_loop()
     ran: list[int] = []
+    dropped: list[Sentinel] = []
 
     def queue_the_second_batch() -> None:
         for _ in range(80):
-            loop.call_soon(len, sentinel)
+            loop.call_soon(dropped.append, sentinel)
         loop.stop()
 
     for index in range(100):
@@ -96,10 +97,11 @@ def test_closing_after_the_queue_has_wrapped() -> None:
     # 101 callbacks ran, so `head` is 101 into a 128-entry buffer and the 80 that follow
     # begin at 101 and wrap at 128. Both assertions matter: the first says the second
     # batch did not run, the second that the queue is still holding its arguments.
-    assert ran == list(range(100)), "the first batch should have run, and only it"
+    assert ran == list(range(100)), "the first batch should have run"
+    assert dropped == [], "the second batch ran before the loop stopped"
     assert sys.getrefcount(sentinel) > baseline, "the queue did not keep the arguments"
 
     loop.close()
     gc.collect()
     assert sys.getrefcount(sentinel) == baseline
-    assert ran == list(range(100)), "closing ran callbacks that should have been dropped"
+    assert dropped == [], "closing ran callbacks that should have been dropped"
