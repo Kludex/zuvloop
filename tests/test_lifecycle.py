@@ -796,3 +796,16 @@ def test_an_async_generator_outliving_its_loop_is_not_rescheduled() -> None:
     loop.close()
     kept.clear()
     gc.collect()
+
+
+async def test_a_child_reads_what_is_written_to_its_stdin() -> None:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "import sys; sys.stdout.write(sys.stdin.read())",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+    )
+    output, _ = await process.communicate(b"hello")
+    assert output == b"hello"
+    assert process.returncode == 0
