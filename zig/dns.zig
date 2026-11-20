@@ -256,7 +256,7 @@ fn cachedEnum(cache: []?*py.Object, ctor: ?*py.Object, value: c_int) ?*py.Object
 /// Windows reports socket type 0 when the caller asked for none.
 fn enumOrInt(ctor: ?*py.Object, value: c_int) ?*py.Object {
     if (c.PyObject_CallFunction(ctor, "i", value)) |member| return member;
-    if (c.PyErr_ExceptionMatches(c.PyExc_ValueError) == 0) return null;
+    if (c.PyErr_ExceptionMatches(py.exc_value_error) == 0) return null;
     c.PyErr_Clear();
     return c.PyLong_FromLong(value);
 }

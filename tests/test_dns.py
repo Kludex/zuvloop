@@ -144,6 +144,9 @@ async def test_getaddrinfo_without_a_type_answers_as_the_stdlib_does() -> None:
     theirs = sorted(socket.getaddrinfo("127.0.0.1", 80))
     mine = sorted(await loop.getaddrinfo("127.0.0.1", 80))
     assert mine == theirs
+    assert [(type(family), type(kind)) for family, kind, *_ in mine] == [
+        (type(family), type(kind)) for family, kind, *_ in theirs
+    ]
 
 
 async def test_getaddrinfo_without_a_host_or_a_port_reports_no_name() -> None:
