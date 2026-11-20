@@ -14,14 +14,20 @@ const contextmod = @import("context.zig");
 const handlemod = @import("handle.zig");
 const loopmod = @import("loop.zig");
 
-const inline_args = 1;
-const arg_alloc = std.heap.c_allocator;
+/// The word `run` and a foreign `cancel` race for.
+const RunState = enum(u32) {
+    pending,
+    running,
+    /// Ran, or cancelled before it could run; either way it never will again.
+    done,
+};
 
-const PENDING: u32 = 0;
-const RUNNING: u32 = 1;
-/// Ran, or cancelled before it could run; either way it never will again.
-const DONE: u32 = 2;
-const cancelled_flag: u32 = 1 << 0;
+const Flags = packed struct(u32) {
+    cancelled: bool = false,
+    /// The context was captured implicitly rather than supplied by the caller.
+    captured: bool = false,
+    _: u30 = 0,
+};
 
 /// One blocked `cancel` or `cancelled` call, parked on a lock it acquired
 /// twice; the loop thread releases it when the callback finishes. Lives on the
@@ -43,9 +49,9 @@ const Payload = extern struct {
     heap_args: ?[*]?*py.Object,
     waiters: ?*Waiter,
     nargs: c.Py_ssize_t,
-    run_state: u32,
-    flags: u32,
-    args: [inline_args]?*py.Object,
+    run_state: RunState,
+    flags: Flags,
+    args: [1]?*py.Object,
 
     pub inline fn argv(self: *Payload) [*]?*py.Object {
         return self.heap_args orelse @ptrCast(&self.args);
@@ -80,32 +86,19 @@ pub fn create(
     context: ?*py.Object,
 ) py.Error!*py.Object {
     const obj = c._PyObject_GC_New(ts_type.?) orelse return py.Error.Python;
+    errdefer py.decref(obj);
     const self = payload(obj);
     self.* = std.mem.zeroes(Payload);
 
-    if (args.len > inline_args) {
-        const buf = arg_alloc.alloc(?*py.Object, args.len) catch {
-            py.decref(obj);
-            return py.errNoMemory();
-        };
-        self.heap_args = buf.ptr;
-    }
-    const dst = self.argv();
-    for (args, 0..) |a, i| {
-        py.incref(a.?);
-        dst[i] = a;
-    }
-    self.nargs = @intCast(args.len);
+    try handlemod.storeArgs(self, args);
 
     py.incref(loop);
     self.loop = loop;
     py.incref(callback);
     self.callback = callback;
 
-    self.context = contextmod.capture(context, &self.flags) catch {
-        py.decref(obj);
-        return py.Error.Python;
-    };
+    if (context == null) self.flags.captured = true;
+    self.context = try contextmod.capture(context);
 
     c.PyObject_GC_Track(obj);
     return obj;
@@ -119,12 +112,12 @@ pub fn run(obj: *py.Object) void {
     py.beginCriticalSection(&critical_section, obj);
     defer py.endCriticalSection(&critical_section);
     const self = payload(obj);
-    if (@cmpxchgStrong(u32, &self.run_state, PENDING, RUNNING, .acq_rel, .acquire) != null) return;
+    if (@cmpxchgStrong(RunState, &self.run_state, .pending, .running, .acq_rel, .acquire) != null) return;
     const previous_running = running_payload;
     running_payload = self;
     defer {
         // Finalizers can wait for foreign cancellers, so publish completion before releasing references.
-        @atomicStore(u32, &self.run_state, DONE, .release);
+        @atomicStore(RunState, &self.run_state, .done, .release);
         var node = self.waiters;
         self.waiters = null;
         running_payload = previous_running;
@@ -132,9 +125,9 @@ pub fn run(obj: *py.Object) void {
             node = w.next;
             c.PyThread_release_lock(w.lock);
         }
-        if (self.flags & cancelled_flag != 0) {
+        if (self.flags.cancelled) {
             py.clear(&self.callback);
-            clearArgs(self);
+            handlemod.clearStoredArgs(self);
         }
     }
     const callback = self.callback.?;
@@ -154,7 +147,7 @@ pub fn run(obj: *py.Object) void {
 fn awaitCompletion(self: *Payload) void {
     const lock = c.PyThread_allocate_lock() orelse {
         const tstate = c.PyEval_SaveThread();
-        while (@atomicLoad(u32, &self.run_state, .acquire) != DONE) std.Thread.yield() catch {};
+        while (@atomicLoad(RunState, &self.run_state, .acquire) != .done) std.Thread.yield() catch {};
         c.PyEval_RestoreThread(tstate);
         return;
     };
@@ -172,38 +165,26 @@ fn awaitCompletion(self: *Payload) void {
 /// From the running thread itself there is nothing to wait for: that is the
 /// reentrant `cancel` a callback may issue on its own handle.
 fn mustWait(self: *Payload) bool {
-    if (@atomicLoad(u32, &self.run_state, .acquire) != RUNNING) return false;
+    if (@atomicLoad(RunState, &self.run_state, .acquire) != .running) return false;
     return running_payload != self;
-}
-
-fn clearArgs(self: *Payload) void {
-    const n: usize = @intCast(self.nargs);
-    const dst = self.argv();
-    var i: usize = 0;
-    while (i < n) : (i += 1) py.clear(&dst[i]);
-    self.nargs = 0;
-    if (self.heap_args) |buf| {
-        arg_alloc.free(buf[0..n]);
-        self.heap_args = null;
-    }
 }
 
 fn cancel(self_obj: *py.Object) py.Error!*py.Object {
     const self = payload(self_obj);
     while (true) {
-        const s = @atomicLoad(u32, &self.run_state, .acquire);
-        if (s == PENDING) {
-            if (@cmpxchgStrong(u32, &self.run_state, PENDING, DONE, .acq_rel, .acquire) == null) break;
+        const s = @atomicLoad(RunState, &self.run_state, .acquire);
+        if (s == .pending) {
+            if (@cmpxchgStrong(RunState, &self.run_state, .pending, .done, .acq_rel, .acquire) == null) break;
             continue;
         }
-        if (s != DONE and running_payload != self) awaitCompletion(self);
+        if (s != .done and running_payload != self) awaitCompletion(self);
         break;
     }
-    if (self.flags & cancelled_flag == 0) {
-        self.flags |= cancelled_flag;
-        if (@atomicLoad(u32, &self.run_state, .acquire) != RUNNING) {
+    if (!self.flags.cancelled) {
+        self.flags.cancelled = true;
+        if (@atomicLoad(RunState, &self.run_state, .acquire) != .running) {
             py.clear(&self.callback);
-            clearArgs(self);
+            handlemod.clearStoredArgs(self);
         }
     }
     return py.noneRef();
@@ -212,7 +193,7 @@ fn cancel(self_obj: *py.Object) py.Error!*py.Object {
 fn cancelled(self_obj: *py.Object) py.Error!*py.Object {
     const self = payload(self_obj);
     if (mustWait(self)) awaitCompletion(self);
-    return py.boolRef(self.flags & cancelled_flag != 0);
+    return py.boolRef(self.flags.cancelled);
 }
 
 fn runMethod(self_obj: *py.Object) py.Error!*py.Object {
@@ -222,9 +203,7 @@ fn runMethod(self_obj: *py.Object) py.Error!*py.Object {
 
 fn repr(obj: ?*py.Object) callconv(.c) ?*py.Object {
     const self = payload(obj.?);
-    const name = py.typeOf(obj.?).tp_name;
-    if (self.flags & cancelled_flag != 0) return c.PyUnicode_FromFormat("<%s cancelled>", name);
-    return c.PyUnicode_FromFormat("<%s %R>", name, self.callback orelse py.none());
+    return handlemod.describe(obj.?, self.flags.cancelled, self.callback);
 }
 
 fn dealloc(obj: ?*py.Object) callconv(.c) void {
@@ -232,9 +211,9 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     const tp = py.typeOf(obj.?);
     c.PyObject_GC_UnTrack(obj);
     c.PyObject_ClearWeakRefs(obj);
-    clearArgs(self);
+    handlemod.clearStoredArgs(self);
     py.clear(&self.callback);
-    contextmod.release(self.loop, &self.context, self.flags);
+    contextmod.release(self.loop, &self.context, self.flags.captured);
     py.clear(&self.loop);
     tp.tp_free.?(obj);
     py.decref(tp);
@@ -242,28 +221,12 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
 
 fn visitReferences(obj: *py.Object, visitproc: c.visitproc, arg: ?*anyopaque) c_int {
     const self = payload(obj);
-    var r = py.visit(self.loop, visitproc, arg);
-    if (r != 0) return r;
-    r = py.visit(self.callback, visitproc, arg);
-    if (r != 0) return r;
-    r = py.visit(self.context, visitproc, arg);
-    if (r != 0) return r;
-    const n: usize = @intCast(self.nargs);
-    const items = self.argv();
-    var i: usize = 0;
-    while (i < n) : (i += 1) {
-        r = py.visit(items[i], visitproc, arg);
-        if (r != 0) return r;
-    }
-    return py.visit(@ptrCast(py.typeOf(obj)), visitproc, arg);
+    const refs = [_]?*py.Object{ self.loop, self.callback, self.context };
+    return handlemod.visitHandle(obj, &refs, self.argv()[0..@intCast(self.nargs)], visitproc, arg);
 }
 
 /// Visits queued references transparently when the handle is untracked.
 pub fn traverseQueued(obj: *py.Object, visitproc: c.visitproc, arg: ?*anyopaque) c_int {
-    // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
-    var critical_section: py.CriticalSection = undefined;
-    py.beginCriticalSection(&critical_section, obj);
-    defer py.endCriticalSection(&critical_section);
     if (c.PyObject_GC_IsTracked(obj) != 0) return py.visit(obj, visitproc, arg);
     return visitReferences(obj, visitproc, arg);
 }
@@ -274,9 +237,9 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
 
 fn clear_(obj: ?*py.Object) callconv(.c) c_int {
     const self = payload(obj.?);
-    clearArgs(self);
+    handlemod.clearStoredArgs(self);
     py.clear(&self.callback);
-    contextmod.release(self.loop, &self.context, self.flags);
+    contextmod.release(self.loop, &self.context, self.flags.captured);
     py.clear(&self.loop);
     return 0;
 }
@@ -287,18 +250,11 @@ fn getCallback(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
 
 fn getArgs(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
     const self = payload(self_obj.?);
-    const n: usize = @intCast(self.nargs);
-    const items = self.argv();
-    const tuple = c.PyTuple_New(self.nargs) orelse return null;
-    var i: usize = 0;
-    while (i < n) : (i += 1) {
-        _ = c.PyTuple_SetItem(tuple, @intCast(i), py.newref(items[i]));
-    }
-    return tuple;
+    return handlemod.argsTuple(self.flags.cancelled, self.argv()[0..@intCast(self.nargs)]);
 }
 
 fn getCancelledSlot(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
-    return py.boolRef(payload(self_obj.?).flags & cancelled_flag != 0);
+    return py.boolRef(payload(self_obj.?).flags.cancelled);
 }
 
 fn getLoop(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
@@ -309,10 +265,6 @@ fn getContext(self_obj: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
     const self = payload(self_obj.?);
     const context = contextmod.materialize(self.loop, &self.context) catch return null;
     return py.newref(context);
-}
-
-fn getNone(_: ?*py.Object, _: ?*anyopaque) callconv(.c) ?*py.Object {
-    return py.newref(py.none());
 }
 
 // Every base slot is shadowed read-only, so the payload is the single source of
@@ -353,9 +305,9 @@ var getsets = [_]c.PyGetSetDef{
         .doc = "The context the callback runs in.",
         .closure = null,
     },
-    .{ .name = "_source_traceback", .get = py.wrapGet(getNone), .set = null, .doc = null, .closure = null },
-    .{ .name = "_repr", .get = py.wrapGet(getNone), .set = null, .doc = null, .closure = null },
-    .{ .name = "_lock", .get = py.wrapGet(getNone), .set = null, .doc = null, .closure = null },
+    .{ .name = "_source_traceback", .get = py.wrapGet(handlemod.getNone), .set = null, .doc = null, .closure = null },
+    .{ .name = "_repr", .get = py.wrapGet(handlemod.getNone), .set = null, .doc = null, .closure = null },
+    .{ .name = "_lock", .get = py.wrapGet(handlemod.getNone), .set = null, .doc = null, .closure = null },
     .{ .name = null, .get = null, .set = null, .doc = null, .closure = null },
 };
 
@@ -367,8 +319,8 @@ var methods = [_]c.PyMethodDef{
 };
 
 var slots = [_]c.PyType_Slot{
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&py.wrapDealloc(dealloc))) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&py.wrapTraverse(traverse))) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
     .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&py.wrapClear(clear_))) },
     .{ .slot = c.Py_tp_repr, .pfunc = @ptrCast(@constCast(&py.wrapRepr(repr))) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
@@ -382,20 +334,25 @@ var slots = [_]c.PyType_Slot{
 // a mutable Python class, and CPython refuses an immutable subtype of one.
 const flags = c.Py_TPFLAGS_DEFAULT | c.Py_TPFLAGS_HAVE_GC | c.Py_TPFLAGS_DISALLOW_INSTANTIATION;
 
+// TODO: drop when 3.13 support ends. `_ThreadSafeHandle` arrived in 3.14, and
+// `Handle` is one slot short of the payload, so the subtype grows itself.
+const handle_base = c.PY_VERSION_HEX < 0x030E0000;
+
 var spec = c.PyType_Spec{
     .name = "zuvloop._zuvloop.ThreadSafeHandle",
-    .basicsize = 0,
+    .basicsize = if (handle_base) payload_offset + @sizeOf(Payload) else 0,
     .itemsize = 0,
     .flags = flags,
     .slots = &slots,
 };
 
 pub fn register(module: *py.Object) py.Error!void {
-    const base = py.importFrom("asyncio.events", "_ThreadSafeHandle") orelse return py.Error.Python;
+    const base = py.importFrom("asyncio.events", if (handle_base) "Handle" else "_ThreadSafeHandle") orelse
+        return py.Error.Python;
     defer py.decref(base);
     const base_tp: *c.PyTypeObject = @ptrCast(base);
-    if (base_tp.tp_basicsize < payload_offset + @sizeOf(Payload)) {
-        return py.errRuntime("asyncio.events._ThreadSafeHandle has an incompatible layout");
+    if (base_tp.tp_basicsize < payload_offset + @sizeOf(Payload) and !handle_base) {
+        return py.errRuntime("the asyncio handle base class has an incompatible layout");
     }
     ts_type = @ptrCast(c.PyType_FromModuleAndSpec(module, &spec, base) orelse return py.Error.Python);
     if (c.PyModule_AddObjectRef(module, "ThreadSafeHandle", @ptrCast(ts_type)) < 0) return py.Error.Python;

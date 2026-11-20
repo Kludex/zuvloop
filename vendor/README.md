@@ -2,9 +2,9 @@
 
 ## libuv
 
-- Version: **1.52.1**
-- Source: <https://dist.libuv.org/dist/v1.52.1/libuv-v1.52.1.tar.gz>
-- SHA-256: `66d511b9e6e334c0e62279eb234fbfb2b3110b1479c09b95b44c7afca8cff9e7`
+- Version: **1.53.0**
+- Source: <https://dist.libuv.org/dist/v1.53.0/libuv-v1.53.0.tar.gz>
+- SHA-256: `cb0d6dd2128d5a95bd242c6cc982a24fe608fa93da57b6b4ec763b0018c53e64`
 
 The tree under `libuv/` is the upstream release with the patches under `patches/libuv/` applied.
 **Never edit it directly.** Update the corresponding patch instead. `build.zig` compiles the vendored
