@@ -931,7 +931,10 @@ async def test_a_refused_connection_leaves_no_reference_cycle(closed_port: int) 
 
 
 # TODO: drop when 3.13 support ends.
-@pytest.mark.skipif(sys.version_info < (3, 13, 1), reason="3.13.0's staggered_race keeps the exceptions in a cycle")
+@pytest.mark.skipif(
+    sys.version_info < (3, 12, 8) or sys.version_info[:3] == (3, 13, 0),
+    reason="staggered_race keeps the exceptions in a cycle before 3.12.8 and on 3.13.0",
+)
 async def test_a_refused_race_leaves_no_reference_cycle(closed_port: int) -> None:
     loop = running_loop()
     with pytest.raises(ConnectionRefusedError) as caught:
