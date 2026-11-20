@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import gc
+import os
 import socket
 import subprocess
 import sys
@@ -27,10 +28,23 @@ pytestmark = pytest.mark.anyio
 PAIR_KIND = 0 if sys.platform == "win32" else 1
 
 # Windows' own spawn arguments; elsewhere the defaults, which every platform takes.
+# A child there inherits handles rather than descriptor numbers.
 if sys.platform == "win32":
+    import msvcrt
+
+    WRITE_TO_INHERITED = "import msvcrt, os, sys; os.write(msvcrt.open_osfhandle(int(sys.argv[1]), 0), b'inherited')"
+
+    def inheritable(fd: int) -> int:
+        return msvcrt.get_osfhandle(fd)
+
     NEW_GROUP = subprocess.CREATE_NEW_PROCESS_GROUP
     HIDDEN = subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESHOWWINDOW, wShowWindow=subprocess.SW_HIDE)
 else:
+    WRITE_TO_INHERITED = "import os, sys; os.write(int(sys.argv[1]), b'inherited')"
+
+    def inheritable(fd: int) -> int:
+        return fd
+
     NEW_GROUP = 0
     HIDDEN = None
 
@@ -428,6 +442,20 @@ async def test_a_shell_spawned_with_windows_arguments_runs_the_command() -> None
     )
     output, _ = await process.communicate()
     assert output.split() == [b"hello", b"world"]
+
+
+async def test_a_child_inherits_what_it_is_asked_not_to_close() -> None:
+    read_fd, write_fd = os.pipe()
+    os.set_inheritable(write_fd, True)
+    try:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", WRITE_TO_INHERITED, str(inheritable(write_fd)), close_fds=False
+        )
+        assert await process.wait() == 0
+        assert os.read(read_fd, 64) == b"inherited"
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
 
 
 async def test_a_child_spawned_with_windows_arguments_can_be_killed() -> None:

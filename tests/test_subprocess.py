@@ -325,20 +325,6 @@ async def test_a_hook_runs_in_the_child_before_the_program() -> None:
     assert stdout == b"/\n"
 
 
-async def test_a_child_inherits_descriptors_when_asked_not_to_close_them() -> None:
-    read_fd, write_fd = os.pipe()
-    os.set_inheritable(write_fd, True)
-    try:
-        process = await asyncio.create_subprocess_exec(
-            sys.executable, "-c", WRITE_TO_FD, str(write_fd), close_fds=False
-        )
-        assert await process.wait() == 0
-        assert os.read(read_fd, 64) == b"through-the-pipe"
-    finally:
-        os.close(read_fd)
-        os.close(write_fd)
-
-
 async def test_a_child_keeps_ignored_signals_when_asked_not_to_restore_them() -> None:
     """Python ignores SIGPIPE, so a child that keeps the disposition survives one."""
     process = await asyncio.create_subprocess_exec(

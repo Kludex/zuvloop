@@ -112,7 +112,7 @@ class Popen:
         # Windows has none of those: stdlib rejects the credentials and the hook,
         # and ignores the rest. `uv_spawn` takes no startup info or creation
         # flags, which are Windows' own and rejected by stdlib elsewhere.
-        posix_only = umask != -1 or process_group is not None or not close_fds or not restore_signals or pipesize != -1
+        posix_only = umask != -1 or process_group is not None or not restore_signals or pipesize != -1
         if (
             sys.platform == "linux"
             or pass_fds
@@ -120,6 +120,7 @@ class Popen:
             or (posix_only and sys.platform != "win32")
             or startupinfo is not None
             or creationflags
+            or not close_fds
         ):
             process = subprocess.Popen(
                 # A string reaches `CreateProcess` as written, which is what the

@@ -24,15 +24,8 @@ contract; non-empty `pass_fds`, `user`, `group`, `extra_groups`, `umask`,
 most of them. asyncio's own subprocess transport drives both
 implementations, so protocol callbacks and exit bookkeeping stay identical.
 
-On Windows, `startupinfo` and non-zero `creationflags` select `subprocess.Popen`
-too, because `uv_spawn` takes neither.
-
-/// warning | `close_fds=False` has no effect on Windows
-
-On Windows the child is spawned with `uv_spawn` by default, which takes no
-`close_fds` option. The argument is accepted and ignored, so an inheritable
-handle you expect the child to receive may not reach it.
-///
+On Windows, `startupinfo`, non-zero `creationflags` and `close_fds=False` select
+`subprocess.Popen` too, because `uv_spawn` takes none of them.
 
 libuv reaps children it spawns and reports status through its exit callback.
 The Linux stdlib path uses one bounded, process-wide reaper thread for all
