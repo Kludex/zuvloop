@@ -58,6 +58,8 @@ jobs:
       - name: Install x86-64 Zig under emulation
         if: matrix.os == 'windows-11-arm'
         shell: pwsh
+        env:
+          ZIG_TOOLCHAIN_RESTORED: ${{ steps.zig-toolchain.outputs.cache-hit }}
         run: ./scripts/setup-zig-x86_64-windows.ps1
 
       # Saved before any build or test code runs, so nothing later in the job
@@ -216,6 +218,8 @@ jobs:
       - name: Install x86-64 Zig under emulation
         if: matrix.archs == 'ARM64'
         shell: pwsh
+        env:
+          ZIG_TOOLCHAIN_RESTORED: ${{ steps.zig-toolchain.outputs.cache-hit }}
         run: ./scripts/setup-zig-x86_64-windows.ps1
 
       # Saved before any build or test code runs, so nothing later in the job

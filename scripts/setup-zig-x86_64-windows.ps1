@@ -7,8 +7,11 @@ $expectedSha256 = "68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75
 $zigDirectory = Join-Path $destination "zig-x86_64-windows-$version"
 $zigExecutable = Join-Path $zigDirectory "zig.exe"
 
-# A CI cache may have restored the verified toolchain already.
-if (-not (Test-Path -LiteralPath $zigExecutable -PathType Leaf)) {
+# Only a complete cache restore is trusted; a failed one can leave zig.exe beside a partial lib/.
+if ($env:ZIG_TOOLCHAIN_RESTORED -ne "true") {
+    if (Test-Path -LiteralPath $destination) {
+        Remove-Item -LiteralPath $destination -Recurse -Force
+    }
     Invoke-WebRequest "https://ziglang.org/download/$version/zig-x86_64-windows-$version.zip" -OutFile $archive
     $actualSha256 = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actualSha256 -ne $expectedSha256) {
@@ -16,9 +19,9 @@ if (-not (Test-Path -LiteralPath $zigExecutable -PathType Leaf)) {
     }
 
     Expand-Archive -LiteralPath $archive -DestinationPath $destination -Force
-    if (-not (Test-Path -LiteralPath $zigExecutable -PathType Leaf)) {
-        throw "Zig archive did not contain the expected executable: $zigExecutable"
-    }
+}
+if (-not (Test-Path -LiteralPath $zigExecutable -PathType Leaf)) {
+    throw "Zig toolchain is missing its executable: $zigExecutable"
 }
 
 $zigDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
