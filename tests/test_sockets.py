@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import socket
 import sys
 from typing import Literal, Never
@@ -124,6 +125,20 @@ async def test_sock_connect_reports_refusal(closed_port: int) -> None:
             await loop.sock_connect(sock, ("127.0.0.1", closed_port))
     finally:
         sock.close()
+
+
+async def test_a_refused_sock_connect_leaves_no_reference_cycle(closed_port: int) -> None:
+    loop = running_loop()
+    sock = socket.socket()
+    sock.setblocking(False)
+    try:
+        with pytest.raises(ConnectionRefusedError) as caught:
+            await loop.sock_connect(sock, ("127.0.0.1", closed_port))
+    finally:
+        sock.close()
+    # The handle that resumed this task holds the future until the turn ends, as it does in the stdlib.
+    await asyncio.sleep(0)
+    assert not [ref for ref in gc.get_referrers(caught.value) if isinstance(ref, asyncio.Future)]
 
 
 @pytest.mark.parametrize("operation", ["connect", "fileno", "getsockopt"])

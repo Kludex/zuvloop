@@ -92,11 +92,11 @@ class SocketOperations(LoopBase):
         except (BlockingIOError, InterruptedError):
             pass
 
-        future: asyncio.Future[None] = self.create_future()
+        future: asyncio.Future[None] | None = self.create_future()
         fd = sock.fileno()
 
         def check() -> None:
-            if future.done():  # pragma: no cover - guards a wakeup the tests cannot force
+            if future is None or future.done():  # pragma: no cover - guards a wakeup the tests cannot force
                 return
             try:
                 err = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
@@ -113,9 +113,11 @@ class SocketOperations(LoopBase):
 
         token = self._watch(fd, True, check)
         try:
-            await future
+            await future  # type: ignore[misc]  # `create_future()` returns `Future[Any]`, so mypy keeps the `None`
         finally:
             self._unwatch(fd, True, token)
+            # An error's traceback keeps this frame and `check`'s, which would keep the future that holds the error.
+            future = None
 
 
 def _attempt[T](future: asyncio.Future[T], op: Callable[[], T]) -> bool:
