@@ -90,7 +90,7 @@ pub fn run(self: *Handle) void {
             py.clear(&self.callback);
         }
     }
-    const context = contextmod.materialize(self.loop, &self.context) catch {
+    const context = contextmod.materializeToRun(@ptrCast(self), self.loop, &self.context) catch {
         loopmod.callbackFailed(self.loop, @ptrCast(self));
         return;
     };
