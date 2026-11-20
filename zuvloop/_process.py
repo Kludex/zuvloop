@@ -106,14 +106,13 @@ class Popen:
         # another thread is opening or renumbering inheritable descriptors. On
         # macOS libuv uses POSIX_SPAWN_CLOEXEC_DEFAULT and is already safe.
         # libuv cannot change the child's groups, umask or process group either.
-        # Windows has none of those: stdlib rejects all but the umask, which it
-        # ignores.
-        credentials = (user, group, extra_groups, process_group)
+        # Windows has none of those: stdlib rejects the credentials and ignores
+        # the umask and the process group.
         if (
             sys.platform == "linux"
             or pass_fds
-            or any(value is not None for value in credentials)
-            or (umask != -1 and sys.platform != "win32")
+            or any(value is not None for value in (user, group, extra_groups))
+            or ((umask != -1 or process_group is not None) and sys.platform != "win32")
         ):
             process = subprocess.Popen(
                 args,
