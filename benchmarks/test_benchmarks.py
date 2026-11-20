@@ -503,6 +503,37 @@ def test_echo_roundtrips(benchmark: BenchmarkFixture, loop: asyncio.AbstractEven
 
 
 @pytest.mark.benchmark
+def test_stream_echo_roundtrips(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
+    """`test_echo_roundtrips` through `asyncio.streams`: a reader, a writer and a task on each side."""
+    payload = os.urandom(1024)
+    roundtrips = 2_000
+
+    async def echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        while data := await reader.read(64 * 1024):
+            writer.write(data)
+            await writer.drain()
+        writer.close()
+
+    server = loop.run_until_complete(asyncio.start_server(echo, "127.0.0.1", 0))
+    port = server.sockets[0].getsockname()[1]
+
+    async def work() -> None:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        for _ in range(roundtrips):
+            writer.write(payload)
+            await writer.drain()
+            await reader.readexactly(len(payload))
+        writer.close()
+        await writer.wait_closed()
+
+    try:
+        benchmark(drive(loop, work))
+    finally:
+        server.close()
+        loop.run_until_complete(server.wait_closed())
+
+
+@pytest.mark.benchmark
 def test_split_response_write(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
     """A response sent as a header write plus a body write, as ASGI does it.
 
