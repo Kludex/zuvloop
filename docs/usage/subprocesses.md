@@ -8,17 +8,19 @@ stdout, _ = await process.communicate(b"round trip")
 ```
 
 `create_subprocess_exec` and `create_subprocess_shell` follow asyncio's public
-contract, including `env`, `cwd`, `pass_fds` and `start_new_session` where the
-host platform supports them.
+contract, including `env`, `cwd`, `pass_fds`, `start_new_session`, `user`,
+`group`, `extra_groups`, `umask` and `process_group` where the host platform
+supports them.
 
 ## How it is put together
 
-On macOS and Windows, the child is spawned with `uv_spawn` and its stdio runs
-over native pipe transports. Linux uses `subprocess.Popen` so its race-free
-`close_fds` implementation preserves Python's descriptor-inheritance contract;
-non-empty `pass_fds` also selects that path on Unix. asyncio's own subprocess
-transport drives both implementations, so protocol callbacks and exit
-bookkeeping stay identical.
+On macOS and Windows, the child is spawned with `uv_spawn` by default and its
+stdio runs over native pipe transports. Linux uses `subprocess.Popen` so its
+race-free `close_fds` implementation preserves Python's descriptor-inheritance
+contract; non-empty `pass_fds`, `user`, `group`, `extra_groups`, `umask` and
+`process_group` also select that path on Unix, because libuv has no equivalent
+for most of them. asyncio's own subprocess transport drives both
+implementations, so protocol callbacks and exit bookkeeping stay identical.
 
 libuv reaps children it spawns and reports status through its exit callback.
 The Linux stdlib path uses one bounded, process-wide reaper thread for all

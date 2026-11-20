@@ -5,7 +5,7 @@ import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import IO, TYPE_CHECKING, Any, Protocol
 
 from . import _zuvloop
@@ -61,6 +61,11 @@ class Popen:
         startupinfo: None = None,
         creationflags: int = 0,
         pass_fds: Sequence[int] = (),
+        user: str | int | None = None,
+        group: str | int | None = None,
+        extra_groups: Iterable[str | int] | None = None,
+        umask: int = -1,
+        process_group: int | None = None,
         on_exit: Callable[[int], object],
         **unsupported: Any,
     ) -> None:
@@ -100,7 +105,15 @@ class Popen:
         # Linux spawns: its child-side close preserves Popen's default even when
         # another thread is opening or renumbering inheritable descriptors. On
         # macOS libuv uses POSIX_SPAWN_CLOEXEC_DEFAULT and is already safe.
-        if sys.platform == "linux" or pass_fds:
+        # libuv cannot change the child's groups, umask or process group either.
+        # Windows has none of those: stdlib rejects the credentials and ignores
+        # the umask and the process group.
+        if (
+            sys.platform == "linux"
+            or pass_fds
+            or any(value is not None for value in (user, group, extra_groups))
+            or ((umask != -1 or process_group is not None) and sys.platform != "win32")
+        ):
             process = subprocess.Popen(
                 args,
                 executable=executable,
@@ -112,6 +125,11 @@ class Popen:
                 bufsize=0,
                 start_new_session=start_new_session,
                 pass_fds=pass_fds,
+                user=user,
+                group=group,
+                extra_groups=extra_groups,
+                umask=umask,
+                process_group=process_group,
             )
             self._stdlib = process
             self.stdin = process.stdin

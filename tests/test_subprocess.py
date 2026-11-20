@@ -337,6 +337,38 @@ async def test_non_default_popen_arguments_are_rejected() -> None:
         await asyncio.create_subprocess_exec("/bin/echo", stdout=PIPE, creationflags=1)
 
 
+async def test_a_child_runs_as_the_requested_user_and_group() -> None:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "import os; print(os.getuid(), os.getgid())",
+        stdout=PIPE,
+        user=os.getuid(),
+        group=os.getgid(),
+    )
+    stdout, _stderr = await process.communicate()
+    assert stdout.split() == [str(os.getuid()).encode(), str(os.getgid()).encode()]
+
+
+async def test_a_child_starts_with_the_requested_umask() -> None:
+    inherited = os.umask(0)
+    os.umask(inherited)
+    requested = 0o077 if inherited == 0o027 else 0o027
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import os; print(os.umask(0))", stdout=PIPE, umask=requested
+    )
+    stdout, _stderr = await process.communicate()
+    assert int(stdout) == requested
+
+
+async def test_a_child_leads_the_requested_process_group() -> None:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import os; print(os.getpgid(0))", stdout=PIPE, process_group=0
+    )
+    stdout, _stderr = await process.communicate()
+    assert int(stdout) == process.pid
+
+
 WRITE_TO_FD = "import os, sys; os.write(int(sys.argv[1]), b'through-the-pipe')"
 
 
