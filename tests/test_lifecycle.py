@@ -387,6 +387,17 @@ def test_retained_threadsafe_handle_keeps_its_loop_reachable() -> None:
     gc.collect()
 
 
+async def test_subprocess_credentials_are_validated_as_the_stdlib_validates_them() -> None:
+    """POSIX refuses a negative ID; Windows refuses the arguments outright."""
+    stdlib_refusal = "cannot be negative|not supported on the current platform"
+    with pytest.raises(ValueError, match=stdlib_refusal):
+        await asyncio.create_subprocess_exec(sys.executable, "-c", "pass", user=-1)
+    with pytest.raises(ValueError, match=stdlib_refusal):
+        await asyncio.create_subprocess_exec(sys.executable, "-c", "pass", group=-1)
+    with pytest.raises(ValueError, match=stdlib_refusal):
+        await asyncio.create_subprocess_exec(sys.executable, "-c", "pass", extra_groups=[-1])
+
+
 def test_asyncio_run_accepts_the_loop_factory() -> None:
     async def main() -> str:
         return type(running_loop()).__name__

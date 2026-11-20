@@ -350,15 +350,6 @@ async def test_a_child_runs_as_the_requested_user_and_group() -> None:
     assert stdout.split() == [str(os.getuid()).encode(), str(os.getgid()).encode()]
 
 
-async def test_credentials_are_validated_as_the_stdlib_validates_them() -> None:
-    with pytest.raises(ValueError, match="User ID cannot be negative"):
-        await asyncio.create_subprocess_exec("/bin/echo", stdout=PIPE, user=-1)
-    with pytest.raises(ValueError, match="Group ID cannot be negative"):
-        await asyncio.create_subprocess_exec("/bin/echo", stdout=PIPE, group=-1)
-    with pytest.raises(ValueError, match="Group ID cannot be negative"):
-        await asyncio.create_subprocess_exec("/bin/echo", stdout=PIPE, extra_groups=[-1])
-
-
 async def test_a_child_starts_with_the_requested_umask() -> None:
     inherited = os.umask(0)
     os.umask(inherited)
