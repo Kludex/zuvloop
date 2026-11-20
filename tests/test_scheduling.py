@@ -314,8 +314,11 @@ async def test_oversized_timer_delays_are_effectively_infinite(delay: float) -> 
 
 async def test_loop_time_is_time_monotonic() -> None:
     # Not merely monotonic: callers mix the two clocks, so they have to be one.
-    loop = running_loop()
-    assert loop.time() == pytest.approx(time.monotonic(), abs=0.01)
+    # Bracketed, not compared within a tolerance: the Windows clock before 3.13 ticks every 15.6 ms.
+    before = time.monotonic()
+    now = running_loop().time()
+    after = time.monotonic()
+    assert before - 1e-6 <= now <= after + 1e-6
 
 
 async def test_call_at_accepts_a_time_monotonic_deadline() -> None:
