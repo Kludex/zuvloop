@@ -2,9 +2,11 @@ const std = @import("std");
 const py = @import("py.zig");
 const c = py.c;
 const uv = @import("uv.zig");
+const context = @import("context.zig");
 const loop = @import("loop.zig");
 const datagram = @import("datagram.zig");
 const process = @import("process.zig");
+const protocol = @import("protocol.zig");
 const handle = @import("handle.zig");
 const tshandle = @import("tshandle.zig");
 const timer = @import("timer.zig");
@@ -21,21 +23,27 @@ var methods = [_]c.PyMethodDef{
 fn exec(module: ?*py.Object) callconv(.c) c_int {
     const m = module orelse return -1;
     py.initConstants() catch return -1;
+    context.register() catch return -1;
     handle.register(m) catch return -1;
     tshandle.register(m) catch return -1;
     timer.register(m) catch return -1;
+    protocol.register() catch return -1;
     loop.register(m) catch return -1;
     datagram.register(m) catch return -1;
     process.register(m) catch return -1;
     return 0;
 }
 
+// TODO: drop when 3.12 support ends. `Py_mod_gil` arrived in 3.13.
+const gil_slot = if (@hasDecl(c, "Py_mod_gil"))
+    [_]c.PyModuleDef_Slot{.{ .slot = c.Py_mod_gil, .value = c.Py_MOD_GIL_NOT_USED }}
+else
+    [_]c.PyModuleDef_Slot{};
+
 var slots = [_]c.PyModuleDef_Slot{
     .{ .slot = c.Py_mod_exec, .value = @ptrCast(@constCast(&exec)) },
     .{ .slot = c.Py_mod_multiple_interpreters, .value = c.Py_MOD_MULTIPLE_INTERPRETERS_NOT_SUPPORTED },
-    .{ .slot = c.Py_mod_gil, .value = c.Py_MOD_GIL_NOT_USED },
-    .{ .slot = 0, .value = null },
-};
+} ++ gil_slot ++ [_]c.PyModuleDef_Slot{.{ .slot = 0, .value = null }};
 
 var moddef = c.PyModuleDef{
     .m_base = std.mem.zeroes(c.PyModuleDef_Base),

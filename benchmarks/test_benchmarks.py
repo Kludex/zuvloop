@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
+import gc
 import math
 import os
 import socket
@@ -85,6 +87,20 @@ def test_call_soon(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop)
 
 
 @pytest.mark.benchmark
+def test_call_soon_small_bursts(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
+    """A hundred callbacks a turn, so every handle is freed before the garbage collector runs."""
+    turns = 100
+
+    async def work() -> None:
+        for _ in range(turns):
+            for _ in range(100):
+                loop.call_soon(_noop)
+            await asyncio.sleep(0)
+
+    benchmark(drive(loop, work))
+
+
+@pytest.mark.benchmark
 @pytest.mark.parametrize("iterations", [100_000, 1_000_000], ids=["100k", "1m"])
 def test_call_soon_large_queue(
     benchmark: BenchmarkFixture,
@@ -108,6 +124,50 @@ def test_call_soon_large_queue(
         await done
 
     benchmark(drive(loop, work))
+
+
+@pytest.mark.benchmark
+@pytest.mark.parametrize("empty_context", [True, False], ids=["empty-context", "context-with-a-variable"])
+def test_call_soon_large_queue_with_gc(
+    benchmark: BenchmarkFixture,
+    loop: asyncio.AbstractEventLoop,
+    empty_context: bool,
+) -> None:
+    """The large queue with the garbage collector running, which `pytest-codspeed` turns off while it measures.
+
+    The collector walks every tracked object a pending callback leaves behind, so this is the only
+    benchmark here that sees that cost. A callback scheduled from a context that holds a variable
+    copies it, which leaves the collector one more object to walk than an empty context does.
+    """
+    iterations = 100_000
+    context = contextvars.Context()
+    if not empty_context:
+        context.run(contextvars.ContextVar[int]("held").set, 1)
+
+    async def work() -> None:
+        done = loop.create_future()
+        seen = 0
+
+        def step() -> None:
+            nonlocal seen
+            seen += 1
+            if seen == iterations:
+                done.set_result(None)
+
+        for _ in range(iterations):
+            loop.call_soon(step)
+        await done
+
+    def run() -> None:
+        was_enabled = gc.isenabled()
+        gc.enable()
+        try:
+            context.run(loop.run_until_complete, work())
+        finally:
+            if not was_enabled:
+                gc.disable()
+
+    benchmark(run)
 
 
 @pytest.mark.benchmark
@@ -434,6 +494,37 @@ def test_echo_roundtrips(benchmark: BenchmarkFixture, loop: asyncio.AbstractEven
         transport, client = await loop.create_connection(EchoClient, "127.0.0.1", port)
         await client.done
         transport.close()
+
+    try:
+        benchmark(drive(loop, work))
+    finally:
+        server.close()
+        loop.run_until_complete(server.wait_closed())
+
+
+@pytest.mark.benchmark
+def test_stream_echo_roundtrips(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
+    """`test_echo_roundtrips` through `asyncio.streams`: a reader, a writer and a task on each side."""
+    payload = os.urandom(1024)
+    roundtrips = 2_000
+
+    async def echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        while data := await reader.read(64 * 1024):
+            writer.write(data)
+            await writer.drain()
+        writer.close()
+
+    server = loop.run_until_complete(asyncio.start_server(echo, "127.0.0.1", 0))
+    port = server.sockets[0].getsockname()[1]
+
+    async def work() -> None:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        for _ in range(roundtrips):
+            writer.write(payload)
+            await writer.drain()
+            await reader.readexactly(len(payload))
+        writer.close()
+        await writer.wait_closed()
 
     try:
         benchmark(drive(loop, work))

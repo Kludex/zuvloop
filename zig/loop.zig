@@ -47,7 +47,7 @@ pub const State = struct {
     empty_contexts: [context_pool_capacity]?*py.Object = .{null} ** context_pool_capacity,
     empty_contexts_len: usize = 0,
     threadsafe_candidate: ?*py.Object = null,
-    dns_requests: ?*anyopaque = null,
+    dns_requests: ?*dns.Request = null,
     transport_head: ?*transportmod.Transport = null,
     flush_head: ?*transportmod.Transport = null,
     /// Initialized external handles, including those awaiting a close callback.
@@ -72,9 +72,7 @@ pub const State = struct {
     sampler_active: bool = false,
     flusher_active: bool = false,
 
-    /// 0 = synchronous ownership, 1 = reaper running with a live LoopObject,
-    /// 2 = reaper running after LoopObject deallocation, 3 = reaper finished.
-    reap_state: u8 = 0,
+    reap_state: ReapState = .synchronous,
 
     thread_id: c_ulong = 0,
     slow_callback_duration: f64 = 0.1,
@@ -117,6 +115,18 @@ pub const State = struct {
     }
 };
 
+/// Who frees `State` once resolver requests outlive `close()`.
+const ReapState = enum(u8) {
+    /// No reaper thread: the loop object owns the state.
+    synchronous,
+    /// The reaper is running and the loop object is still alive.
+    reaping,
+    /// The reaper is running and the loop object is gone, so the reaper frees.
+    orphaned,
+    /// The reaper finished, so the loop object frees.
+    finished,
+};
+
 pub const LoopObject = extern struct {
     ob_base: c.PyObject,
     st: ?*State,
@@ -144,7 +154,7 @@ pub inline fn asLoop(obj: *py.Object) *LoopObject {
 }
 
 pub inline fn isReaping(st: *State) bool {
-    return @atomicLoad(u8, &st.reap_state, .acquire) != 0;
+    return @atomicLoad(ReapState, &st.reap_state, .acquire) != .synchronous;
 }
 
 /// True while the current thread owns and runs `loop_obj`.
@@ -281,7 +291,7 @@ fn dropFlushList(st: *State) void {
     while (node) |transport| {
         node = transport.flush_next;
         transport.flush_next = null;
-        transport.flags &= ~transportmod.FLUSH_QUEUED;
+        transport.flags.flush_queued = false;
         transportmod.discardPending(transport);
         py.decref(transport);
     }
@@ -293,7 +303,7 @@ fn drainFlushList(st: *State) void {
     while (node) |transport| {
         node = transport.flush_next;
         transport.flush_next = null;
-        transport.flags &= ~transportmod.FLUSH_QUEUED;
+        transport.flags.flush_queued = false;
         transportmod.flushPending(transport);
         py.decref(transport);
     }
@@ -310,8 +320,8 @@ pub fn scheduleFlush(st: *State, transport: *transportmod.Transport) void {
         transportmod.discardPending(transport);
         return;
     }
-    if (transport.flags & transportmod.FLUSH_QUEUED != 0) return;
-    transport.flags |= transportmod.FLUSH_QUEUED;
+    if (transport.flags.flush_queued) return;
+    transport.flags.flush_queued = true;
     py.incref(transport);
     transport.flush_next = st.flush_head;
     st.flush_head = transport;
@@ -351,12 +361,15 @@ pub fn takeEmptyContext(loop_obj: *py.Object) ?*py.Object {
     st.empty_contexts_len -= 1;
     const context = st.empty_contexts[st.empty_contexts_len];
     st.empty_contexts[st.empty_contexts_len] = null;
+    c.PyObject_GC_Track(context);
     return context;
 }
 
 pub fn recycleEmptyContext(loop_obj: *py.Object, context: *py.Object) bool {
     const st = asLoop(loop_obj).state();
     if (st.closed or st.empty_contexts_len == context_pool_capacity) return false;
+    // Untracked, so a collection already under way cannot clear it while it waits here.
+    c.PyObject_GC_UnTrack(context);
     st.empty_contexts[st.empty_contexts_len] = context;
     st.empty_contexts_len += 1;
     return true;
@@ -365,6 +378,8 @@ pub fn recycleEmptyContext(loop_obj: *py.Object, context: *py.Object) bool {
 fn clearEmptyContexts(st: *State) void {
     while (st.empty_contexts_len > 0) {
         st.empty_contexts_len -= 1;
+        // context_tp_dealloc untracks without checking, so it must be tracked to be freed.
+        c.PyObject_GC_Track(st.empty_contexts[st.empty_contexts_len]);
         py.clear(&st.empty_contexts[st.empty_contexts_len]);
     }
 }
@@ -377,8 +392,9 @@ fn clearThreadsafeCandidate(st: *State, untrack_queue_only: bool) void {
 }
 
 fn drainThreadsafe(st: *State) error{OutOfMemory}!void {
-    try st.ready.ensureUnusedCapacity(st.threadsafe_ready.len);
+    // Clearing the candidate can suspend the critical section and let producers grow the inbox.
     clearThreadsafeCandidate(st, true);
+    try st.ready.ensureUnusedCapacity(st.threadsafe_ready.len);
     while (st.threadsafe_ready.pop()) |handle| st.ready.pushAssumeCapacity(handle);
 }
 
@@ -503,34 +519,53 @@ pub fn noteTimerCancelled(self: *LoopObject) void {
     }
 }
 
+/// Holds the raised exception for `_run` to re-raise, and ends the run in
+/// progress. With no run in progress there is no caller to unwind to, so the
+/// exception waits for the next `_run`, which raises it before doing any work.
 pub fn captureFatal(self: *LoopObject) void {
     const st = self.state();
     const exc = c.PyErr_GetRaisedException();
     if (st.fatal == null) st.fatal = exc else py.xdecref(exc);
     st.stopping = true;
-    uv.uv_stop(st.uvloop);
+    // Only a `uv_run` in progress consumes the stop. Left set, it would make
+    // the next one - a later run, or the drain in `close` - return at once.
+    if (st.running) uv.uv_stop(st.uvloop);
 }
 
-/// Routes a failed callback to `call_exception_handler`, except for the two
-/// exceptions asyncio propagates out of `run_forever`.
+fn raiseFatal(st: *State) py.Error!void {
+    const exc = st.fatal orelse return;
+    st.fatal = null;
+    c.PyErr_SetRaisedException(exc);
+    return py.Error.Python;
+}
+
+/// Routes the raised exception of a failed callback to `callExceptionHandler`.
 pub fn callbackFailed(loop_obj_opt: ?*py.Object, h: *py.Object) void {
     const loop_obj = loop_obj_opt orelse {
         c.PyErr_Clear();
         return;
     };
-    const self = asLoop(loop_obj);
-    if (c.PyErr_ExceptionMatches(py.exc_system_exit) != 0 or
-        c.PyErr_ExceptionMatches(py.exc_keyboard_interrupt) != 0)
-    {
+    const exc = c.PyErr_GetRaisedException() orelse return;
+    defer py.decref(exc);
+    callExceptionHandler(asLoop(loop_obj), "Exception in callback", exc, h);
+}
+
+/// True for the two exceptions asyncio propagates out of `run_forever`.
+pub fn isExit(exc: *py.Object) bool {
+    const kind = py.typeOf(exc);
+    return c.PyType_IsSubtype(kind, @ptrCast(py.exc_system_exit)) != 0 or
+        c.PyType_IsSubtype(kind, @ptrCast(py.exc_keyboard_interrupt)) != 0;
+}
+
+/// Reports `exc` through `call_exception_handler`, unless it asks the program
+/// to stop: that is the loop's caller's business, so it ends the run instead.
+pub fn callExceptionHandler(self: *LoopObject, comptime message: [:0]const u8, exc: *py.Object, h: ?*py.Object) void {
+    if (isExit(exc)) {
+        py.incref(exc);
+        c.PyErr_SetRaisedException(exc);
         captureFatal(self);
         return;
     }
-    const exc = c.PyErr_GetRaisedException() orelse return;
-    defer py.decref(exc);
-    callExceptionHandler(self, "Exception in callback", exc, h);
-}
-
-pub fn callExceptionHandler(self: *LoopObject, comptime message: [:0]const u8, exc: *py.Object, h: ?*py.Object) void {
     const ctx = c.PyDict_New() orelse {
         py.writeUnraisable(@ptrCast(self));
         return;
@@ -705,6 +740,7 @@ fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
     const st = self.state();
     try checkClosed(st);
     if (st.running) return py.errRuntime("This event loop is already running");
+    try raiseFatal(st);
 
     st.running = true;
     st.stopping = false;
@@ -724,11 +760,7 @@ fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
     // callbacks write in turn.
     drainFlushList(st);
 
-    if (st.fatal) |exc| {
-        st.fatal = null;
-        c.PyErr_SetRaisedException(exc);
-        return py.Error.Python;
-    }
+    try raiseFatal(st);
     return py.noneRef();
 }
 
@@ -950,7 +982,13 @@ fn closeLoop(self_obj: *py.Object) py.Error!*py.Object {
     const self = asLoop(self_obj);
     const st = self.state();
     if (st.running) return py.errRuntime("Cannot close a running event loop");
-    if (st.closed) return py.noneRef();
+    if (!st.closed) teardown(st);
+    return py.noneRef();
+}
+
+/// Releases everything the loop holds and closes its libuv handles. Runs once,
+/// from `_close` or from deallocation, whichever reaches the loop first.
+fn teardown(st: *State) void {
     st.closed = true;
 
     clearThreadsafeCandidate(st, false);
@@ -976,7 +1014,6 @@ fn closeLoop(self_obj: *py.Object) py.Error!*py.Object {
         st.flusher_active = false;
     }
     closeAllHandles(st);
-    return py.noneRef();
 }
 
 fn walkClose(handle: ?*uv.Handle, _: ?*anyopaque) callconv(.c) void {
@@ -1012,17 +1049,17 @@ fn freeStateStorage(st: *State) void {
 }
 
 fn releaseStateFromLoopObject(st: *State) void {
-    while (true) switch (@atomicLoad(u8, &st.reap_state, .acquire)) {
-        0, 3 => {
+    while (true) switch (@atomicLoad(ReapState, &st.reap_state, .acquire)) {
+        .synchronous, .finished => {
             freeStateStorage(st);
             return;
         },
-        1 => {
+        .reaping => {
             // Transfer final freeing to the reaper. If it just finished, retry
-            // and consume state 3 ourselves.
-            if (@cmpxchgStrong(u8, &st.reap_state, 1, 2, .acq_rel, .acquire) == null) return;
+            // and consume `finished` ourselves.
+            if (@cmpxchgStrong(ReapState, &st.reap_state, .reaping, .orphaned, .acq_rel, .acquire) == null) return;
         },
-        else => @panic("invalid DNS reaper ownership state"),
+        .orphaned => @panic("invalid DNS reaper ownership state"),
     };
 }
 
@@ -1031,18 +1068,18 @@ fn reapLoop(st: *State) void {
     if (uv.uv_loop_close(st.uvloop) != 0) @panic("libuv loop still owns requests after DNS reaping");
 
     // This must be the reaper's final access when the LoopObject still exists:
-    // deallocation may observe state 3 and immediately free the allocation.
-    if (@cmpxchgStrong(u8, &st.reap_state, 1, 3, .acq_rel, .acquire)) |current| {
-        if (current != 2) @panic("invalid DNS reaper ownership state");
+    // deallocation may observe `finished` and immediately free the allocation.
+    if (@cmpxchgStrong(ReapState, &st.reap_state, .reaping, .finished, .acq_rel, .acquire)) |current| {
+        if (current != .orphaned) @panic("invalid DNS reaper ownership state");
         freeStateStorage(st);
     }
 }
 
 fn startDnsReaper(st: *State) bool {
     dns.releaseFutures(st);
-    @atomicStore(u8, &st.reap_state, 1, .release);
+    @atomicStore(ReapState, &st.reap_state, .reaping, .release);
     const thread = std.Thread.spawn(.{}, reapLoop, .{st}) catch {
-        @atomicStore(u8, &st.reap_state, 0, .release);
+        @atomicStore(ReapState, &st.reap_state, .synchronous, .release);
         return false;
     };
     thread.detach();
@@ -1164,26 +1201,12 @@ fn dealloc(obj: ?*py.Object) callconv(.c) void {
     const tp = py.typeOf(obj.?);
     c.PyObject_GC_UnTrack(obj);
     if (self.st) |st| {
-        const needs_close = !st.closed;
-        st.closed = true;
-        if (needs_close) {
-            clearThreadsafeCandidate(st, false);
-            st.ready.deinit();
-            st.threadsafe_ready.deinit();
-            st.timers.deinit();
-            clearEmptyContexts(st);
-        }
+        if (!st.closed) teardown(st);
         // The flush list owns one Python reference per transport regardless of
         // how the loop reached deallocation, including partially completed
         // explicit close paths.
         dropFlushList(st);
         py.clear(&st.task_factory);
-        if (needs_close) {
-            py.clear(&st.fatal);
-            py.clear(&st.metrics_cb);
-            pollermod.closeAll(st);
-            closeAllHandles(st);
-        }
         self.st = null;
         releaseStateFromLoopObject(st);
     }
@@ -1202,26 +1225,20 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
         if (r != 0) return r;
         r = py.visit(st.threadsafe_candidate, visitproc, arg);
         if (r != 0) return r;
-        var i: usize = 0;
-        while (i < st.ready.len) : (i += 1) {
-            const handle = st.ready.items[(st.ready.head + i) & (st.ready.items.len - 1)].?;
+        for (0..st.ready.len) |i| {
+            const handle = st.ready.at(i).?;
             r = if (tshandle.owns(handle))
                 tshandle.traverseQueued(handle, visitproc, arg)
             else
                 py.visit(handle, visitproc, arg);
             if (r != 0) return r;
         }
-        i = 0;
-        while (i < st.threadsafe_ready.len) : (i += 1) {
-            const handle = st.threadsafe_ready.items[
-                (st.threadsafe_ready.head + i) & (st.threadsafe_ready.items.len - 1)
-            ].?;
-            r = tshandle.traverseQueued(handle, visitproc, arg);
+        for (0..st.threadsafe_ready.len) |i| {
+            r = tshandle.traverseQueued(st.threadsafe_ready.at(i).?, visitproc, arg);
             if (r != 0) return r;
         }
-        i = 0;
-        while (i < st.timers.len) : (i += 1) {
-            r = py.visit(st.timers.items[i].handle, visitproc, arg);
+        for (st.timers.items[0..st.timers.len]) |entry| {
+            r = py.visit(entry.handle, visitproc, arg);
             if (r != 0) return r;
         }
         var transport = st.flush_head;
@@ -1315,8 +1332,8 @@ var getsets = [_]c.PyGetSetDef{
 
 var slots = [_]c.PyType_Slot{
     .{ .slot = c.Py_tp_new, .pfunc = @ptrCast(@constCast(&newLoop)) },
-    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&py.wrapDealloc(dealloc))) },
-    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&py.wrapTraverse(traverse))) },
+    .{ .slot = c.Py_tp_dealloc, .pfunc = @ptrCast(@constCast(&dealloc)) },
+    .{ .slot = c.Py_tp_traverse, .pfunc = @ptrCast(@constCast(&traverse)) },
     .{ .slot = c.Py_tp_clear, .pfunc = @ptrCast(@constCast(&py.wrapClear(clear_))) },
     .{ .slot = c.Py_tp_methods, .pfunc = @ptrCast(&methods) },
     .{ .slot = c.Py_tp_getset, .pfunc = @ptrCast(&getsets) },

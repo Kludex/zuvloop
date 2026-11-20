@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import errno
+import gc
 import os
 import signal
 import socket
 import sys
+import time
+import weakref
 from asyncio.subprocess import Process
 from collections.abc import Callable
 from pathlib import Path
@@ -14,6 +18,7 @@ from typing import NoReturn
 
 import pytest
 
+import zuvloop
 from tests.conftest import running_loop
 from zuvloop._process import ProcessReaper
 
@@ -228,8 +233,90 @@ async def test_text_mode_arguments_are_rejected() -> None:
         await loop.subprocess_shell(asyncio.SubprocessProtocol, "echo hi", shell=False)
 
 
-async def test_a_non_string_argument_is_rejected() -> None:
+async def test_a_shell_command_may_be_bytes() -> None:
+    process = await asyncio.create_subprocess_shell(b"printf hello", stdout=PIPE)
+    stdout, _stderr = await process.communicate()
+    assert stdout == b"hello"
+
+
+async def test_the_exit_is_reported_in_the_context_of_the_spawn() -> None:
+    spawner: contextvars.ContextVar[str] = contextvars.ContextVar("spawner", default="nobody")
     loop = running_loop()
+    seen = loop.create_future()
+
+    class Witness(asyncio.SubprocessProtocol):
+        def process_exited(self) -> None:
+            seen.set_result(spawner.get())
+
+    spawner.set("this task")
+    transport, _protocol = await loop.subprocess_exec(
+        Witness, sys.executable, "-c", "pass", stdin=None, stdout=None, stderr=None
+    )
+    assert await seen == "this task"
+    transport.close()
+
+
+def test_a_closed_loop_is_released_once_its_children_are_reaped() -> None:
+    async def spawn() -> None:
+        process = await asyncio.create_subprocess_exec(sys.executable, "-c", "pass")
+        await process.wait()
+
+    loop = zuvloop.new_event_loop()
+    loop.run_until_complete(spawn())
+    released = weakref.ref(loop)
+    loop.close()
+    del loop
+    # The reaper thread drops its last pass a moment after reporting the exit.
+    for _ in range(500):  # pragma: no branch - exhaustion fails via the assertion below
+        gc.collect()
+        if released() is None:
+            break
+        time.sleep(0.01)  # pragma: no cover - only when the reaper thread is slow to return
+    assert released() is None
+
+
+async def test_a_shell_command_may_hold_bytes_that_are_not_text() -> None:
+    process = await asyncio.create_subprocess_shell(b"printf '%s' '\xff' | wc -c", stdout=PIPE)
+    stdout, _stderr = await process.communicate()
+    assert int(stdout) == 1
+
+
+async def test_an_argument_may_hold_bytes_that_are_not_text() -> None:
+    process = await asyncio.create_subprocess_exec("/bin/sh", "-c", b"printf '%s' '\xff' | wc -c", stdout=PIPE)
+    stdout, _stderr = await process.communicate()
+    assert int(stdout) == 1
+
+
+async def test_a_stream_needs_only_a_descriptor() -> None:
+    class Descriptor:
+        def __init__(self, fd: int) -> None:
+            self.fd = fd
+
+        def fileno(self) -> int:
+            return self.fd
+
+    loop = running_loop()
+    exited = loop.create_future()
+
+    class Witness(asyncio.SubprocessProtocol):
+        def process_exited(self) -> None:
+            exited.set_result(None)
+
+    read_fd, write_fd = os.pipe()
+    try:
+        transport, _protocol = await loop.subprocess_exec(
+            Witness, "/bin/echo", "through", stdin=None, stdout=Descriptor(write_fd), stderr=None
+        )
+        await exited
+        transport.close()
+        assert os.read(read_fd, 64) == b"through\n"
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+async def test_a_non_string_argument_is_rejected() -> None:
+    loop: asyncio.AbstractEventLoop = running_loop()
     with pytest.raises(TypeError, match="bytes or text string"):
         await loop.subprocess_exec(asyncio.SubprocessProtocol, "/bin/echo", 42)
     with pytest.raises(ValueError, match="cmd must be a string"):
@@ -312,9 +399,43 @@ async def test_stderr_can_be_merged_into_stdout() -> None:
     assert stdout == b"outerr"
 
 
-async def test_an_unsupported_popen_argument_is_rejected() -> None:
-    with pytest.raises(ValueError, match="preexec_fn is not supported"):
-        await asyncio.create_subprocess_exec("/bin/echo", stdout=PIPE, preexec_fn=lambda: None)
+async def test_an_unknown_popen_argument_is_rejected() -> None:
+    with pytest.raises(TypeError, match="unexpected keyword argument 'no_such_argument'"):
+        await asyncio.create_subprocess_exec("/bin/echo", stdout=PIPE, no_such_argument=1)  # type: ignore[call-arg]
+
+
+async def test_a_hook_runs_in_the_child_before_the_program() -> None:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import os; print(os.getcwd())", stdout=PIPE, preexec_fn=lambda: os.chdir("/")
+    )
+    stdout, _stderr = await process.communicate()
+    assert stdout == b"/\n"
+
+
+async def test_a_child_keeps_ignored_signals_when_asked_not_to_restore_them() -> None:
+    """Python ignores SIGPIPE, so a child that keeps the disposition survives one."""
+    process = await asyncio.create_subprocess_exec(
+        "/bin/sh", "-c", "kill -PIPE $$; echo survived", stdout=PIPE, restore_signals=False
+    )
+    stdout, _stderr = await process.communicate()
+    assert stdout == b"survived\n"
+
+
+async def test_a_child_keeps_a_signal_its_parent_ignores() -> None:
+    """Only SIGPIPE and the file-size signals are restored by default."""
+    previous = signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+    try:
+        process = await asyncio.create_subprocess_exec("/bin/sh", "-c", "kill -USR1 $$; echo survived", stdout=PIPE)
+        stdout, _stderr = await process.communicate()
+    finally:
+        signal.signal(signal.SIGUSR1, previous)
+    assert stdout == b"survived\n"
+
+
+async def test_a_pipe_size_is_accepted() -> None:
+    process = await asyncio.create_subprocess_exec("/bin/cat", stdin=PIPE, stdout=PIPE, pipesize=4096)
+    stdout, _stderr = await process.communicate(b"sized")
+    assert stdout == b"sized"
 
 
 async def test_default_popen_arguments_are_accepted() -> None:
@@ -331,10 +452,42 @@ async def test_default_popen_arguments_are_accepted() -> None:
 
 
 async def test_non_default_popen_arguments_are_rejected() -> None:
-    with pytest.raises(ValueError, match="startupinfo is not supported"):
+    with pytest.raises(ValueError, match="startupinfo is only supported on Windows"):
         await asyncio.create_subprocess_exec("/bin/echo", stdout=PIPE, startupinfo=object())
-    with pytest.raises(ValueError, match="creationflags is not supported"):
+    with pytest.raises(ValueError, match="creationflags is only supported on Windows"):
         await asyncio.create_subprocess_exec("/bin/echo", stdout=PIPE, creationflags=1)
+
+
+async def test_a_child_runs_as_the_requested_user_and_group() -> None:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "import os; print(os.getuid(), os.getgid())",
+        stdout=PIPE,
+        user=os.getuid(),
+        group=os.getgid(),
+    )
+    stdout, _stderr = await process.communicate()
+    assert stdout.split() == [str(os.getuid()).encode(), str(os.getgid()).encode()]
+
+
+async def test_a_child_starts_with_the_requested_umask() -> None:
+    inherited = os.umask(0)
+    os.umask(inherited)
+    requested = 0o077 if inherited == 0o027 else 0o027
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import os; print(os.umask(0))", stdout=PIPE, umask=requested
+    )
+    stdout, _stderr = await process.communicate()
+    assert int(stdout) == requested
+
+
+async def test_a_child_leads_the_requested_process_group() -> None:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import os; print(os.getpgid(0))", stdout=PIPE, process_group=0
+    )
+    stdout, _stderr = await process.communicate()
+    assert int(stdout) == process.pid
 
 
 WRITE_TO_FD = "import os, sys; os.write(int(sys.argv[1]), b'through-the-pipe')"

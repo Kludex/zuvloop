@@ -139,6 +139,24 @@ async def test_slow_callbacks_inside_a_task_carry_the_call_graph(telemetry: Tele
     assert any(graph is not None and "slow-step" in str(graph) for graph in graphs)
 
 
+async def test_the_call_graph_lists_a_suspended_task_innermost_coroutine_first() -> None:
+    async def inner() -> None:
+        await asyncio.sleep(10)
+
+    async def outer() -> None:
+        await inner()
+
+    task = running_loop().create_task(outer(), name="suspended")
+    await asyncio.sleep(0)
+    graph = capture_call_graph(running_loop().call_soon(task.cancel))
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert graph is not None
+    assert "Task(name='suspended'" in graph
+    assert 0 < graph.index("in async sleep()") < graph.index("inner()") < graph.index("outer()")
+
+
 async def test_slow_callback_that_finishes_its_task_carries_the_call_graph(telemetry: Telemetry) -> None:
     loop = running_loop()
     loop.slow_callback_duration = 0.01
@@ -693,6 +711,8 @@ async def test_completed_task_call_graph_does_not_render_its_exception() -> None
     assert "secret exception" not in graph
 
 
+# TODO: drop when 3.13 support ends.
+@pytest.mark.skipif(sys.version_info < (3, 14), reason="asyncio call graphs arrived in 3.14")
 async def test_the_stdlib_call_graph_apis_work_on_this_loop() -> None:
     """3.14's introspection reads real asyncio.Task objects, which is what zuvloop schedules."""
     import io

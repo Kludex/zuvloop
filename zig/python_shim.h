@@ -17,6 +17,19 @@ static inline unsigned long long zuvloop_read_x18(void) {
 #endif
 #include <Python.h>
 
+// TODO: drop when 3.12 support ends. These public names arrived in 3.13.
+#if PY_VERSION_HEX < 0x030D0000
+// Defined in C, not inline: Zig would translate an inline body, `Py_None` DLL data import included.
+typedef _PyTime_t PyTime_t;
+int PyTime_MonotonicRaw(PyTime_t *result);
+int PyObject_VisitManagedDict(PyObject *object, visitproc visit, void *arg);
+void PyObject_ClearManagedDict(PyObject *object);
+#define Py_CONSTANT_NONE 0
+#define Py_CONSTANT_FALSE 1
+#define Py_CONSTANT_TRUE 2
+PyObject *Py_GetConstantBorrowed(unsigned int constant_id);
+#endif
+
 typedef struct {
     uintptr_t storage[2];
 } zuvloop_critical_section;

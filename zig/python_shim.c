@@ -6,6 +6,35 @@
 #include <time.h>
 #endif
 
+#if PY_VERSION_HEX < 0x030D0000
+int PyTime_MonotonicRaw(PyTime_t *result) {
+    *result = _PyTime_GetMonotonicClock();
+    return 0;
+}
+
+int PyObject_VisitManagedDict(PyObject *object, visitproc visit, void *arg) {
+    return _PyObject_VisitManagedDict(object, visit, arg);
+}
+
+void PyObject_ClearManagedDict(PyObject *object) {
+    _PyObject_ClearManagedDict(object);
+}
+
+PyObject *Py_GetConstantBorrowed(unsigned int constant_id) {
+    switch (constant_id) {
+    case Py_CONSTANT_NONE:
+        return Py_None;
+    case Py_CONSTANT_FALSE:
+        return Py_False;
+    case Py_CONSTANT_TRUE:
+        return Py_True;
+    default:
+        PyErr_BadInternalCall();
+        return NULL;
+    }
+}
+#endif
+
 int64_t zuvloop_thread_cpu_time(void) {
 #ifdef _WIN32
     FILETIME created, exited, kernel, user;
