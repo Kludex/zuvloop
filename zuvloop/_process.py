@@ -7,7 +7,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable, Iterable, Mapping
-from typing import IO, TYPE_CHECKING, Protocol, TypedDict
+from typing import IO, TYPE_CHECKING, Protocol
 
 from . import _zuvloop
 
@@ -46,27 +46,6 @@ class _StartupInfo(Protocol):
 # What a stdio argument may be: a descriptor, one of `subprocess`'s markers, an
 # open file, or nothing.
 type Stdio = int | IO[bytes] | IO[str] | None
-
-
-class SpawnOptions(TypedDict, total=False):
-    """The `subprocess.Popen` arguments a spawn forwards."""
-
-    executable: str | None
-    env: Mapping[str, str] | None
-    cwd: str | bytes | os.PathLike[str] | os.PathLike[bytes] | None
-    start_new_session: bool
-    startupinfo: _StartupInfo | None
-    creationflags: int
-    pass_fds: Iterable[int]
-    user: str | int | None
-    group: str | int | None
-    extra_groups: Iterable[str | int] | None
-    umask: int
-    process_group: int | None
-    close_fds: bool
-    restore_signals: bool
-    preexec_fn: Callable[[], object] | None
-    pipesize: int
 
 
 class Popen:

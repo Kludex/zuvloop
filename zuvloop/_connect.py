@@ -16,10 +16,10 @@ from asyncio.base_events import (  # type: ignore[attr-defined]  # private CPyth
 )
 from asyncio.streams import StreamReaderProtocol
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, Protocol, Unpack
+from typing import Any, Protocol
 
 from . import _zuvloop
-from ._process import _SIGKILL, Popen, SpawnOptions, Stdio
+from ._process import _SIGKILL, Popen, Stdio
 from ._sendfile import SendfileOperations
 from ._server import Server
 
@@ -745,7 +745,7 @@ class ConnectionOperations(SendfileOperations):
             raise
         return transport
 
-    async def subprocess_shell[ProtocolT: asyncio.BaseProtocol](  # type: ignore[override]  # names the Popen arguments asyncio leaves as **kwargs
+    async def subprocess_shell[ProtocolT: asyncio.BaseProtocol](
         self,
         protocol_factory: Callable[[], ProtocolT],
         cmd: str | bytes,
@@ -759,7 +759,7 @@ class ConnectionOperations(SendfileOperations):
         encoding: str | None = None,
         errors: str | None = None,
         text: bool | None = None,
-        **kwargs: Unpack[SpawnOptions],
+        **kwargs: Any,
     ) -> tuple[asyncio.SubprocessTransport, ProtocolT]:
         if not isinstance(cmd, (bytes, str)):
             raise ValueError("cmd must be a string")
@@ -768,7 +768,7 @@ class ConnectionOperations(SendfileOperations):
         transport = await self._make_subprocess_transport(protocol, cmd, True, stdin, stdout, stderr, bufsize, **kwargs)
         return transport, protocol
 
-    async def subprocess_exec[ProtocolT: asyncio.BaseProtocol](  # type: ignore[override]  # names the Popen arguments asyncio leaves as **kwargs
+    async def subprocess_exec[ProtocolT: asyncio.BaseProtocol](
         self,
         protocol_factory: Callable[[], ProtocolT],
         program: str | bytes,
@@ -782,7 +782,7 @@ class ConnectionOperations(SendfileOperations):
         encoding: str | None = None,
         errors: str | None = None,
         text: bool | None = None,
-        **kwargs: Unpack[SpawnOptions],
+        **kwargs: Any,
     ) -> tuple[asyncio.SubprocessTransport, ProtocolT]:
         _check_subprocess_text(universal_newlines, shell, bufsize, encoding, errors, text, expect_shell=False)
         popen_args = (program, *args)
@@ -804,7 +804,7 @@ class ConnectionOperations(SendfileOperations):
         stdout: Stdio,
         stderr: Stdio,
         bufsize: int,
-        **kwargs: Unpack[SpawnOptions],
+        **kwargs: Any,
     ) -> asyncio.SubprocessTransport:
         # asyncio's own transport drives the process; it needs `connect_read_pipe`
         # and `connect_write_pipe` from the loop, and those are native here. A
@@ -1035,7 +1035,7 @@ class _SubprocessTransport(base_subprocess.BaseSubprocessTransport):
     def kill(self) -> None:
         self.send_signal(_SIGKILL)
 
-    def _start(  # type: ignore[override]  # names the Popen arguments asyncio leaves as **kwargs
+    def _start(
         self,
         args: str | bytes | Sequence[str | bytes],
         shell: bool,
@@ -1043,7 +1043,7 @@ class _SubprocessTransport(base_subprocess.BaseSubprocessTransport):
         stdout: Stdio,
         stderr: Stdio,
         bufsize: int,
-        **kwargs: Unpack[SpawnOptions],
+        **kwargs: Any,
     ) -> None:
         windows_verbatim = False
         # A shell spawn is the one handed a single command rather than a list.
