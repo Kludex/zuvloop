@@ -54,13 +54,15 @@ pub fn materialize(loop: ?*py.Object, context: *?*py.Object) py.Error!*py.Object
         py.decref(context_obj);
         return winner;
     }
-    context.* = context_obj;
+    @atomicStore(?*py.Object, context, context_obj, .release);
     return context_obj;
 }
 
 /// `materialize` for the path that runs the callback. A getter on another thread materializes
 /// inside `owner`'s critical section, so entering it here stops both from creating a context.
 pub fn materializeToRun(owner: *py.Object, loop: ?*py.Object, context: *?*py.Object) py.Error!*py.Object {
+    // A context is published once and outlives the run, so only an empty slot needs the section.
+    if (@atomicLoad(?*py.Object, context, .acquire)) |existing| return existing;
     // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
     var critical_section: py.CriticalSection = undefined;
     py.beginCriticalSection(&critical_section, owner);
