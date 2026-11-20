@@ -140,7 +140,7 @@ def capture_call_graph(handle: object = None) -> str | None:
             f"* Task(name={task.get_name()!r}, id={id(task):#x}, state=done)\n"
             f"  + Call stack (task already finished):\n{location}"
         )
-    # TODO: drop when 3.13 support ends. `format_call_graph` arrived in 3.14.
+    # TODO: drop when 3.13 support ends. `format_call_graph` arrived in 3.14, so a live task has no graph.
     if sys.version_info < (3, 14):  # pragma: no cover - coverage is measured on 3.14
         return None
     return asyncio.format_call_graph(task)
