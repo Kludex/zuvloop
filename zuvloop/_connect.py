@@ -194,40 +194,48 @@ class ConnectionOperations(SendfileOperations):
 
         # One slot per address, filled in the order they were tried.
         errors: list[list[OSError]] = []
-        winner: socket.socket | None = None
-        if happy_eyeballs_delay is None:
-            for info in infos:
-                try:
-                    winner = await self._connect_one(errors, info, local_infos)
-                    break
-                except OSError:
-                    continue
-        else:
-            # Each attempt starts `happy_eyeballs_delay` after the last, and the
-            # first to connect wins - so an address on a broken route costs that
-            # delay rather than a full connect timeout. RFC 8305.
-            winner = (
-                await staggered.staggered_race(
-                    (self._attempt(errors, info, local_infos) for info in infos),
-                    happy_eyeballs_delay,
-                    loop=self,
-                )
-            )[0]
+        flattened: list[OSError] = []
+        try:
+            winner: socket.socket | None = None
+            if happy_eyeballs_delay is None:
+                for info in infos:
+                    try:
+                        winner = await self._connect_one(errors, info, local_infos)
+                        break
+                    except OSError:
+                        continue
+            else:
+                # Each attempt starts `happy_eyeballs_delay` after the last, and the
+                # first to connect wins - so an address on a broken route costs that
+                # delay rather than a full connect timeout. RFC 8305.
+                winner = (
+                    await staggered.staggered_race(
+                        (self._attempt(errors, info, local_infos) for info in infos),
+                        happy_eyeballs_delay,
+                        loop=self,
+                    )
+                )[0]
 
-        if winner is not None:
-            return winner
-        flattened = [exc for slot in errors for exc in slot]
-        if all_errors:
-            raise ExceptionGroup("create_connection failed", flattened)
-        if len(flattened) == 1:
-            raise flattened[0]
-        if not flattened:  # pragma: no cover - every attempt records its failure
-            raise OSError("Multiple exceptions: (no error was recorded)")
-        # All the same complaint reads better as one of them than as a list.
-        model = str(flattened[0])
-        if all(str(exc) == model for exc in flattened):
-            raise flattened[0]
-        raise OSError(f"Multiple exceptions: {', '.join(str(exc) for exc in flattened)}")
+            if winner is not None:
+                return winner
+            flattened.extend(exc for slot in errors for exc in slot)
+            if all_errors:
+                raise ExceptionGroup("create_connection failed", flattened)
+            if len(flattened) == 1:
+                raise flattened[0]
+            if not flattened:  # pragma: no cover - every attempt records its failure
+                raise OSError("Multiple exceptions: (no error was recorded)")
+            # All the same complaint reads better as one of them than as a list.
+            model = str(flattened[0])
+            if all(str(exc) == model for exc in flattened):
+                raise flattened[0]
+            raise OSError(f"Multiple exceptions: {', '.join(str(exc) for exc in flattened)}")
+        finally:
+            # The raised exception's traceback holds these frames, so lists left
+            # holding the exception would keep it in a reference cycle.
+            for slot in errors:
+                slot.clear()
+            flattened.clear()
 
     def _attempt(
         self,
