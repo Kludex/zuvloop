@@ -1,12 +1,15 @@
 name: Benchmark release
 
 # Runs the README benchmarks for a release on an Azure VM created for the run
-# and deleted after it. Separate from Publish, so it can never hold up an upload.
+# and deleted after it, then opens a pull request that puts them in the README.
+# Separate from Publish, so it can never hold up an upload.
 #
 # Needs a `benchmark` environment with the variables AZURE_CLIENT_ID,
 # AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID, naming an Entra application that
 # trusts `repo:Kludex/zuvloop:environment:benchmark` as a federated credential
-# and may create and delete resource groups in that subscription.
+# and may create and delete resource groups in that subscription. The README
+# pull request also needs the environment secret README_PR_TOKEN: a token for
+# this repository that may write contents and pull requests.
 
 on:
   release:
@@ -75,6 +78,14 @@ jobs:
           for _ in $(seq 30); do ssh true && break || sleep 10; done
           ssh bash -s -- "$REF" < scripts/benchmark-release | tee "benchmark-${REF//\//-}.txt"
 
+      # Before anything else, so the VM is gone whether or not the benchmarks finished.
+      - name: Delete the VM
+        if: always()
+        run: |
+          if [[ "$(az group exists --name "$GROUP")" == true ]]; then
+            az group delete --name "$GROUP" --yes --no-wait
+          fi
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: benchmark
@@ -87,9 +98,32 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$REF" benchmark-*.txt --clobber
 
-      - name: Delete the VM
-        if: always()
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        if: github.event_name == 'release'
+        with:
+          enable-cache: false
+          version: 0.12.3
+
+      # The script refuses a results file with a benchmark or a loop missing, so a
+      # run that half failed opens nothing. main still requires its checks to pass.
+      - name: Open a self-merging pull request that refreshes the README
+        if: github.event_name == 'release'
+        env:
+          # Not the workflow's own token: a pull request opened with that one
+          # starts no workflows, so the checks main requires would never report.
+          GH_TOKEN: ${{ secrets.README_PR_TOKEN }}
         run: |
-          if [[ "$(az group exists --name "$GROUP")" == true ]]; then
-            az group delete --name "$GROUP" --yes --no-wait
-          fi
+          recorded="benchmarks/results/readme-$(date -u +%F).txt"
+          git rm -q 'benchmarks/results/readme-*.txt'
+          cp benchmark-*.txt "$recorded"
+          uv run scripts/readme_benchmarks.py "$recorded"
+          git switch -q -c "refresh-readme-benchmarks-$REF"
+          git add README.md docs/assets/performance.png "$recorded"
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -q -m "Refresh the README benchmarks for $REF"
+          gh auth setup-git
+          git push -q origin HEAD
+          gh pr create --base main --title "Refresh the README benchmarks for $REF" \
+            --body "Recorded by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID on a VM created for that run."
+          gh pr merge --auto --squash

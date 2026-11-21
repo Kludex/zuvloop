@@ -30,6 +30,7 @@ The key features are:
   <img src="docs/assets/performance.png" alt="zuvloop vs rloop vs uvloop vs asyncio benchmarks">
 </p>
 
+<!-- benchmarks -->
 Throughput relative to stock asyncio (higher is better), measured with the suite in
 `benchmarks/` on an Azure `Standard_E104is_v5` VM: an Intel Xeon Platinum 8370C with 104 vCPUs,
 Ubuntu 24.04, CPython 3.14.6, and libuv 1.53.0. The comparison uses uvloop 0.22.1 and rloop 0.5.0.
@@ -56,6 +57,7 @@ measurements. Check the recorded run-to-run variation before treating small diff
 | aiohttp server | 26.0k req/s | 31.0k req/s | 28.1k req/s | **31.4k req/s** |
 | aiohttp client | 6.4k req/s | 8.3k req/s | 8.5k req/s | **8.7k req/s** |
 | `getaddrinfo`, numeric host | 21.8k/s | 732.6k/s | 559.1k/s | **807.0k/s** |
+<!-- /benchmarks -->
 
 With rloop, the aiohttp server benchmark logs `TypeError` callback errors when the load generator
 disconnects at its deadline. The throughput above includes this behavior.
