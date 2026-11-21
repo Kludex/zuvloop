@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Benchmark one zuvloop ref on a fresh Ubuntu machine and print the results.
+# Runs on the benchmark VM, fed over SSH by .github/workflows/benchmark-release.yml.
+set -euo pipefail
+
+ref="$1"
+
+sudo apt-get update -qq >&2
+sudo apt-get install -y -qq git curl util-linux >&2
+curl -LsSf https://astral.sh/uv/0.12.3/install.sh | sh >&2
+export PATH="$HOME/.local/bin:$PATH"
+
+curl -fsSL -o "$HOME/.local/bin/oha" https://github.com/hatoo/oha/releases/download/v1.14.0/oha-linux-amd64
+printf '%s  %s\n' \
+    6fc16b5f9901fd2266b1a2b49b1689f76f91ddc7c96f2d0d08b161a870f7ef18 \
+    "$HOME/.local/bin/oha" | sha256sum -c - >&2
+chmod +x "$HOME/.local/bin/oha"
+
+git clone --quiet --depth 1 --branch "$ref" https://github.com/Kludex/zuvloop.git
+cd zuvloop
+uv sync --locked --managed-python --python 3.14 --group dev --group bench >&2
+
+echo "zuvloop $ref ($(git rev-parse HEAD)) - $(date -u +%Y-%m-%d)"
+echo "Azure $(curl -fsS -H Metadata:true 'http://169.254.169.254/metadata/instance/compute/vmSize?api-version=2021-02-01&format=text')"
+lscpu | grep -E '^(Model name|Socket\(s\)|Core\(s\) per socket|Thread\(s\) per core|CPU\(s\)|NUMA node\(s\)):'
+# shellcheck source=/dev/null
+echo "$(. /etc/os-release && echo "$PRETTY_NAME"), kernel $(uname -r)"
+uv pip list | grep -E '^(zuvloop|uvloop|rloop|uvicorn|aiohttp|httptools) '
+echo "The scripts below ran sequentially, with nothing else running on the VM. One pass is reported."
+
+run() {
+    printf '\n$ %s\n' "$*"
+    NO_COLOR=true "$@"
+}
+run uv run --no-sync --group bench python -u benchmarks/run.py --repeat 7 --only \
+    call_soon call_soon_args call_soon_threadsafe timer_schedule_cancel timer_rounds timer_due_batch \
+    ready_with_io stream echo_1kb getaddrinfo
+run uv run --no-sync --group bench python benchmarks/uvicorn_bench.py --rounds 5
+run uv run --no-sync --group bench python benchmarks/aiohttp_bench.py --rounds 5
