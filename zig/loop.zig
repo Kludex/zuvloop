@@ -641,8 +641,9 @@ fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py
     var critical_section: py.CriticalSection = undefined;
     py.beginCriticalSection(&critical_section, @ptrCast(self));
     defer py.endCriticalSection(&critical_section);
-    // Clearing the candidate can suspend the critical section, so the loop is checked after it.
-    clearThreadsafeCandidate(st, true);
+    // Clearing a candidate can suspend the critical section and let a producer install another,
+    // so the loop is checked once none is left.
+    while (st.threadsafe_candidate != null) clearThreadsafeCandidate(st, true);
     try checkClosed(st);
     try checkThread(st);
     drainThreadsafe(st) catch return py.errNoMemory();
@@ -709,6 +710,12 @@ fn scheduleAt(
     try checkClosed(st);
     try checkThread(st);
     const h = try timermod.create(@ptrCast(self), callback, p.positional, p.context, when, original_when);
+    {
+        // Allocating can suspend the critical section, so the loop is checked again.
+        errdefer py.decref(h);
+        try checkClosed(st);
+        try checkThread(st);
+    }
     py.incref(h);
     if (already_due) {
         const can_bypass_heap = if (st.timers.peek()) |entry| when < entry.when else true;
