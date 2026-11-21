@@ -128,4 +128,5 @@ the call races the loop thread. From another thread, use
 
 That window is wider than `is_running()`. After `stop()`, the loop still flushes
 the writes its last callbacks queued, and `is_running()` is already false while
-it does.
+it does. Until that flush finishes, `close()` and a second `run_forever()` raise
+`RuntimeError` too, with or without debug mode.
