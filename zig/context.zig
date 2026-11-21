@@ -44,18 +44,28 @@ pub fn capture(explicit: ?*py.Object) py.Error!?*py.Object {
 /// Returns the context in `context`, allocating or borrowing an empty one.
 pub fn materialize(loop: ?*py.Object, context: *?*py.Object) py.Error!*py.Object {
     if (context.*) |existing| return existing;
-    const created = if (loop) |loop_obj|
-        if (loopmod.isRunningThread(loop_obj)) loopmod.takeEmptyContext(loop_obj) else null
-    else
-        null;
-    const context_obj = created orelse c.PyContext_New() orelse return py.Error.Python;
+    if (loop) |loop_obj| {
+        if (loopmod.isRunningThread(loop_obj)) {
+            if (loopmod.takeEmptyContext(loop_obj)) |pooled| return publish(context, pooled);
+        }
+    }
+    return allocate(context);
+}
+
+/// Taking from the pool allocates nothing, so the slot is still the empty one the caller saw.
+inline fn publish(context: *?*py.Object, context_obj: *py.Object) *py.Object {
+    @atomicStore(?*py.Object, context, context_obj, .release);
+    return context_obj;
+}
+
+fn allocate(context: *?*py.Object) py.Error!*py.Object {
+    const context_obj = c.PyContext_New() orelse return py.Error.Python;
     // Allocating can suspend the caller's critical section, so another thread may have won.
     if (context.*) |winner| {
         py.decref(context_obj);
         return winner;
     }
-    @atomicStore(?*py.Object, context, context_obj, .release);
-    return context_obj;
+    return publish(context, context_obj);
 }
 
 /// `materialize` for the path that runs the callback. A getter on another thread materializes
@@ -67,7 +77,12 @@ pub fn materializeToRun(owner: *py.Object, loop: ?*py.Object, context: *?*py.Obj
     var critical_section: py.CriticalSection = undefined;
     py.beginCriticalSection(&critical_section, owner);
     defer py.endCriticalSection(&critical_section);
-    return materialize(loop, context);
+    if (context.*) |existing| return existing;
+    // Only the loop's own thread runs a handle, so the pool is taken from without asking whose thread this is.
+    if (loop) |loop_obj| {
+        if (loopmod.takeEmptyContext(loop_obj)) |pooled| return publish(context, pooled);
+    }
+    return allocate(context);
 }
 
 /// Releases a context or moves an unused captured one into the loop pool.
