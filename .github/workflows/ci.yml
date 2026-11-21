@@ -450,12 +450,14 @@ jobs:
 
       # Walltime, not simulation: an event loop spends its time in syscalls and
       # polling, which instruction counting does not model.
+      # The two process benchmarks are mostly kernel time and swing too much on a shared runner, so they stay out.
       - uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3
         with:
           mode: walltime
           run: >-
             uv run --no-sync pytest benchmarks/ --codspeed
-            -k "not parallel_event_loops and not ready_chain_with_idle_connections"
+            -k "not parallel_event_loops and not ready_chain_with_idle_connections
+            and not process_spawn and not process_pipe"
 
   docs:
     runs-on: ubuntu-24.04-arm
