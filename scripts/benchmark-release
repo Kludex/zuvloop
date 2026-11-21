@@ -21,11 +21,13 @@ cd zuvloop
 uv sync --locked --managed-python --python 3.14 --group dev --group bench >&2
 
 echo "zuvloop $ref ($(git rev-parse HEAD)) - $(date -u +%Y-%m-%d)"
-echo "Azure $(curl -fsS -H Metadata:true 'http://169.254.169.254/metadata/instance/compute/vmSize?api-version=2021-02-01&format=text')"
-lscpu | grep -E '^(Model name|Socket\(s\)|Core\(s\) per socket|Thread\(s\) per core|CPU\(s\)|NUMA node\(s\)):'
+# scripts/readme_benchmarks.py reads the next three lines.
+size="$(curl -fsS -H Metadata:true 'http://169.254.169.254/metadata/instance/compute/vmSize?api-version=2021-02-01&format=text')"
+echo "Azure $size VM: $(lscpu | sed -n 's/^Model name: *//p' | sed 's/([^)]*)//g; s/ CPU @.*//') with $(nproc) vCPUs"
 # shellcheck source=/dev/null
-echo "$(. /etc/os-release && echo "$PRETTY_NAME"), kernel $(uname -r)"
-uv pip list | grep -E '^(zuvloop|uvloop|rloop|uvicorn|aiohttp|httptools) '
+echo "$(. /etc/os-release && echo "$NAME $VERSION_ID"), kernel $(uname -r)"
+uv run --no-sync python -c 'from importlib.metadata import version as v; print(f"uvloop {v("uvloop")}, rloop {v("rloop")}")'
+uv pip list | grep -E '^(zuvloop|uvicorn|aiohttp|httptools) '
 echo "The scripts below ran sequentially, with nothing else running on the VM. One pass is reported."
 
 run() {

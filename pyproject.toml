@@ -99,7 +99,7 @@ files = ["zuvloop", "tests", "benchmarks", "scripts"]
 exclude = ["^vendor/"]
 
 [[tool.mypy.overrides]]
-module = ["rloop", "uvloop", "hatchling.*", "opentelemetry.*"]
+module = ["rloop", "uvloop", "hatchling.*", "opentelemetry.*", "matplotlib", "matplotlib.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
