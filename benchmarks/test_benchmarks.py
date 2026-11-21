@@ -283,10 +283,13 @@ def test_call_soon_args(benchmark: BenchmarkFixture, loop: asyncio.AbstractEvent
 def test_ready_batch(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
     """Drain a prebuilt ready queue without timing scheduling or deallocation."""
     iterations = 100_000
+    # zuvloop defers the copy of an empty context to the drain, so schedule from one that holds a variable.
+    context = contextvars.Context()
+    context.run(contextvars.ContextVar[int]("held").set, 1)
 
     def setup() -> tuple[tuple[asyncio.Future[None], list[asyncio.Handle]], dict[str, int]]:
         done = loop.create_future()
-        handles = [loop.call_soon(_noop) for _ in range(iterations)]
+        handles = context.run(lambda: [loop.call_soon(_noop) for _ in range(iterations)])
         handles.append(loop.call_soon(done.set_result, None))
         return (done, handles), {}
 
