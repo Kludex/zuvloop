@@ -641,6 +641,9 @@ fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py
     var critical_section: py.CriticalSection = undefined;
     py.beginCriticalSection(&critical_section, @ptrCast(self));
     defer py.endCriticalSection(&critical_section);
+    // Clearing a candidate can suspend the critical section and let a producer install another,
+    // so the loop is checked once none is left.
+    while (st.threadsafe_candidate != null) clearThreadsafeCandidate(st, true);
     try checkClosed(st);
     try rejectForeignThreadInDebug(st);
     drainThreadsafe(st) catch return py.errNoMemory();
@@ -670,6 +673,11 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
     const p = try parseCall(args, nargs, kwnames, 1);
     clearThreadsafeCandidate(st, true);
     const h = try tshandle.create(self_obj, args[0].?, p.positional, p.context);
+    // Taking the candidate's lock or allocating can suspend the loop's critical section.
+    checkClosed(st) catch |err| {
+        py.decref(h);
+        return err;
+    };
     py.incref(h);
     // A loop-thread `call_soon` drains this inbox before appending its own
     // handle, so both schedulers preserve registration order.
@@ -702,6 +710,12 @@ fn scheduleAt(
     try checkClosed(st);
     try rejectForeignThreadInDebug(st);
     const h = try timermod.create(@ptrCast(self), callback, p.positional, p.context, when, original_when);
+    {
+        // Allocating can suspend the critical section, so the loop is checked again.
+        errdefer py.decref(h);
+        try checkClosed(st);
+        try rejectForeignThreadInDebug(st);
+    }
     py.incref(h);
     if (already_due) {
         const can_bypass_heap = if (st.timers.peek()) |entry| when < entry.when else true;
