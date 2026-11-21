@@ -5,6 +5,7 @@ import gc
 import os
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 
@@ -13,7 +14,9 @@ import pytest
 import zuvloop
 
 
-@pytest.mark.skipif(sys._is_gil_enabled(), reason="Requires free-threaded critical-section suspension")
+@pytest.mark.skipif(
+    not sysconfig.get_config_var("Py_GIL_DISABLED"), reason="Requires free-threaded critical-section suspension"
+)
 @pytest.mark.parametrize("transition", ["start", "close", "close_threadsafe"])
 def test_inbox_drain_rechecks_loop_state_after_handle_contention(
     transition: str,
@@ -30,7 +33,7 @@ def test_inbox_drain_rechecks_loop_state_after_handle_contention(
         )
         return
 
-    assert not sys._is_gil_enabled()
+    assert sys.version_info >= (3, 13) and not sys._is_gil_enabled()
     gc.disable()
     thread_errors: list[threading.ExceptHookArgs] = []
     threading.excepthook = thread_errors.append
