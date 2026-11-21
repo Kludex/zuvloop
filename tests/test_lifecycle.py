@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import gc
 import os
 import signal
@@ -11,7 +12,7 @@ import sys
 import threading
 import time
 import weakref
-from collections.abc import AsyncGenerator, Callable, Mapping
+from collections.abc import AsyncGenerator, Callable, Iterator, Mapping
 
 import anyio
 import anyio.to_thread
@@ -838,6 +839,105 @@ def test_an_interrupt_after_the_task_finishes_consumes_its_error(loop: zuvloop.E
 
     with pytest.raises(KeyboardInterrupt):
         loop.run_until_complete(main())
+
+
+@contextlib.contextmanager
+def loop_held_in_its_final_flush(*, debug: bool) -> Iterator[zuvloop.EventLoop]:
+    """Stops a loop on another thread and holds it in the flush that follows `stop()`."""
+    loop = zuvloop.new_event_loop()
+    loop.set_debug(debug)
+    flushing = threading.Event()
+    release = threading.Event()
+    flushed: concurrent.futures.Future[None] = concurrent.futures.Future()
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="retained-executor")
+    loop.set_default_executor(executor)
+
+    class FlushProtocol(asyncio.Protocol):
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            assert isinstance(transport, asyncio.Transport)
+            self.transport = transport
+
+        def data_received(self, data: bytes) -> None:
+            self.transport.write(data)
+            self.transport.set_write_buffer_limits(high=0, low=0)
+            loop.stop()
+
+        def resume_writing(self) -> None:
+            try:
+                assert not loop.is_running()
+                with pytest.raises(RuntimeError, match="Cannot close a running event loop"):
+                    loop.close()
+                loop.call_soon(lambda: None)
+                flushing.set()
+                assert release.wait(5)
+                self.transport.write(b"alive")
+            except BaseException as exc:  # pragma: no cover - assertion diagnostic
+                flushed.set_exception(exc)
+            else:
+                flushed.set_result(None)
+            finally:
+                flushing.set()
+
+    local, peer = socket.socketpair()
+    peer.settimeout(5)
+    transport, _ = loop.run_until_complete(loop.create_connection(FlushProtocol, sock=local))
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    try:
+        peer.sendall(b"flush")
+        assert flushing.wait(5)
+        yield loop
+        assert not loop.is_closed()
+        assert not transport.is_closing()
+        release.set()
+        thread.join(5)
+        assert not thread.is_alive()
+        flushed.result(timeout=5)
+        with peer.makefile("rb") as stream:
+            assert stream.read(10) == b"flushalive"
+        worker = loop.run_until_complete(loop.run_in_executor(None, threading.current_thread))
+        assert worker.name.startswith("retained-executor")
+    finally:
+        release.set()
+        thread.join(5)
+        assert not thread.is_alive()
+        transport.close()
+        peer.close()
+        loop.close()
+        executor.shutdown()
+
+
+def test_close_from_another_thread_during_the_final_flush_is_rejected() -> None:
+    with loop_held_in_its_final_flush(debug=False) as loop:
+        with pytest.raises(RuntimeError, match="Cannot close a running event loop"):
+            loop.close()
+
+
+def test_run_forever_from_another_thread_during_the_final_flush_is_rejected() -> None:
+    with loop_held_in_its_final_flush(debug=False) as loop:
+        errors: list[str] = []
+
+        def run_again() -> None:
+            try:
+                loop.run_forever()
+            except RuntimeError as exc:
+                errors.append(str(exc))
+
+        # A second run that got through would never return, so it is tried on a thread that can be abandoned.
+        thread = threading.Thread(target=run_again, daemon=True)
+        thread.start()
+        thread.join(5)
+        assert errors == ["This event loop is already running"]
+
+
+def test_debug_scheduling_from_another_thread_during_the_final_flush_is_rejected() -> None:
+    with loop_held_in_its_final_flush(debug=True) as loop:
+        with pytest.raises(RuntimeError, match="Non-thread-safe operation"):
+            loop.call_soon(int)
+        with pytest.raises(RuntimeError, match="Non-thread-safe operation"):
+            loop.call_later(0, int)
+        with pytest.raises(RuntimeError, match="Non-thread-safe operation"):
+            loop.call_at(0, int)
 
 
 async def test_an_exception_handler_may_stop_the_program() -> None:

@@ -749,7 +749,9 @@ fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
     const self = asLoop(self_obj);
     const st = self.state();
     try checkClosed(st);
-    if (st.running) return py.errRuntime("This event loop is already running");
+    if (@atomicLoad(c_ulong, &st.thread_id, .acquire) != 0) {
+        return py.errRuntime("This event loop is already running");
+    }
     try raiseFatal(st);
 
     st.running = true;
@@ -764,11 +766,11 @@ fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
 
     st.running = false;
     st.stopping = false;
-    @atomicStore(c_ulong, &st.thread_id, 0, .release);
     // A write from the callback that stopped the loop has had no iteration left
     // to flush it. Draining after clearing `running` sends anything those
     // callbacks write in turn.
     drainFlushList(st);
+    @atomicStore(c_ulong, &st.thread_id, 0, .release);
 
     try raiseFatal(st);
     return py.noneRef();
@@ -991,7 +993,9 @@ fn timerHandleCancelled(self_obj: *py.Object, _: *py.Object) py.Error!*py.Object
 fn closeLoop(self_obj: *py.Object) py.Error!*py.Object {
     const self = asLoop(self_obj);
     const st = self.state();
-    if (st.running) return py.errRuntime("Cannot close a running event loop");
+    if (@atomicLoad(c_ulong, &st.thread_id, .acquire) != 0) {
+        return py.errRuntime("Cannot close a running event loop");
+    }
     if (!st.closed) teardown(st);
     return py.noneRef();
 }
