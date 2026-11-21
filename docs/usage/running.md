@@ -120,9 +120,12 @@ OpenTelemetry span carrying the awaiting call graph — see
 The timing is done in Zig with `uv_hrtime()`, so enabling debug mode costs one
 clock read per callback rather than a Python-level wrapper.
 
-While the loop is running, debug mode also rejects `call_soon()`,
+While a thread is inside `run_forever()`, debug mode also rejects `call_soon()`,
 `call_later()` and `call_at()` from any other thread, with the same
 `RuntimeError` as asyncio. Those three are not thread-safe: without the check,
 the call races the loop thread. From another thread, use
-`call_soon_threadsafe()`. A loop that is not running accepts them from any
-thread.
+`call_soon_threadsafe()`. Outside a run, the loop accepts them from any thread.
+
+That window is wider than `is_running()`. After `stop()`, the loop still flushes
+the writes its last callbacks queued, and `is_running()` is already false while
+it does.
