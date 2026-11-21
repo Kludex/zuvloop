@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 import weakref
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterator
 
 import pytest
 
@@ -32,6 +32,93 @@ async def schedule_callback(request: pytest.FixtureRequest) -> ScheduleCallback:
         "threadsafe": loop.call_soon_threadsafe,
     }
     return schedulers[request.param]
+
+
+@pytest.fixture
+def debug_loop_on_another_thread() -> Iterator[zuvloop.EventLoop]:
+    loop = zuvloop.new_event_loop()
+    loop.set_debug(True)
+    started = threading.Event()
+    loop.call_soon(started.set)
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    try:
+        assert started.wait(5)
+        yield loop
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(5)
+        assert not thread.is_alive()
+        loop.close()
+
+
+def test_debug_call_soon_from_another_thread_is_rejected(debug_loop_on_another_thread: zuvloop.EventLoop) -> None:
+    with pytest.raises(RuntimeError, match="Non-thread-safe operation invoked on an event loop"):
+        debug_loop_on_another_thread.call_soon(int)
+
+
+def test_debug_call_later_from_another_thread_is_rejected(debug_loop_on_another_thread: zuvloop.EventLoop) -> None:
+    with pytest.raises(RuntimeError, match="Non-thread-safe operation invoked on an event loop"):
+        debug_loop_on_another_thread.call_later(0, int)
+
+
+def test_debug_call_at_from_another_thread_is_rejected(debug_loop_on_another_thread: zuvloop.EventLoop) -> None:
+    with pytest.raises(RuntimeError, match="Non-thread-safe operation invoked on an event loop"):
+        debug_loop_on_another_thread.call_at(0, int)
+
+
+def test_debug_scheduling_from_the_loop_thread_is_accepted(debug_loop_on_another_thread: zuvloop.EventLoop) -> None:
+    loop = debug_loop_on_another_thread
+    ran = threading.Event()
+    # Each call runs the next on the loop thread: call_soon, then call_later, then call_at.
+    loop.call_soon_threadsafe(loop.call_soon, loop.call_later, 0, loop.call_at, 0, ran.set)
+    assert ran.wait(5)
+
+
+def test_scheduling_from_another_thread_is_not_checked_without_debug() -> None:
+    loop = zuvloop.new_event_loop()
+    parked = threading.Event()
+    release = threading.Event()
+
+    def park() -> None:
+        parked.set()
+        assert release.wait(5)
+
+    loop.call_soon(park)
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    try:
+        assert parked.wait(5)
+        # The loop thread is parked in a callback, so these unchecked calls cannot race it.
+        loop.call_soon(int)
+        loop.call_later(0, int)
+        loop.call_at(0, int)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        release.set()
+        thread.join(5)
+        assert not thread.is_alive()
+        loop.close()
+
+
+def test_debug_loop_can_move_between_threads() -> None:
+    loop = zuvloop.new_event_loop()
+    loop.set_debug(True)
+    seen: list[int] = []
+    try:
+        for _ in range(2):
+            loop.call_soon(lambda: seen.append(threading.get_ident()))
+            loop.call_later(0, lambda: None)
+            loop.call_at(loop.time(), loop.stop)
+            thread = threading.Thread(target=loop.run_forever)
+            thread.start()
+            thread.join(5)
+            assert not thread.is_alive()
+        loop.call_soon(loop.stop)
+        loop.run_forever()
+        assert len(seen) == 2
+    finally:
+        loop.close()
 
 
 async def test_call_soon_runs_in_order() -> None:
