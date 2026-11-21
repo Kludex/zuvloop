@@ -102,8 +102,10 @@ them.
 /// warning | One loop per thread
 
 A loop belongs to the thread that runs it, as in asyncio. `call_soon_threadsafe`
-is the only method other threads may call, and signal handlers may only be
+is the method other threads should call, and signal handlers may only be
 registered from the main thread.
+[Scheduling from another thread](#scheduling-from-another-thread) covers what
+the other scheduling calls do.
 ///
 
 ## Debug mode
@@ -126,7 +128,8 @@ Debug mode also rejects a `call_soon()` from the wrong thread, with the same
 ## Scheduling from another thread
 
 While a thread is inside `run_forever()`, the ready queue, the timer heap and
-libuv belong to that thread. A call from any other thread never touches them:
+the libuv handles belong to that thread. A call from any other thread is handed
+over through the thread-safe inbox, which wakes the loop, or it is refused:
 
 | Call | Debug off | Debug on |
 | --- | --- | --- |

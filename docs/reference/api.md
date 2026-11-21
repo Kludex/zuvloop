@@ -69,7 +69,8 @@ implements `cancel()` and `cancelled()`.
 
 `TimerHandle` is a real `asyncio.TimerHandle`, so timer handles order and compare
 by deadline. `call_soon_threadsafe` returns an `asyncio.Handle` subclass with the
-cross-thread cancellation synchronization Python 3.14 requires.
+cross-thread cancellation synchronization Python 3.14 requires. So does a
+`call_soon` made from a thread other than the one running the loop.
 ///
 
 ## Instrumentation

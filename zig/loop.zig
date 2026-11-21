@@ -627,39 +627,33 @@ pub inline fn checkClosed(st: *State) py.Error!void {
 
 /// True while another thread is inside `run_forever()`. Only that thread may touch the ready queue,
 /// the timer heap and libuv.
-fn ownedByAnotherThread(st: *State, current_thread: c_ulong) bool {
+fn ownedByAnotherThread(st: *State) bool {
     const thread_id = @atomicLoad(c_ulong, &st.thread_id, .acquire);
-    return thread_id != 0 and thread_id != current_thread;
+    return thread_id != 0 and thread_id != c.PyThread_get_thread_ident();
 }
 
 fn rejectForeignThread(st: *State) py.Error!void {
-    if (ownedByAnotherThread(st, c.PyThread_get_thread_ident())) {
+    if (ownedByAnotherThread(st)) {
         return py.errRuntime("Non-thread-safe operation invoked on an event loop other than the current one");
     }
 }
 
 fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py.Object {
     const st = self.state();
-    // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
-    var critical_section: py.CriticalSection = undefined;
-    const current_thread = c.PyThread_get_thread_ident();
-    if (ownedByAnotherThread(st, current_thread)) {
-        py.beginCriticalSection(&critical_section, @ptrCast(self));
-        defer py.endCriticalSection(&critical_section);
-        try checkClosed(st);
-        return scheduleFromForeignThread(self, callback, p);
-    }
     const h = try handlemod.create(handlemod.handle_type.?, @ptrCast(self), callback, p.positional, p.context);
     errdefer py.decref(h);
+    // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
+    var critical_section: py.CriticalSection = undefined;
     py.beginCriticalSection(&critical_section, @ptrCast(self));
     defer py.endCriticalSection(&critical_section);
     // Clearing a candidate can suspend the critical section and let a producer install another,
     // so the loop is checked once none is left.
     while (st.threadsafe_candidate != null) clearThreadsafeCandidate(st, true);
     try checkClosed(st);
-    // The loop can start on another thread between the check above and this critical section.
-    if (ownedByAnotherThread(st, current_thread)) {
-        const routed = try scheduleFromForeignThread(self, callback, p);
+    if (ownedByAnotherThread(st)) {
+        // Only the loop thread may touch the ready queue and libuv, so this call goes through the inbox.
+        if (st.debug) try rejectForeignThread(st);
+        const routed = try enqueueThreadsafe(self, callback, p);
         py.decref(h);
         return routed;
     }
@@ -671,13 +665,6 @@ fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py
     };
     startIdle(st);
     return @ptrCast(h);
-}
-
-/// Only the loop thread may touch the ready queue and libuv, so a `call_soon` from any other
-/// thread goes through the thread-safe inbox. The caller holds the loop's critical section.
-fn scheduleFromForeignThread(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py.Object {
-    if (self.state().debug) try rejectForeignThread(self.state());
-    return enqueueThreadsafe(self, callback, p);
 }
 
 // ---------------------------------------------------------------------------
@@ -766,7 +753,9 @@ fn scheduleAt(
         py.decref(h);
         return py.errNoMemory();
     };
-    armTimer(self);
+    // Only a new earliest deadline moves the libuv timer. Arming for any other would retire cancelled
+    // timers first, and releasing one can run Python and let another thread start the loop meanwhile.
+    if (st.timers.peek().?.handle == h) armTimer(self);
     return h;
 }
 

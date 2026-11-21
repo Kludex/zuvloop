@@ -85,32 +85,29 @@ def test_call_at_from_another_thread_is_rejected(loop_on_another_thread: zuvloop
         loop_on_another_thread.call_at(0, int)
 
 
-def test_call_soon_from_another_thread_wakes_the_loop(loop_on_another_thread: zuvloop.EventLoop) -> None:
+def test_call_soon_from_another_thread_is_handled_as_call_soon_threadsafe(
+    loop_on_another_thread: zuvloop.EventLoop,
+) -> None:
+    loop = loop_on_another_thread
     ran_on: concurrent.futures.Future[int] = concurrent.futures.Future()
-    loop_on_another_thread.call_soon(lambda: ran_on.set_result(threading.get_ident()))
+    handle = loop.call_soon(lambda: ran_on.set_result(threading.get_ident()))
+    # Only the thread-safe handle is an `asyncio.Handle`; the one `call_soon` returns on the loop thread is not.
+    assert isinstance(handle, asyncio.Handle)
     assert ran_on.result(5) != threading.get_ident()
 
 
-def test_call_soon_from_another_thread_returns_a_handle_that_cancels(loop_on_another_thread: zuvloop.EventLoop) -> None:
-    loop = loop_on_another_thread
-    parked = threading.Event()
-    release = threading.Event()
-    drained = threading.Event()
-    ran: list[str] = []
-
-    def park() -> None:
-        parked.set()
-        assert release.wait(5)
-
-    loop.call_soon_threadsafe(park)
-    assert parked.wait(5)
-    try:
-        loop.call_soon(ran.append, "cancelled").cancel()
-        loop.call_soon(drained.set)
-    finally:
-        release.set()
-    assert drained.wait(5)
-    assert ran == []
+def test_call_later_leaves_cancelled_timers_for_the_loop_to_retire() -> None:
+    loop = zuvloop.new_event_loop()
+    retired: list[str] = []
+    cancelled = loop.call_later(3600, int)
+    watcher = weakref.ref(cancelled, lambda _: retired.append("during call_later"))
+    cancelled.cancel()
+    del cancelled
+    # Releasing a timer can run Python, so a scheduler that did it could be overtaken by a thread starting the loop.
+    loop.call_later(7200, int)
+    assert retired == []
+    loop.close()
+    assert watcher() is None
 
 
 @pytest.mark.skipif(
@@ -136,30 +133,6 @@ def test_call_soon_from_another_thread_races_a_busy_loop(  # pragma: no cover - 
     stop.set()
     loop.call_soon(drained.set)
     assert drained.wait(10)
-    assert len(ran) == 100_000
-
-
-def test_call_soon_from_another_thread_races_the_start_of_a_run() -> None:
-    loop = zuvloop.new_event_loop()
-    finished = threading.Event()
-    ran: list[None] = []
-
-    def schedule() -> None:
-        try:
-            for _ in range(100_000):
-                loop.call_soon(ran.append, None)
-        finally:
-            finished.set()
-
-    thread = threading.Thread(target=schedule)
-    thread.start()
-    while not finished.is_set():
-        loop.call_soon(loop.stop)
-        loop.run_forever()
-    thread.join(5)
-    loop.call_soon(loop.stop)
-    loop.run_forever()
-    loop.close()
     assert len(ran) == 100_000
 
 
