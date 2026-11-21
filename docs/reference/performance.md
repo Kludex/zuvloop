@@ -5,7 +5,8 @@ Measured on an M3 Max running macOS 26 and CPython 3.14.
 [CodSpeed](https://codspeed.io) runs `benchmarks/test_benchmarks.py` on every
 commit, so a regression is caught where it is introduced rather than whenever
 someone next thinks to measure. Each benchmark is parametrised by event loop, so
-the same run records both the change and the comparison. The HTTP rows below
+the same run records both the change and the comparison. It skips the subprocess
+benchmarks, which are too noisy on a shared runner to gate on. The HTTP rows below
 come from the standalone scripts, which need a server process and an external
 load generator.
 
