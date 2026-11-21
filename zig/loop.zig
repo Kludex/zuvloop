@@ -625,10 +625,15 @@ pub inline fn checkClosed(st: *State) py.Error!void {
     if (st.closed) return py.errRuntime("Event loop is closed");
 }
 
-fn rejectForeignThreadInDebug(st: *State) py.Error!void {
-    if (!st.debug) return;
+/// True while another thread is inside `run_forever()`. Only that thread may touch the ready queue,
+/// the timer heap and libuv.
+fn ownedByAnotherThread(st: *State) bool {
     const thread_id = @atomicLoad(c_ulong, &st.thread_id, .acquire);
-    if (thread_id != 0 and thread_id != c.PyThread_get_thread_ident()) {
+    return thread_id != 0 and thread_id != c.PyThread_get_thread_ident();
+}
+
+fn rejectForeignThread(st: *State) py.Error!void {
+    if (ownedByAnotherThread(st)) {
         return py.errRuntime("Non-thread-safe operation invoked on an event loop other than the current one");
     }
 }
@@ -645,7 +650,13 @@ fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py
     // so the loop is checked once none is left.
     while (st.threadsafe_candidate != null) clearThreadsafeCandidate(st, true);
     try checkClosed(st);
-    try rejectForeignThreadInDebug(st);
+    if (ownedByAnotherThread(st)) {
+        // Only the loop thread may touch the ready queue and libuv, so this call goes through the inbox.
+        if (st.debug) try rejectForeignThread(st);
+        const routed = try enqueueThreadsafe(self, callback, p);
+        py.decref(h);
+        return routed;
+    }
     drainThreadsafe(st) catch return py.errNoMemory();
     py.incref(h);
     st.ready.push(@as(*py.Object, @ptrCast(h))) catch {
@@ -671,8 +682,15 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
     const st = self.state();
     try checkClosed(st);
     const p = try parseCall(args, nargs, kwnames, 1);
+    return enqueueThreadsafe(self, args[0].?, p);
+}
+
+/// Queues a callback in the inbox the loop thread drains, and wakes it. The caller holds the
+/// loop's critical section, which is all the inbox needs: any thread may call this.
+fn enqueueThreadsafe(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py.Object {
+    const st = self.state();
     clearThreadsafeCandidate(st, true);
-    const h = try tshandle.create(self_obj, args[0].?, p.positional, p.context);
+    const h = try tshandle.create(@ptrCast(self), callback, p.positional, p.context);
     // Taking the candidate's lock or allocating can suspend the loop's critical section.
     checkClosed(st) catch |err| {
         py.decref(h);
@@ -708,13 +726,13 @@ fn scheduleAt(
 ) py.Error!*py.Object {
     const st = self.state();
     try checkClosed(st);
-    try rejectForeignThreadInDebug(st);
+    try rejectForeignThread(st);
     const h = try timermod.create(@ptrCast(self), callback, p.positional, p.context, when, original_when);
     {
         // Allocating can suspend the critical section, so the loop is checked again.
         errdefer py.decref(h);
         try checkClosed(st);
-        try rejectForeignThreadInDebug(st);
+        try rejectForeignThread(st);
     }
     py.incref(h);
     if (already_due) {
@@ -735,7 +753,9 @@ fn scheduleAt(
         py.decref(h);
         return py.errNoMemory();
     };
-    armTimer(self);
+    // Only a new earliest deadline moves the libuv timer. Arming for any other would retire cancelled
+    // timers first, and releasing one can run Python and let another thread start the loop meanwhile.
+    if (st.timers.peek().?.handle == h) armTimer(self);
     return h;
 }
 
@@ -762,17 +782,24 @@ fn time(self_obj: *py.Object) py.Error!*py.Object {
 fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
     const self = asLoop(self_obj);
     const st = self.state();
-    try checkClosed(st);
-    if (@atomicLoad(c_ulong, &st.thread_id, .acquire) != 0) {
-        return py.errRuntime("This event loop is already running");
+    {
+        // Schedulers read the owner inside the loop's critical section, so it is published inside it:
+        // one that saw no owner has finished with the ready queue and libuv before the run begins.
+        // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
+        var critical_section: py.CriticalSection = undefined;
+        py.beginCriticalSection(&critical_section, self_obj);
+        defer py.endCriticalSection(&critical_section);
+        try checkClosed(st);
+        if (@atomicLoad(c_ulong, &st.thread_id, .acquire) != 0) {
+            return py.errRuntime("This event loop is already running");
+        }
+        try raiseFatal(st);
+        st.running = true;
+        st.stopping = false;
+        @atomicStore(c_ulong, &st.thread_id, c.PyThread_get_thread_ident(), .release);
+        startIdle(st);
+        armTimer(self);
     }
-    try raiseFatal(st);
-
-    st.running = true;
-    st.stopping = false;
-    @atomicStore(c_ulong, &st.thread_id, c.PyThread_get_thread_ident(), .release);
-    startIdle(st);
-    armTimer(self);
 
     st.pythonExit();
     _ = uv.uv_run(st.uvloop, .default);

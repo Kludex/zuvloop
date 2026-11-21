@@ -211,7 +211,9 @@ the base class is 56 bytes of storage such a handle never writes, measured at 2%
 which is the object the loop allocates more often than any other. `call_later` and `call_at`
 do return real `asyncio.TimerHandle` instances, so they order and compare by deadline, and
 `call_soon_threadsafe` returns a real `asyncio.Handle`, because 3.14 requires cancelling one
-from another thread to block until a callback that has already started finishes.
+from another thread to block until a callback that has already started finishes. A `call_soon`
+made from a thread other than the loop's is handled as `call_soon_threadsafe`, so it returns
+that handle too.
 
 ## Development
 

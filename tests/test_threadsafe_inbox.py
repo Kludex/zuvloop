@@ -24,6 +24,10 @@ def test_call_soon_sees_a_loop_started_while_it_waited_on_the_candidate() -> Non
     run_untraced("start")
 
 
+def test_call_soon_is_routed_to_a_loop_started_while_it_waited_on_the_candidate() -> None:  # pragma: no cover
+    run_untraced("start_without_debug")
+
+
 def test_call_soon_sees_a_loop_closed_while_it_waited_on_the_candidate() -> None:  # pragma: no cover - free-threaded
     run_untraced("close")
 
@@ -74,7 +78,7 @@ def contend(scenario: str) -> None:  # pragma: no cover - untraced subprocess wo
     threading.excepthook = thread_errors.append
     for _ in range(10):
         loop = zuvloop.new_event_loop()
-        loop.set_debug(True)
+        loop.set_debug(scenario != "start_without_debug")
         # A callback only runs once the loop has published its owner thread, which `is_running()` does not wait for.
         owned = threading.Event()
         loop.call_soon(owned.set)
@@ -86,11 +90,11 @@ def contend(scenario: str) -> None:  # pragma: no cover - untraced subprocess wo
         def schedule() -> None:
             call = loop.call_soon_threadsafe if scenario == "close_threadsafe" else loop.call_soon
             try:
-                call(int, context=contextvars.Context())
+                handle = call(int, context=contextvars.Context())
             except RuntimeError as exc:
                 outcome.append(str(exc))
             else:
-                outcome.append("accepted")
+                outcome.append(type(handle).__name__)
             finally:
                 scheduled.set()
 
@@ -104,7 +108,7 @@ def contend(scenario: str) -> None:  # pragma: no cover - untraced subprocess wo
             assert first.entered.wait(5)
             threads[1].start()
             assert not scheduled.wait(0.1), "the scheduler did not wait on the candidate"
-            if scenario == "start":
+            if scenario in ("start", "start_without_debug"):
                 threads.append(threading.Thread(target=loop.run_forever, daemon=True))
                 threads[2].start()
                 assert owned.wait(5)
@@ -122,7 +126,8 @@ def contend(scenario: str) -> None:  # pragma: no cover - untraced subprocess wo
             first.release.set()
             second.release.set()
             assert scheduled.wait(5)
-            assert outcome == [FOREIGN_THREAD if scenario == "start" else CLOSED]
+            expected = {"start": FOREIGN_THREAD, "start_without_debug": "ThreadSafeHandle"}
+            assert outcome == [expected.get(scenario, CLOSED)]
         finally:
             first.release.set()
             second.release.set()
