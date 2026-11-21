@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import sys
 from collections.abc import Buffer, Callable
 
 from ._base import LoopBase
@@ -89,22 +90,22 @@ class SocketOperations(LoopBase):
         try:
             sock.connect(address)
             return
-        except BlockingIOError, InterruptedError:
+        except (BlockingIOError, InterruptedError):
             pass
 
-        future: asyncio.Future[None] = self.create_future()
+        future: asyncio.Future[None] | None = self.create_future()
         fd = sock.fileno()
 
         def check() -> None:
-            if future.done():  # pragma: no cover - guards a wakeup the tests cannot force
+            if future is None or future.done():  # pragma: no cover - guards a wakeup the tests cannot force
                 return
             try:
                 err = sock.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
                 if err:
                     raise OSError(err, f"Connect call failed {address!r}")
-            except BlockingIOError, InterruptedError:
+            except (BlockingIOError, InterruptedError):
                 pass
-            except SystemExit, KeyboardInterrupt:
+            except (SystemExit, KeyboardInterrupt):
                 raise
             except BaseException as exc:
                 future.set_exception(exc)
@@ -112,9 +113,12 @@ class SocketOperations(LoopBase):
                 future.set_result(None)
 
         token = self._watch(fd, True, check)
+        assert future is not None
         try:
             await future
         finally:
+            # An error's traceback keeps this frame and `check`'s, which would keep the future that holds the error.
+            future = None
             self._unwatch(fd, True, token)
 
 
@@ -126,7 +130,7 @@ def _attempt[T](future: asyncio.Future[T], op: Callable[[], T]) -> bool:
         return True
     try:
         result = op()
-    except BlockingIOError, InterruptedError:
+    except (BlockingIOError, InterruptedError):
         return False
     except OSError as exc:
         future.set_exception(exc)
@@ -135,4 +139,8 @@ def _attempt[T](future: asyncio.Future[T], op: Callable[[], T]) -> bool:
     return True
 
 
-type _SocketAddress = tuple[str | bytes | int, ...] | str | Buffer | int
+if sys.version_info >= (3, 14):
+    type _SocketAddress = tuple[str | bytes | int, ...] | str | Buffer | int
+else:  # pragma: no cover - coverage is measured on 3.14
+    # TODO: drop when 3.13 support ends. A bare `int` address, a Bluetooth HCI device ID, arrived in 3.14.
+    type _SocketAddress = tuple[str | bytes | int, ...] | str | Buffer

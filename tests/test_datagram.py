@@ -13,8 +13,8 @@ from typing import NoReturn
 
 import pytest
 
-from tests.conftest import running_loop
-from zuvloop import _connect, _zuvloop, new_event_loop
+from tests.conftest import collect_contexts, running_loop
+from zuvloop import EventLoop, _connect, _zuvloop, new_event_loop
 
 pytestmark = pytest.mark.anyio
 requires_unix_sockets = pytest.mark.skipif(sys.platform == "win32", reason="Windows has no Unix sockets")
@@ -480,6 +480,144 @@ async def test_a_send_failure_reaches_error_received() -> None:
         transport.sendto(b"x" * 100_000, ("127.0.0.1", 9))
         assert protocol.errors
         assert isinstance(protocol.errors[0], OSError)
+    finally:
+        transport.close()
+
+
+@pytest.mark.parametrize("error_type", [SystemExit, KeyboardInterrupt])
+def test_an_exit_from_a_datagram_callback_reaches_the_caller(loop: EventLoop, error_type: type[BaseException]) -> None:
+    """asyncio lets these two end the run instead of handing them to the exception
+    handler, where the caller of `run_forever` would never learn of them."""
+    seen = collect_contexts(loop)
+
+    class Interrupt(asyncio.DatagramProtocol):
+        def datagram_received(self, data: bytes, addr: Address) -> None:
+            raise error_type("stop")
+
+    transport, _protocol = loop.run_until_complete(
+        loop.create_datagram_endpoint(Interrupt, local_addr=("127.0.0.1", 0))
+    )
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sender.sendto(b"go", transport.get_extra_info("sockname"))
+        with pytest.raises(error_type, match="stop"):
+            loop.run_until_complete(asyncio.sleep(5))
+        assert seen == []
+    finally:
+        transport.close()
+        sender.close()
+
+
+def test_an_exit_from_a_datagram_callback_leaves_the_rest_for_the_next_run(loop: EventLoop) -> None:
+    """asyncio unwinds from the callback that raised, so a datagram queued behind
+    it reaches the protocol on the next run and not before the caller hears of
+    the exit."""
+    received: list[bytes] = []
+    second: asyncio.Future[None] = loop.create_future()
+
+    class Interrupt(asyncio.DatagramProtocol):
+        def datagram_received(self, data: bytes, addr: Address) -> None:
+            received.append(data)
+            if data == b"first":
+                raise KeyboardInterrupt("stop")
+            second.set_result(None)
+
+    transport, _protocol = loop.run_until_complete(
+        loop.create_datagram_endpoint(Interrupt, local_addr=("127.0.0.1", 0))
+    )
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        address = transport.get_extra_info("sockname")
+        sender.sendto(b"first", address)
+        sender.sendto(b"second", address)
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_until_complete(asyncio.sleep(5))
+        assert received == [b"first"]
+        loop.run_until_complete(asyncio.wait_for(second, 5))
+        assert received == [b"first", b"second"]
+    finally:
+        transport.close()
+        sender.close()
+
+
+def test_an_exit_stops_delivery_on_every_datagram_endpoint(loop: EventLoop) -> None:
+    """Both sockets are ready in the same turn. The second callback must wait for
+    the next run, with its datagram still in the socket."""
+    received: list[bytes] = []
+
+    class Interrupt(asyncio.DatagramProtocol):
+        def datagram_received(self, data: bytes, addr: Address) -> None:
+            received.append(data)
+            raise KeyboardInterrupt("stop")
+
+    first, _protocol = loop.run_until_complete(loop.create_datagram_endpoint(Interrupt, local_addr=("127.0.0.1", 0)))
+    second, _protocol = loop.run_until_complete(loop.create_datagram_endpoint(Interrupt, local_addr=("127.0.0.1", 0)))
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sender.sendto(b"first", first.get_extra_info("sockname"))
+        sender.sendto(b"second", second.get_extra_info("sockname"))
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_until_complete(asyncio.sleep(5))
+        assert len(received) == 1
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_until_complete(asyncio.sleep(5))
+        assert sorted(received) == [b"first", b"second"]
+    finally:
+        first.close()
+        second.close()
+        sender.close()
+
+
+def test_an_exit_from_connection_made_leaves_a_queued_datagram_for_the_next_run(loop: EventLoop) -> None:
+    """Receiving starts later in the same turn, after the exit was captured, and
+    must not hand over what the socket already holds."""
+    receiver = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    receiver.bind(("127.0.0.1", 0))
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sender.sendto(b"queued", receiver.getsockname())
+    made: list[asyncio.BaseTransport] = []
+    received: list[bytes] = []
+    delivered: asyncio.Future[None] = loop.create_future()
+
+    class Interrupt(asyncio.DatagramProtocol):
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            made.append(transport)
+            raise KeyboardInterrupt("stop")
+
+        def datagram_received(self, data: bytes, addr: Address) -> None:
+            received.append(data)
+            delivered.set_result(None)
+
+    try:
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_until_complete(loop.create_datagram_endpoint(Interrupt, sock=receiver))
+        assert received == []
+        loop.run_until_complete(asyncio.wait_for(delivered, 5))
+        assert received == [b"queued"]
+    finally:
+        for transport in made:
+            transport.close()
+        sender.close()
+
+
+def test_an_exit_from_error_received_reaches_the_caller(loop: EventLoop) -> None:
+    seen = collect_contexts(loop)
+
+    class Interrupt(asyncio.DatagramProtocol):
+        def error_received(self, exc: Exception) -> None:
+            raise KeyboardInterrupt("stop")
+
+    transport, _protocol = loop.run_until_complete(
+        loop.create_datagram_endpoint(Interrupt, local_addr=("127.0.0.1", 0))
+    )
+    try:
+        # Larger than any datagram a UDP socket can carry, so the send itself fails.
+        loop.call_soon(transport.sendto, b"x" * 100_000, ("127.0.0.1", 9))
+        watchdog = loop.call_later(5, loop.stop)
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_forever()
+        watchdog.cancel()
+        assert seen == []
     finally:
         transport.close()
 

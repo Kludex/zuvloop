@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import contextvars
 import os
 import signal
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Sequence
-from typing import IO, TYPE_CHECKING, Any, Protocol
+from collections.abc import Callable, Iterable, Mapping
+from typing import IO, TYPE_CHECKING, Protocol
 
 from . import _zuvloop
 
@@ -36,6 +37,21 @@ class _ExitReceiver(Protocol):
     def exited(self, returncode: int) -> None: ...
 
 
+class _StartupInfo(Protocol):
+    """`subprocess.STARTUPINFO`, which only exists on Windows."""
+
+    dwFlags: int
+
+
+class _HasFileno(Protocol):
+    def fileno(self) -> int: ...
+
+
+# What a stdio argument may be: a descriptor, one of `subprocess`'s markers,
+# anything that has a descriptor, or nothing.
+type Stdio = int | _HasFileno | None
+
+
 class Popen:
     """The surface `asyncio.BaseSubprocessTransport` expects, over `uv_spawn`.
 
@@ -51,33 +67,41 @@ class Popen:
         args: list[str],
         *,
         executable: str | None = None,
-        env: dict[str, str] | None = None,
-        cwd: str | os.PathLike[str] | None = None,
-        stdin: Any = None,
-        stdout: Any = None,
-        stderr: Any = None,
+        env: Mapping[str, str] | None = None,
+        cwd: str | bytes | os.PathLike[str] | os.PathLike[bytes] | None = None,
+        stdin: int | None = None,
+        stdout: int | None = None,
+        stderr: int | None = None,
         start_new_session: bool = False,
         windows_verbatim: bool = False,
-        startupinfo: None = None,
+        startupinfo: _StartupInfo | None = None,
         creationflags: int = 0,
-        pass_fds: Sequence[int] = (),
+        pass_fds: Iterable[int] = (),
+        user: str | int | None = None,
+        group: str | int | None = None,
+        extra_groups: Iterable[str | int] | None = None,
+        umask: int = -1,
+        process_group: int | None = None,
+        close_fds: bool = True,
+        restore_signals: bool = True,
+        preexec_fn: Callable[[], object] | None = None,
+        pipesize: int = -1,
         on_exit: Callable[[int], object],
-        **unsupported: Any,
     ) -> None:
-        if startupinfo is not None:
-            raise ValueError("startupinfo is not supported by zuvloop's subprocess transport")
-        if creationflags:
-            raise ValueError("creationflags is not supported by zuvloop's subprocess transport")
-        if unsupported:
-            name = next(iter(unsupported))
-            raise ValueError(f"{name} is not supported by zuvloop's subprocess transport")
 
         file = executable or args[0]
         cwd_text = None if cwd is None else os.fsdecode(cwd)
         env_items = None if env is None else [f"{key}={value}" for key, value in env.items()]
+        not_text = False
         for value in (file, *args, cwd_text, *(env_items or ())):
-            if value is not None and "\0" in value:
-                raise ValueError("embedded null byte")
+            if value is not None:
+                if "\0" in value:
+                    raise ValueError("embedded null byte")
+                try:
+                    value.encode()
+                except UnicodeEncodeError:
+                    # Bytes that were never text, decoded with surrogates.
+                    not_text = True
 
         # Before any pipe of ours can reuse a freshly closed number, and in the
         # parent, where the error beats the child's bare exit code 127.
@@ -93,6 +117,9 @@ class Popen:
         self.returncode: int | None = None
         self.pid: int
         self._on_exit = on_exit
+        # The exit is reported from a reaper thread or a libuv callback, neither
+        # of which is where the protocol was created.
+        self._context = contextvars.copy_context()
         self._stdlib: subprocess.Popen[bytes] | None = None
         self._handle: _zuvloop.Process | None = None
 
@@ -100,10 +127,43 @@ class Popen:
         # Linux spawns: its child-side close preserves Popen's default even when
         # another thread is opening or renumbering inheritable descriptors. On
         # macOS libuv uses POSIX_SPAWN_CLOEXEC_DEFAULT and is already safe.
-        if sys.platform == "linux" or pass_fds:
+        # libuv cannot change the child's groups, umask or process group either,
+        # nor run a hook in it, keep its signal dispositions or size its pipes.
+        # Windows has none of those: stdlib rejects the credentials and the hook,
+        # and ignores the rest. `uv_spawn` takes no startup info or creation
+        # flags, which are Windows' own and rejected by stdlib elsewhere.
+        posix_only = umask != -1 or process_group is not None or not restore_signals or pipesize != -1
+        if (
+            sys.platform == "linux"
+            or pass_fds
+            or any(value is not None for value in (user, group, extra_groups, preexec_fn))
+            or (posix_only and sys.platform != "win32")
+            # `uv_spawn` takes UTF-8, which cannot spell such an argument.
+            or (not_text and sys.platform != "win32")
+            # `uv_spawn` starts the child with every signal at its default and
+            # none blocked. A child is meant to keep what its parent ignores or
+            # blocks, bar the three signals `restore_signals` resets.
+            or (
+                sys.platform != "win32"
+                and (
+                    bool(signal.pthread_sigmask(signal.SIG_BLOCK, ()))
+                    or any(
+                        signal.getsignal(number) is signal.SIG_IGN
+                        for number in signal.valid_signals() - {signal.SIGPIPE, signal.SIGXFSZ}
+                    )
+                )
+            )
+            or startupinfo is not None
+            or creationflags
+            or not close_fds
+        ):
             process = subprocess.Popen(
-                args,
-                executable=executable,
+                # A string reaches `CreateProcess` as written, which is what the
+                # shell's own quoting needs; a list would be escaped again.
+                " ".join(args) if windows_verbatim else args,
+                # As CPython's own shell spawn does: the unquoted shell path in
+                # that string is not parsed when the program is named here.
+                executable=file if windows_verbatim else executable,
                 env=env,
                 cwd=cwd,
                 stdin=stdin,
@@ -112,6 +172,17 @@ class Popen:
                 bufsize=0,
                 start_new_session=start_new_session,
                 pass_fds=pass_fds,
+                user=user,
+                group=group,
+                extra_groups=extra_groups,
+                umask=umask,
+                process_group=process_group,
+                close_fds=close_fds,
+                restore_signals=restore_signals,
+                preexec_fn=preexec_fn,
+                pipesize=pipesize,
+                startupinfo=startupinfo,
+                creationflags=creationflags,
             )
             self._stdlib = process
             self.stdin = process.stdin
@@ -141,9 +212,9 @@ class Popen:
         file: str,
         env_items: list[str] | None,
         cwd: str | None,
-        stdin: Any,
-        stdout: Any,
-        stderr: Any,
+        stdin: int | None,
+        stdout: int | None,
+        stderr: int | None,
         start_new_session: bool,
         windows_verbatim: bool,
     ) -> None:
@@ -157,7 +228,9 @@ class Popen:
                     # is what closes it from here.
                     setattr(self, _NAMES[index], open(mine, "wb" if index == 0 else "rb", 0))
 
-            flags = (_zuvloop.PROCESS_DETACHED if start_new_session else 0) | (
+            # A session is POSIX's; stdlib ignores the argument on Windows, where
+            # libuv would detach the child from its console instead.
+            flags = (_zuvloop.PROCESS_DETACHED if start_new_session and sys.platform != "win32" else 0) | (
                 _zuvloop.PROCESS_WINDOWS_VERBATIM if windows_verbatim else 0
             )
             self._handle = loop._spawn_process(file, args, env_items, cwd, child_fds, flags, 0, 0, self.exited)
@@ -179,16 +252,26 @@ class Popen:
 
     def exited(self, returncode: int) -> None:
         self.returncode = returncode
-        self._on_exit(returncode)
+        self._context.run(self._on_exit, returncode)
 
     def poll(self) -> int | None:
         return self.returncode
 
     def send_signal(self, signum: int) -> None:
         if self._stdlib is not None:
-            self._stdlib.send_signal(signum)
+            # Windows' `Popen.send_signal` knows no signal 9; `kill` is the same
+            # signal on POSIX.
+            self._stdlib.kill() if signum == _SIGKILL else self._stdlib.send_signal(signum)
         else:  # pragma: no cover - platform path exercised by macOS CI
             assert self._handle is not None
+            if sys.platform == "win32":
+                # What `subprocess` can deliver there: an end to the process, or
+                # a console event. libuv would end it for any signal at all.
+                if signum in (signal.CTRL_C_EVENT, signal.CTRL_BREAK_EVENT):
+                    os.kill(self.pid, signum)
+                    return
+                if signum not in (signal.SIGTERM, _SIGKILL):
+                    raise ValueError(f"Unsupported signal: {signum}")
             self._handle.send_signal(signum)
 
     def kill(self) -> None:
@@ -218,33 +301,40 @@ class ProcessReaper:
             with self.condition:
                 while not self.processes:
                     self.condition.wait()
-                processes = tuple(self.processes.items())
-
-            completed = False
-            for pid, (process, loop, wrapper) in processes:
-                returncode = process.poll()
-                if returncode is None:
-                    continue
-                completed = True
-                with self.condition:
-                    current = self.processes.get(pid)
-                    if current is not None and current[0] is process:
-                        del self.processes[pid]
-                try:
-                    loop.call_soon_threadsafe(wrapper.exited, returncode)
-                except RuntimeError:  # pragma: no cover - loop closed while child exited
-                    pass
-
-            if not completed:
+            if not self.poll():
                 with self.condition:
                     self.condition.wait(0.01)
+
+    def poll(self) -> bool:
+        """Report the children that have exited; whether any had.
+
+        A frame of its own, so that the loops and children of one pass are not
+        kept alive by the thread while it waits for the next.
+        """
+        with self.condition:
+            processes = tuple(self.processes.items())
+        completed = False
+        for pid, (process, loop, wrapper) in processes:
+            returncode = process.poll()
+            if returncode is None:
+                continue
+            completed = True
+            with self.condition:
+                current = self.processes.get(pid)
+                if current is not None and current[0] is process:
+                    del self.processes[pid]
+            try:
+                loop.call_soon_threadsafe(wrapper.exited, returncode)
+            except RuntimeError:  # pragma: no cover - loop closed while child exited
+                pass
+        return completed
 
 
 process_reaper = ProcessReaper()
 
 
 def open_stream(  # pragma: no cover - platform helper exercised by macOS CI
-    index: int, request: Any, child_fds: list[int]
+    index: int, request: int | None, child_fds: list[int]
 ) -> tuple[int, int | None]:
     """Returns the descriptor the child inherits, and ours if there is one.
 
@@ -268,5 +358,9 @@ def open_stream(  # pragma: no cover - platform helper exercised by macOS CI
         # Whatever stdout resolved to, which is a pipe back to us whenever one
         # was asked for - never our own stdout unless the child inherited it.
         return os.dup(child_fds[1]), None
-    fd = request if isinstance(request, int) else request.fileno()
-    return os.dup(fd), None
+    return os.dup(request), None
+
+
+def descriptor(stream: Stdio) -> int | None:
+    """What `subprocess` would read off a stream itself; its annotation asks for a whole file."""
+    return stream if stream is None or isinstance(stream, int) else stream.fileno()

@@ -10,7 +10,7 @@ build-backend = "hatchling.build"
 name = "zuvloop"
 description = "A libuv event loop for asyncio, written in Zig."
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 license = "MIT"
 dynamic = ["version"]
 # libuv is compiled into the extension, so its licence ships with the wheel.
@@ -24,6 +24,8 @@ classifiers = [
     "Operating System :: MacOS",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3.15",
     "Programming Language :: Zig",
@@ -92,7 +94,7 @@ combine-as-imports = true
 
 [tool.mypy]
 strict = true
-python_version = "3.14"
+python_version = "3.12"
 files = ["zuvloop", "tests", "benchmarks", "scripts"]
 exclude = ["^vendor/"]
 
@@ -111,9 +113,9 @@ xfail_strict = true
 filterwarnings = ["error"]
 
 [tool.cibuildwheel]
-# Build standard and free-threaded CPython 3.14 and 3.15 wheels. The same suite
+# Build CPython 3.12 and 3.13, and standard and free-threaded 3.14 and 3.15 wheels. The same suite
 # runs against each interpreter before a wheel is published.
-build = "cp314-* cp314t-* cp315-* cp315t-*"
+build = "cp312-* cp313-* cp314-* cp314t-* cp315-* cp315t-*"
 skip = "*-musllinux_i686"
 # Pass hash and constraint enforcement directly to the project build. Global uv
 # environment variables also affect cibuildwheel's bootstrap and test tools;

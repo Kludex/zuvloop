@@ -299,7 +299,7 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
         if self._exception_handler is None:
             try:
                 self.default_exception_handler(context)
-            except SystemExit, KeyboardInterrupt:
+            except (SystemExit, KeyboardInterrupt):
                 raise
             except BaseException:
                 logging.getLogger("asyncio").exception("Exception in default exception handler")
@@ -315,14 +315,14 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
                 ctx.run(self._exception_handler, self, context)
             else:
                 self._exception_handler(self, context)
-        except SystemExit, KeyboardInterrupt:
+        except (SystemExit, KeyboardInterrupt):
             raise
         except BaseException as exc:
             try:
                 self.default_exception_handler(
                     {"message": "Unhandled error in exception handler", "exception": exc, "context": context}
                 )
-            except SystemExit, KeyboardInterrupt:
+            except (SystemExit, KeyboardInterrupt):
                 raise
             except BaseException:
                 logging.getLogger("asyncio").exception(
@@ -479,7 +479,7 @@ class LoopBase(_zuvloop.Loop, asyncio.AbstractEventLoop):  # type: ignore[misc]
                     break
                 for signum in data:
                     self._dispatch_signal(signum)
-        except BlockingIOError, InterruptedError:
+        except (BlockingIOError, InterruptedError):
             pass
 
     def _dispatch_signal(self, signum: int) -> None:
