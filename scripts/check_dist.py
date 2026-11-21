@@ -7,7 +7,7 @@ import zipfile
 from email import message_from_bytes
 from pathlib import Path
 
-INTERPRETERS = ("cp314-cp314", "cp314-cp314t", "cp315-cp315", "cp315-cp315t")
+INTERPRETERS = ("cp312-cp312", "cp313-cp313", "cp314-cp314", "cp314-cp314t", "cp315-cp315", "cp315-cp315t")
 PLATFORMS = (
     "manylinux_x86_64",
     "manylinux_aarch64",
