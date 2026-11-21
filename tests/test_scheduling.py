@@ -42,12 +42,14 @@ def debug_loop_on_another_thread() -> Iterator[zuvloop.EventLoop]:
     loop.call_soon(started.set)
     thread = threading.Thread(target=loop.run_forever)
     thread.start()
-    assert started.wait(5)
-    yield loop
-    loop.call_soon_threadsafe(loop.stop)
-    thread.join(5)
-    assert not thread.is_alive()
-    loop.close()
+    try:
+        assert started.wait(5)
+        yield loop
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(5)
+        assert not thread.is_alive()
+        loop.close()
 
 
 def test_debug_call_soon_from_another_thread_is_rejected(debug_loop_on_another_thread: zuvloop.EventLoop) -> None:

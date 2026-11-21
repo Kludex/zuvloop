@@ -625,7 +625,7 @@ pub inline fn checkClosed(st: *State) py.Error!void {
     if (st.closed) return py.errRuntime("Event loop is closed");
 }
 
-fn checkThread(st: *State) py.Error!void {
+fn rejectForeignThreadInDebug(st: *State) py.Error!void {
     if (!st.debug) return;
     const thread_id = @atomicLoad(c_ulong, &st.thread_id, .acquire);
     if (thread_id != 0 and thread_id != c.PyThread_get_thread_ident()) {
@@ -645,7 +645,7 @@ fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py
     // so the loop is checked once none is left.
     while (st.threadsafe_candidate != null) clearThreadsafeCandidate(st, true);
     try checkClosed(st);
-    try checkThread(st);
+    try rejectForeignThreadInDebug(st);
     drainThreadsafe(st) catch return py.errNoMemory();
     py.incref(h);
     st.ready.push(@as(*py.Object, @ptrCast(h))) catch {
@@ -708,7 +708,7 @@ fn scheduleAt(
 ) py.Error!*py.Object {
     const st = self.state();
     try checkClosed(st);
-    try checkThread(st);
+    try rejectForeignThreadInDebug(st);
     const h = try timermod.create(@ptrCast(self), callback, p.positional, p.context, when, original_when);
     {
         // Allocating can suspend the critical section, so the loop is checked again.
