@@ -75,6 +75,9 @@ def contend(scenario: str) -> None:  # pragma: no cover - untraced subprocess wo
     for _ in range(10):
         loop = zuvloop.new_event_loop()
         loop.set_debug(True)
+        # A callback only runs once the loop has published its owner thread, which `is_running()` does not wait for.
+        owned = threading.Event()
+        loop.call_soon(owned.set)
         first = SlowRepr()
         second = SlowRepr()
         scheduled = threading.Event()
@@ -104,10 +107,7 @@ def contend(scenario: str) -> None:  # pragma: no cover - untraced subprocess wo
             if scenario == "start":
                 threads.append(threading.Thread(target=loop.run_forever, daemon=True))
                 threads[2].start()
-                deadline = time.monotonic() + 5
-                while not loop.is_running() and time.monotonic() < deadline:
-                    time.sleep(0.001)
-                assert loop.is_running()
+                assert owned.wait(5)
             elif scenario == "close_on_second_candidate":
                 # The scheduler has taken the first candidate, so this one is installed behind its back.
                 next_candidate = loop.call_soon_threadsafe(second, context=contextvars.Context())
