@@ -641,8 +641,6 @@ fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py
     var critical_section: py.CriticalSection = undefined;
     py.beginCriticalSection(&critical_section, @ptrCast(self));
     defer py.endCriticalSection(&critical_section);
-    // Clearing the candidate can suspend the critical section, so the loop is checked after it.
-    clearThreadsafeCandidate(st, true);
     try checkClosed(st);
     try checkThread(st);
     drainThreadsafe(st) catch return py.errNoMemory();
@@ -672,11 +670,6 @@ fn callSoonThreadsafe(self_obj: *py.Object, args: []const ?*py.Object, nargs: us
     const p = try parseCall(args, nargs, kwnames, 1);
     clearThreadsafeCandidate(st, true);
     const h = try tshandle.create(self_obj, args[0].?, p.positional, p.context);
-    // Taking the candidate's lock or allocating can suspend the loop's critical section.
-    checkClosed(st) catch |err| {
-        py.decref(h);
-        return err;
-    };
     py.incref(h);
     // A loop-thread `call_soon` drains this inbox before appending its own
     // handle, so both schedulers preserve registration order.
@@ -756,9 +749,7 @@ fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
     const self = asLoop(self_obj);
     const st = self.state();
     try checkClosed(st);
-    if (@atomicLoad(c_ulong, &st.thread_id, .acquire) != 0) {
-        return py.errRuntime("This event loop is already running");
-    }
+    if (st.running) return py.errRuntime("This event loop is already running");
     try raiseFatal(st);
 
     st.running = true;
@@ -773,11 +764,11 @@ fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
 
     st.running = false;
     st.stopping = false;
+    @atomicStore(c_ulong, &st.thread_id, 0, .release);
     // A write from the callback that stopped the loop has had no iteration left
     // to flush it. Draining after clearing `running` sends anything those
     // callbacks write in turn.
     drainFlushList(st);
-    @atomicStore(c_ulong, &st.thread_id, 0, .release);
 
     try raiseFatal(st);
     return py.noneRef();
@@ -1000,9 +991,7 @@ fn timerHandleCancelled(self_obj: *py.Object, _: *py.Object) py.Error!*py.Object
 fn closeLoop(self_obj: *py.Object) py.Error!*py.Object {
     const self = asLoop(self_obj);
     const st = self.state();
-    if (st.running or @atomicLoad(c_ulong, &st.thread_id, .acquire) != 0) {
-        return py.errRuntime("Cannot close a running event loop");
-    }
+    if (st.running) return py.errRuntime("Cannot close a running event loop");
     if (!st.closed) teardown(st);
     return py.noneRef();
 }
