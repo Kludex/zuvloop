@@ -253,6 +253,7 @@ fn onWake(waker: ?*uv.Async) callconv(.c) void {
     defer py.endCriticalSection(&critical_section);
     st.waker_pending = false;
     drainThreadsafe(st) catch {
+        py.errNoMemory() catch {};
         captureFatal(self);
         return;
     };
@@ -390,12 +391,10 @@ fn clearThreadsafeCandidate(st: *State, untrack_queue_only: bool) void {
     py.decref(candidate);
 }
 
-fn drainThreadsafe(st: *State) py.Error!void {
+fn drainThreadsafe(st: *State) error{OutOfMemory}!void {
     // Clearing the candidate can suspend the critical section and let producers grow the inbox.
     clearThreadsafeCandidate(st, true);
-    try checkClosed(st);
-    try checkThread(st);
-    st.ready.ensureUnusedCapacity(st.threadsafe_ready.len) catch return py.errNoMemory();
+    try st.ready.ensureUnusedCapacity(st.threadsafe_ready.len);
     while (st.threadsafe_ready.pop()) |handle| st.ready.pushAssumeCapacity(handle);
 }
 
@@ -642,7 +641,11 @@ fn scheduleSoon(self: *LoopObject, callback: *py.Object, p: Parsed) py.Error!*py
     var critical_section: py.CriticalSection = undefined;
     py.beginCriticalSection(&critical_section, @ptrCast(self));
     defer py.endCriticalSection(&critical_section);
-    try drainThreadsafe(st);
+    // Clearing the candidate can suspend the critical section, so the loop is checked after it.
+    clearThreadsafeCandidate(st, true);
+    try checkClosed(st);
+    try checkThread(st);
+    drainThreadsafe(st) catch return py.errNoMemory();
     py.incref(h);
     st.ready.push(@as(*py.Object, @ptrCast(h))) catch {
         py.decref(h);
@@ -706,16 +709,13 @@ fn scheduleAt(
     try checkClosed(st);
     try checkThread(st);
     const h = try timermod.create(@ptrCast(self), callback, p.positional, p.context, when, original_when);
-    errdefer py.decref(h);
-    // Free-threaded allocation can suspend this critical section on CPython's GC lock.
-    try checkClosed(st);
-    try checkThread(st);
     py.incref(h);
     if (already_due) {
         const can_bypass_heap = if (st.timers.peek()) |entry| when < entry.when else true;
         if (can_bypass_heap) {
             timermod.markReady(h);
             st.ready.push(h) catch {
+                py.decref(h);
                 py.decref(h);
                 return py.errNoMemory();
             };
@@ -724,6 +724,7 @@ fn scheduleAt(
         }
     }
     st.timers.push(when, h) catch {
+        py.decref(h);
         py.decref(h);
         return py.errNoMemory();
     };
@@ -754,29 +755,22 @@ fn time(self_obj: *py.Object) py.Error!*py.Object {
 fn runLoop(self_obj: *py.Object) py.Error!*py.Object {
     const self = asLoop(self_obj);
     const st = self.state();
-    // SAFETY: PyCriticalSection_Begin initializes this storage before reading it.
-    var critical_section: py.CriticalSection = undefined;
-    {
-        py.beginCriticalSection(&critical_section, self_obj);
-        defer py.endCriticalSection(&critical_section);
-        try checkClosed(st);
-        if (@atomicLoad(c_ulong, &st.thread_id, .acquire) != 0) {
-            return py.errRuntime("This event loop is already running");
-        }
-        try raiseFatal(st);
-        st.running = true;
-        st.stopping = false;
-        @atomicStore(c_ulong, &st.thread_id, c.PyThread_get_thread_ident(), .release);
-        startIdle(st);
-        armTimer(self);
+    try checkClosed(st);
+    if (@atomicLoad(c_ulong, &st.thread_id, .acquire) != 0) {
+        return py.errRuntime("This event loop is already running");
     }
+    try raiseFatal(st);
+
+    st.running = true;
+    st.stopping = false;
+    @atomicStore(c_ulong, &st.thread_id, c.PyThread_get_thread_ident(), .release);
+    startIdle(st);
+    armTimer(self);
 
     st.pythonExit();
     _ = uv.uv_run(st.uvloop, .default);
     st.pythonResume();
 
-    py.beginCriticalSection(&critical_section, self_obj);
-    defer py.endCriticalSection(&critical_section);
     st.running = false;
     st.stopping = false;
     // A write from the callback that stopped the loop has had no iteration left
