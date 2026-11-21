@@ -714,7 +714,7 @@ fn scheduleAt(
         // Allocating can suspend the critical section, so the loop is checked again.
         errdefer py.decref(h);
         try checkClosed(st);
-        try checkThread(st);
+        try rejectForeignThreadInDebug(st);
     }
     py.incref(h);
     if (already_due) {
