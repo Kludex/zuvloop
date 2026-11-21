@@ -280,6 +280,29 @@ def test_call_soon_args(benchmark: BenchmarkFixture, loop: asyncio.AbstractEvent
 
 
 @pytest.mark.benchmark
+def test_ready_batch(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
+    """Drain a prebuilt ready queue without timing scheduling or deallocation."""
+    iterations = 100_000
+    # zuvloop defers the copy of an empty context to the drain, so schedule from one that holds a variable.
+    context = contextvars.Context()
+    context.run(contextvars.ContextVar[int]("held").set, 1)
+
+    def setup() -> tuple[tuple[asyncio.Future[None], list[asyncio.Handle]], dict[str, int]]:
+        done = loop.create_future()
+        handles = context.run(lambda: [loop.call_soon(_noop) for _ in range(iterations)])
+        handles.append(loop.call_soon(done.set_result, None))
+        return (done, handles), {}
+
+    def measure(done: asyncio.Future[None], _handles: list[asyncio.Handle]) -> None:
+        loop.run_until_complete(done)
+
+    def teardown(_done: asyncio.Future[None], handles: list[asyncio.Handle]) -> None:
+        handles.clear()
+
+    benchmark.pedantic(measure, setup=setup, teardown=teardown, rounds=7)
+
+
+@pytest.mark.benchmark
 def test_timer_schedule_cancel(benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop) -> None:
     """Schedule then cancel, never firing: timer bookkeeping on its own."""
     iterations = 10_000
