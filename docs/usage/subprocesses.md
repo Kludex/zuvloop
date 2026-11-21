@@ -57,3 +57,12 @@ is duplicated before libuv adopts it, which keeps the two owners apart: libuv
 closes its own descriptor, the transport closes your pipe object, and neither can
 close the other's.
 ///
+
+/// warning | On Windows, a concurrent `close_fds=False` spawn can inherit the pipe
+
+The duplicate is made with `os.dup()`. On Windows it is inheritable for an
+instant, until Python clears the flag. A child that another thread spawns in that
+instant with `close_fds=False` inherits the handle and keeps the pipe open.
+CPython's own subprocess code has races of the same kind. Keep the default
+`close_fds=True`, or spawn such children from the loop's thread.
+///
