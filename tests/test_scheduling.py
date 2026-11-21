@@ -880,6 +880,35 @@ def test_threadsafe_cancel_releases_every_waiting_thread() -> None:
     assert observed == [True, True]
 
 
+def test_threadsafe_cancelled_arriving_as_the_callback_ends_always_returns() -> None:
+    loop = zuvloop.new_event_loop()
+    observed: list[bool] = []
+    for round_index in range(200):
+        started = threading.Event()
+
+        # The delays straddle a thread's wake-up time, so callers reach the handle before, during and after the end.
+        def callback(delay: float = round_index % 20 * 1e-5) -> None:
+            started.set()
+            time.sleep(delay)
+
+        handle = loop.call_soon_threadsafe(callback)
+
+        def caller() -> None:
+            started.wait(5)
+            observed.append(handle.cancelled())
+
+        callers = [threading.Thread(target=caller, daemon=True) for _ in range(4)]
+        for thread in callers:
+            thread.start()
+        loop.call_soon_threadsafe(loop.stop)
+        loop.run_forever()
+        for thread in callers:
+            thread.join(5)
+        assert not any(thread.is_alive() for thread in callers)
+    loop.close()
+    assert observed == [False] * 800
+
+
 async def test_run_in_executor_uses_a_thread() -> None:
     loop = running_loop()
     result = await loop.run_in_executor(None, lambda: threading.current_thread().name)
