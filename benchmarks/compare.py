@@ -84,6 +84,31 @@ def echo(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
     return _driver(loop, once)
 
 
+def stream_echo(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
+    """`echo` through `asyncio.streams`: a reader, a writer and a task on each side."""
+    roundtrips = 2000
+
+    async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        while data := await reader.read(64 * 1024):
+            writer.write(data)
+            await writer.drain()
+        writer.close()
+
+    server = loop.run_until_complete(asyncio.start_server(serve, "127.0.0.1", 0))
+    port = server.sockets[0].getsockname()[1]
+
+    async def once() -> None:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        for _ in range(roundtrips):
+            writer.write(PAYLOAD)
+            await writer.drain()
+            await reader.readexactly(len(PAYLOAD))
+        writer.close()
+        await writer.wait_closed()
+
+    return _driver(loop, once)
+
+
 def split_write(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
     """A response written as a header and a body, as ASGI does it."""
     head, body = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n", b"ok"
@@ -393,6 +418,7 @@ def spawn(loop: asyncio.AbstractEventLoop) -> Callable[[], None]:
 
 WORKLOADS: dict[str, Workload] = {
     "echo": echo,
+    "stream_echo": stream_echo,
     "split_write": split_write,
     "ingest_boundary": ingest_boundary,
     "writelines_4": partial(writelines, buffer_count=4),

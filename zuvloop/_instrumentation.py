@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import sys
 import threading
 import time
 from collections.abc import Mapping
-from types import CodeType
+from types import CodeType, CoroutineType
 
 from opentelemetry import metrics, trace
 from opentelemetry.metrics import NoOpMeterProvider
@@ -78,7 +79,7 @@ class Instrumentation:
                 attributes=attributes,
             )
             span.end(end_time=ended)
-        except SystemExit, KeyboardInterrupt:
+        except (SystemExit, KeyboardInterrupt):
             raise
         except BaseException:
             # Instrumentation runs on exception and slow-callback paths. An
@@ -91,7 +92,7 @@ class Instrumentation:
             exception = context.get("exception")
             attributes = {"error.type": type(exception).__name__} if isinstance(exception, BaseException) else {}
             _counter("unhandled_exceptions", "Exceptions routed to the loop exception handler").add(1, attributes)
-        except SystemExit, KeyboardInterrupt:
+        except (SystemExit, KeyboardInterrupt):
             raise
         except BaseException:
             return
@@ -106,7 +107,7 @@ def _bounded(value: str) -> str:
 def _safe_repr(value: object) -> str:
     try:
         return _bounded(repr(value))
-    except SystemExit, KeyboardInterrupt:
+    except (SystemExit, KeyboardInterrupt):
         raise
     except BaseException:
         return _bounded(f"<{type(value).__name__} repr failed>")
@@ -139,6 +140,17 @@ def capture_call_graph(handle: object = None) -> str | None:
             f"* Task(name={task.get_name()!r}, id={id(task):#x}, state=done)\n"
             f"  + Call stack (task already finished):\n{location}"
         )
+    # TODO: drop when 3.13 support ends. `format_call_graph` arrived in 3.14, and so did the
+    # awaited-by links, so 3.13 renders the task's own coroutine stack in the same format.
+    if sys.version_info < (3, 14):  # pragma: no cover - coverage is measured on 3.14
+        lines: list[str] = []
+        awaitable = task.get_coro()
+        while isinstance(awaitable, CoroutineType) and awaitable.cr_frame is not None:
+            frame = awaitable.cr_frame
+            code = frame.f_code
+            lines.append(f"  |   File {code.co_filename!r}, line {frame.f_lineno}, in async {code.co_qualname}()")
+            awaitable = awaitable.cr_await
+        return "\n".join([f"* Task(name={task.get_name()!r}, id={id(task):#x})", "  + Call stack:", *reversed(lines)])
     return asyncio.format_call_graph(task)
 
 

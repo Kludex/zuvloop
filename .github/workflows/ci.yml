@@ -11,7 +11,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Each main commit keeps its own run, so a later merge cannot cancel the one a release needs.
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -19,10 +20,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     # A single hung test would otherwise hold the job for the 6-hour default.
     timeout-minutes: 20
+    # compiler_rt and libc land here; rebuilding them dominates the Windows ARM64 install.
+    env:
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest, windows-11-arm]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest, windows-11-arm]
         python-version: ["3.14"]
         include:
           - os: macos-latest
@@ -41,22 +45,41 @@ jobs:
           use-cache: false
           version: 0.16.0
 
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: zig-toolchain
+        if: matrix.os == 'windows-11-arm'
+        with:
+          path: ${{ runner.temp }}/zig-x86_64-windows
+          key: zig-x86_64-windows-${{ hashFiles('scripts/setup-zig-x86_64-windows.ps1') }}
+
       # Zig 0.16's native ARM64 Windows compiler exits with an access violation
       # on `zig build`. Windows 11 runs the pinned x86-64 compiler under
       # emulation; build.zig still targets ARM64 through HATCH_ZIG_TARGET.
       - name: Install x86-64 Zig under emulation
         if: matrix.os == 'windows-11-arm'
         shell: pwsh
+        env:
+          ZIG_TOOLCHAIN_RESTORED: ${{ steps.zig-toolchain.outputs.cache-hit }}
         run: ./scripts/setup-zig-x86_64-windows.ps1
+
+      # Saved before any build or test code runs, so nothing later in the job
+      # can alter the toolchain the next run restores without re-verifying.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.os == 'windows-11-arm' && steps.zig-toolchain.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/zig-x86_64-windows
+          key: zig-x86_64-windows-${{ hashFiles('scripts/setup-zig-x86_64-windows.ps1') }}
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: .zig-cache
+          path: |
+            .zig-cache
+            .zig-global-cache
           key: >-
             zig-test-0.16.0-${{ matrix.os }}-${{ matrix.python-version }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: zig-test-0.16.0-${{ matrix.os }}-${{ matrix.python-version }}-
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           version: 0.12.3
@@ -65,10 +88,11 @@ jobs:
         env:
           HATCH_ZIG_TARGET: ${{ matrix.os == 'windows-11-arm' && 'aarch64-windows' || '' }}
           PYTHON_VERSION: ${{ matrix.python-version }}
+        shell: bash
         run: uv sync --locked --python "$PYTHON_VERSION" --group dev --group bench
 
       - name: Verify the hashed build constraints
-        if: runner.os == 'Linux'
+        if: matrix.os == 'ubuntu-latest'
         run: |
           uv pip compile .github/build-requirements.in --universal --generate-hashes \
             --no-header --no-annotate --constraint .github/build-constraints.txt \
@@ -101,7 +125,7 @@ jobs:
           uv run ruff format --check
 
       - name: Install ZLint
-        if: runner.os == 'Linux'
+        if: matrix.os == 'ubuntu-latest'
         run: |
           curl -fsSL \
             https://github.com/DonIsaac/zlint/releases/download/v0.9.1/zlint-linux-x86_64 \
@@ -113,20 +137,24 @@ jobs:
           echo /tmp >> "$GITHUB_PATH"
 
       - name: Lint and format Zig
-        if: runner.os == 'Linux'
+        if: matrix.os == 'ubuntu-latest'
         run: ./scripts/check-zig
 
       - name: Type check
         if: runner.os != 'Windows'
         run: |
           uv run mypy
+          # The default target is the 3.12 floor, which skips every `sys.version_info >= (3, 14)` branch.
+          uv run mypy --python-version 3.14
           uv run python -m mypy.stubtest zuvloop --allowlist stubtest_allowlist.txt
 
       # The POSIX-only test modules reach for signals and socket families
       # typeshed rightly refuses on Windows; the library itself has to hold.
       - name: Type check
         if: runner.os == 'Windows'
-        run: uv run mypy zuvloop
+        run: |
+          uv run mypy zuvloop
+          uv run mypy zuvloop --python-version 3.14
 
       - name: Test
         if: runner.os != 'Windows'
@@ -160,6 +188,8 @@ jobs:
     # standard and free-threaded wheels; leave room for both while the per-test
     # timeout still catches an actual hang quickly.
     timeout-minutes: 60
+    env:
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
     strategy:
       fail-fast: false
       matrix:
@@ -177,15 +207,32 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           version: 0.12.3
 
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: zig-toolchain
+        if: matrix.archs == 'ARM64'
+        with:
+          path: ${{ runner.temp }}/zig-x86_64-windows
+          key: zig-x86_64-windows-${{ hashFiles('scripts/setup-zig-x86_64-windows.ps1') }}
+
       - name: Install x86-64 Zig under emulation
         if: matrix.archs == 'ARM64'
         shell: pwsh
+        env:
+          ZIG_TOOLCHAIN_RESTORED: ${{ steps.zig-toolchain.outputs.cache-hit }}
         run: ./scripts/setup-zig-x86_64-windows.ps1
+
+      # Saved before any build or test code runs, so nothing later in the job
+      # can alter the toolchain the next run restores without re-verifying.
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.archs == 'ARM64' && steps.zig-toolchain.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/zig-x86_64-windows
+          key: zig-x86_64-windows-${{ hashFiles('scripts/setup-zig-x86_64-windows.ps1') }}
 
       - name: Cache cibuildwheel tools
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -194,8 +241,23 @@ jobs:
           key: cibuildwheel-4.2.0-${{ matrix.os }}-${{ hashFiles('pyproject.toml') }}
           restore-keys: cibuildwheel-4.2.0-${{ matrix.os }}-
 
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .zig-cache
+            .zig-global-cache
+          key: zig-release-0.16.0-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: zig-release-0.16.0-${{ matrix.os }}-
+
+      # Emulated Zig makes four more wheels cost several minutes here; AMD64 still
+      # builds every interpreter on a pull request, and main builds them all.
+      - name: Build one wheel on a pull request
+        if: github.event_name == 'pull_request' && matrix.archs == 'ARM64'
+        shell: bash
+        run: echo "CIBW_BUILD=cp314-*" >> "$GITHUB_ENV"
+
       - name: Build and test the release wheel
-        uses: pypa/cibuildwheel@e090b81e30c4d855ea63bf4b6e59204c09a101ae # v4.2.1
+        uses: pypa/cibuildwheel@f9b966cfadf4109556cadc5bb39ddb72d0ce664e # v4.3.5
         env:
           CIBW_ARCHS: ${{ matrix.archs }}
           CIBW_CACHE_PATH: ${{ runner.temp }}/cibw-cache
@@ -250,19 +312,11 @@ jobs:
   # The Zig layer reaches libc through `std.c`, whose shape differs per target,
   # and the tests only ever run on the host. Two bugs have shipped that a
   # compile for the other target would have caught on the way in.
+  #
+  # Only the targets no job builds natively: `test` and `musl` compile the rest
+  # and run the suite on them, which a compile alone cannot match.
   cross-compile:
-    runs-on: ubuntu-latest
-
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - x86_64-linux-gnu
-          - aarch64-linux-gnu
-          - x86_64-linux-musl
-          - aarch64-linux-musl
-          - x86_64-macos
-          - aarch64-macos
+    runs-on: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -273,22 +327,26 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           version: 0.12.3
 
+      # Debian's `pyconfig.h` includes a multiarch path Zig only searches on native builds.
       - name: Install
-        run: uv sync --locked --python 3.14 --group dev
+        run: uv sync --locked --managed-python --python 3.14 --group dev
 
       # The headers are the host's, which is enough: this compiles the Zig, and
       # what differs between targets is `std.c`, not `Python.h`.
-      - name: Compile for ${{ matrix.target }}
-        env:
-          TARGET: ${{ matrix.target }}
+      - name: Compile for the targets without a native job
         run: |
-          HATCH_ZIG_PYTHON_INCLUDE="$(uv run python -c 'import sysconfig; print(sysconfig.get_path("include"))')" \
-            zig build -Dtarget="$TARGET" -Doptimize=ReleaseFast
+          include="$(uv run python -c 'import sysconfig; print(sysconfig.get_path("include"))')"
+          for target in aarch64-linux-musl x86_64-macos; do
+            echo "::group::$target"
+            HATCH_ZIG_PYTHON_INCLUDE="$include" \
+              zig build -Dtarget="$target" -Doptimize=ReleaseFast
+            echo "::endgroup::"
+          done
 
 
   # The wheels are built `ReleaseFast`, which disables every bounds and overflow
@@ -311,7 +369,7 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           version: 0.12.3
@@ -359,7 +417,10 @@ jobs:
 
 
   benchmarks:
-    runs-on: ubuntu-latest
+    # ubuntu-latest hands out different CPUs from run to run, which moves every
+    # benchmark against its baseline. GitHub documents the arm64 fleet as one
+    # processor; CodSpeed warns when base and head hardware differ.
+    runs-on: ubuntu-24.04-arm
     # Normally ~3 minutes; the CodSpeed harness has been seen sitting for over
     # half an hour, and without a bound that holds the whole run hostage.
     timeout-minutes: 15
@@ -378,48 +439,35 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           version: 0.12.3
 
+      # The baseline was recorded on uv's CPython; the runner's system Python is a different interpreter.
       - name: Install
-        run: uv sync --locked --python 3.14 --group dev --group bench
+        run: uv sync --locked --managed-python --python 3.14 --group dev --group bench
 
       # Walltime, not simulation: an event loop spends its time in syscalls and
       # polling, which instruction counting does not model.
-      #
-      # The cost of walltime is that a benchmark has to be quiet enough for a real
-      # change to stand out from the machine. Three of these are not, on the two cores
-      # a hosted runner has. Measured, twelve samples a sitting, spread as a share of
-      # the median:
-      #
-      #                        two cores          cores to spare
-      #   process_spawn        10%, 97%, 28%      1%, 3%, 1%
-      #   process_pipe         61%, 83%, 34%      4%, 5%, 4%
-      #   timer_due_batch      about 12%          -
-      #
-      # Contention, then, rather than anything in the code: the same benchmarks are
-      # steady when nothing is competing with them. Between them they were most of every
-      # CodSpeed regression reported across seven pull requests, none of which touched a
-      # hot path. Deselected for the same reason as the two before them.
-      - uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
+      # The two process benchmarks swing 10-97% between runs on a two-core runner, so they stay out.
+      - uses: CodSpeedHQ/action@af75f77f17a054769abefaa42fe8dc2975469b5f # v5.6.3
         with:
           mode: walltime
           run: >-
             uv run --no-sync pytest benchmarks/ --codspeed
             -k "not parallel_event_loops and not ready_chain_with_idle_connections
-            and not process_spawn and not process_pipe and not timer_due_batch"
+            and not process_spawn and not process_pipe"
 
   docs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           version: 0.12.3

@@ -17,7 +17,7 @@ from typing import Literal, NoReturn
 import pytest
 
 import zuvloop
-from tests.conftest import running_loop
+from tests.conftest import collect_contexts, running_loop
 from zuvloop._server import Server
 from zuvloop._sockets import _SocketAddress
 
@@ -310,7 +310,7 @@ async def test_a_write_batch_larger_than_the_buffer_still_arrives_in_order() -> 
         await protocol.done
 
 
-async def test_unsent_writes_count_towards_the_high_water_mark() -> None:
+async def test_a_batch_past_the_high_water_mark_is_sent_at_once() -> None:
     server, port, _ = await start_echo()
     loop = running_loop()
     async with server:
@@ -318,9 +318,6 @@ async def test_unsent_writes_count_towards_the_high_water_mark() -> None:
         transport.set_write_buffer_limits(high=4, low=2)
 
         transport.write(b"over the mark")
-        assert transport.get_write_buffer_size() == 13
-
-        await asyncio.sleep(0.05)
         assert transport.get_write_buffer_size() == 0
 
         transport.close()
@@ -445,6 +442,36 @@ async def test_write_eof_is_seen_as_eof_by_the_peer() -> None:
     assert seen == [True]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows loopback takes any write whole; none is left in flight")
+async def test_write_buffer_size_shrinks_as_a_large_write_drains() -> None:
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+    right.setblocking(False)
+    payload = b"x" * (4 << 20)
+
+    transport, protocol = await loop.connect_accepted_socket(Collector, left)
+    try:
+        transport.write(payload)
+        await asyncio.sleep(0)
+        queued = transport.get_write_buffer_size()
+
+        received = 0
+        while received < len(payload) // 2:
+            received += len(await loop.sock_recv(right, 65536))
+        # The peer is reading, so the queue must shrink before the single write completes.
+        assert 0 < transport.get_write_buffer_size() < queued
+
+        while received < len(payload):
+            received += len(await loop.sock_recv(right, 65536))
+    finally:
+        transport.close()
+        right.close()
+
+    assert protocol.done is not None
+    await protocol.done
+
+
 async def test_write_eof_waits_for_buffered_writes() -> None:
     loop = running_loop()
     left, right = socket.socketpair()
@@ -454,6 +481,7 @@ async def test_write_eof_waits_for_buffered_writes() -> None:
 
     transport, protocol = await loop.connect_accepted_socket(Collector, left)
     try:
+        transport.set_write_buffer_limits(high=len(payload))
         transport.write(payload)
         assert transport.get_write_buffer_size() > 0
         transport.write_eof()
@@ -696,6 +724,83 @@ async def test_pause_writing_cannot_overfill_a_reentrant_batch() -> None:
         await server.wait_closed()
 
 
+class Stalled(asyncio.Protocol):
+    """Server protocol that stops reading at its first read, so the client's
+    writes back up. A pause from `connection_made` would not hold: reading
+    starts after it returns."""
+
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        self.transport: asyncio.Transport = transport  # type: ignore[assignment]
+
+    def data_received(self, data: bytes) -> None:
+        self.transport.pause_reading()
+
+
+class RecordsPause(Collector):
+    def __init__(self) -> None:
+        super().__init__()
+        self.paused = False
+
+    def pause_writing(self) -> None:
+        self.paused = True
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; nothing backs up libuv's queue"
+)
+async def test_a_batched_write_past_the_high_water_mark_pauses_at_once() -> None:
+    """asyncio pauses inside `write()`, which is what makes `drain()` wait.
+
+    Holding the write in the end-of-turn batch would let a `write(); await drain()`
+    loop buffer several chunks past the limit.
+    """
+    loop = running_loop()
+    server = await loop.create_server(Stalled, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    transport, client = await loop.create_connection(RecordsPause, "127.0.0.1", port)
+    try:
+        transport.write(b"x" * (32 << 20))
+        assert client.paused
+    finally:
+        transport.abort()
+        assert client.done is not None
+        await client.done
+        # The server side stopped reading, so it never sees the abort.
+        server.abort_clients()
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; nothing backs up libuv's queue"
+)
+async def test_a_small_write_onto_a_backed_up_queue_pauses_at_once() -> None:
+    """The batch alone may be under the limit while libuv's queue is not."""
+    loop = running_loop()
+    server = await loop.create_server(Stalled, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    transport, client = await loop.create_connection(RecordsPause, "127.0.0.1", port)
+    try:
+        transport.set_write_buffer_limits(high=1 << 30)
+        transport.write(b"x" * (32 << 20))
+        await asyncio.sleep(0)
+        queued = transport.get_write_buffer_size()
+        assert queued > 0
+
+        transport.set_write_buffer_limits(high=queued + 1024)
+        assert not client.paused
+        transport.write(b"y" * 2048)
+        assert client.paused
+    finally:
+        transport.abort()
+        assert client.done is not None
+        await client.done
+        # The server side stopped reading, so it never sees the abort.
+        server.abort_clients()
+        server.close()
+        await server.wait_closed()
+
+
 async def test_write_buffer_limits_validate_their_arguments() -> None:
     server, port, _ = await start_echo()
     loop = running_loop()
@@ -816,6 +921,25 @@ async def test_connection_refused_is_reported(closed_port: int) -> None:
     loop = running_loop()
     with pytest.raises(ConnectionRefusedError):
         await loop.create_connection(Collector, "127.0.0.1", closed_port)
+
+
+async def test_a_refused_connection_leaves_no_reference_cycle(closed_port: int) -> None:
+    loop = running_loop()
+    with pytest.raises(ConnectionRefusedError) as caught:
+        await loop.create_connection(Collector, "127.0.0.1", closed_port)
+    assert not [ref for ref in gc.get_referrers(caught.value) if isinstance(ref, list)]
+
+
+# TODO: drop when 3.13 support ends.
+@pytest.mark.skipif(
+    sys.version_info < (3, 12, 8) or sys.version_info[:3] == (3, 13, 0),
+    reason="staggered_race keeps the exceptions in a cycle before 3.12.8 and on 3.13.0",
+)
+async def test_a_refused_race_leaves_no_reference_cycle(closed_port: int) -> None:
+    loop = running_loop()
+    with pytest.raises(ConnectionRefusedError) as caught:
+        await loop.create_connection(Collector, "127.0.0.1", closed_port, happy_eyeballs_delay=0.25)
+    assert not [ref for ref in gc.get_referrers(caught.value) if isinstance(ref, list)]
 
 
 async def test_create_connection_rejects_conflicting_arguments() -> None:
@@ -1922,7 +2046,7 @@ async def test_a_poll_error_does_not_unregister_the_reader() -> None:
         def on_readable() -> None:
             try:
                 data = sock.recv(1024)
-            except BlockingIOError, ConnectionRefusedError, ConnectionResetError:
+            except (BlockingIOError, ConnectionRefusedError, ConnectionResetError):
                 return  # the rejection, consumed, or a bare error wake; the registration stays
             if not received.done():  # pragma: no cover - whether a duplicate wake arrives is the platform's choice
                 received.set_result(data)
@@ -2346,6 +2470,119 @@ def test_an_exit_from_a_read_callback_reaches_the_caller(loop: zuvloop.EventLoop
         right.close()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; nothing pauses the protocol"
+)
+@pytest.mark.anyio(None)
+def test_an_exit_from_a_flow_control_callback_reaches_the_caller(loop: zuvloop.EventLoop) -> None:
+    """The rule is the loop's, not the read path's: no protocol callback may
+    swallow a request to stop the program."""
+    seen = collect_contexts(loop)
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+
+    class Interrupt(asyncio.Protocol):
+        def pause_writing(self) -> None:
+            raise KeyboardInterrupt("stop")
+
+    async def overfill() -> None:
+        transport, _protocol = await loop.connect_accepted_socket(Interrupt, left)
+        transport.set_write_buffer_limits(high=1024, low=512)
+        transport.write(b"z" * (1 << 20))
+        await asyncio.sleep(5)
+
+    try:
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_until_complete(overfill())
+        assert seen == []
+    finally:
+        right.close()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; nothing pauses the protocol"
+)
+@pytest.mark.anyio(None)
+def test_an_exit_raised_while_the_loop_is_stopped_ends_the_next_run(loop: zuvloop.EventLoop) -> None:
+    """With no run in progress there is no caller to unwind to, so the exit is
+    held for the next run, which raises it before doing any work."""
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    ran: list[str] = []
+
+    class Interrupt(asyncio.Protocol):
+        def pause_writing(self) -> None:
+            raise KeyboardInterrupt("stop")
+
+    try:
+        transport, _protocol = loop.run_until_complete(loop.connect_accepted_socket(Interrupt, left))
+        transport.set_write_buffer_limits(high=1024, low=512)
+        transport.write(b"z" * (1 << 20))
+        loop.call_soon(ran.append, "callback")
+        # Without the held exit nothing would ever stop this run.
+        watchdog = loop.call_later(5, loop.stop)
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_forever()
+        watchdog.cancel()
+        assert ran == []
+        loop.run_until_complete(asyncio.sleep(0))
+        assert ran == ["callback"]
+    finally:
+        right.close()
+
+
+@pytest.mark.anyio(None)
+def test_an_exit_raised_once_the_loop_has_stopped_does_not_stall_the_next_run(loop: zuvloop.EventLoop) -> None:
+    """A write made by the callback that stops the loop is flushed after it has
+    stopped. An exit raised from there ends that run, and the next one must
+    still do its work rather than return at once."""
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+
+    class Interrupt(asyncio.Protocol):
+        def connection_made(self, transport: asyncio.BaseTransport) -> None:
+            assert isinstance(transport, asyncio.Transport)
+            self.transport = transport
+
+        def data_received(self, data: bytes) -> None:
+            self.transport.write(b"x" * 100)
+            # Past the new mark, so the protocol is paused with the write still batched.
+            self.transport.set_write_buffer_limits(high=10, low=5)
+            loop.stop()
+
+        def resume_writing(self) -> None:
+            raise KeyboardInterrupt("stop")
+
+    try:
+        loop.run_until_complete(loop.connect_accepted_socket(Interrupt, left))
+        right.send(b"go")
+        with pytest.raises(KeyboardInterrupt, match="stop"):
+            loop.run_forever()
+        assert loop.run_until_complete(asyncio.sleep(0, "ran")) == "ran"
+    finally:
+        right.close()
+
+
+@pytest.mark.anyio(None)
+def test_an_exit_from_eof_received_reaches_the_caller(loop: zuvloop.EventLoop) -> None:
+    seen = collect_contexts(loop)
+    left, right = socket.socketpair()
+    left.setblocking(False)
+
+    class Interrupt(asyncio.Protocol):
+        def eof_received(self) -> bool:
+            raise KeyboardInterrupt("stop")
+
+    loop.run_until_complete(loop.connect_accepted_socket(Interrupt, left))
+    right.close()
+    with pytest.raises(KeyboardInterrupt, match="stop"):
+        loop.run_until_complete(asyncio.sleep(5))
+    assert seen == []
+
+
 @pytest.mark.parametrize("keep_alive", [None, False, True])
 async def test_create_server_honours_keep_alive(keep_alive: bool | None) -> None:
     """asyncio sets SO_KEEPALIVE on each bound socket; this used to be a TypeError."""
@@ -2376,3 +2613,114 @@ async def test_binding_a_unix_path_twice_names_the_path() -> None:
             with pytest.raises(OSError, match="already in use") as caught:
                 await loop.create_unix_server(Echo, path)
             assert str(path) in str(caught.value)
+
+
+def _fill_write_buffer(transport: asyncio.WriteTransport, target: int) -> int:
+    """Queue writes until `target` bytes are waiting, and return how many there are.
+
+    How much a kernel absorbs before a write starts backing up differs by platform, so the
+    marks in these tests are set relative to what is actually queued rather than to a size
+    picked in advance.
+    """
+    chunk = 64 * 1024
+    written = 0
+    while transport.get_write_buffer_size() < target and written < 32 * target:
+        transport.write(b"z" * chunk)
+        written += chunk
+    buffered = transport.get_write_buffer_size()
+    assert buffered >= target, "nothing stayed queued to exercise the marks with"
+    return buffered
+
+
+async def test_the_write_buffer_marks_are_hysteretic() -> None:
+    """Between the two marks the protocol is left as it is: not paused going up, not resumed coming down.
+
+    One mark would thrash - a protocol writing near the limit would be paused and resumed
+    again on every write. Two mean a busy buffer does not pause a running protocol, and a
+    draining one does not resume a paused protocol until it has genuinely emptied. Nothing
+    else here pins that: collapsing the pair either way passes the rest of this suite.
+
+    The buffer is held still and the marks are moved around it, rather than the other way
+    round. `set_write_buffer_limits` re-takes the pause decision, so that makes every step
+    below exact - where writing towards a fixed mark depends on how much the kernel absorbs
+    and on a decision that is only taken when a batch is flushed.
+    """
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    events: list[str] = []
+    resumed = asyncio.Event()
+
+    class Watcher(asyncio.Protocol):
+        def pause_writing(self) -> None:
+            events.append("pause")
+
+        def resume_writing(self) -> None:
+            events.append("resume")
+            resumed.set()
+
+    try:
+        transport, _protocol = await loop.connect_accepted_socket(Watcher, left)
+        transport.set_write_buffer_limits(high=1 << 30, low=1 << 29)
+        buffered = _fill_write_buffer(transport, 1 << 20)
+
+        # Going up, between the marks: a busy buffer is not a full one.
+        transport.set_write_buffer_limits(high=buffered + 1, low=buffered // 2)
+        assert events == [], "a buffer between the marks paused the protocol"
+
+        # And past the high mark.
+        transport.set_write_buffer_limits(high=buffered - 1, low=buffered // 2)
+        assert events == ["pause"]
+
+        # Coming down. The buffer sits between the marks again, with the low one at a single
+        # byte so that any drain short of empty leaves it there.
+        transport.set_write_buffer_limits(high=buffered * 4, low=1)
+        assert events == ["pause"], "moving the marks re-paused an already paused protocol"
+
+        # One completed write is what takes the resume decision.
+        await asyncio.to_thread(right.recv, 64 * 1024)
+        await asyncio.sleep(0)
+        assert transport.get_write_buffer_size() > 1, "the buffer emptied before it could be checked"
+        assert events == ["pause"], "the protocol resumed with its buffer between the marks"
+
+        # Then all the way to the low mark, where it does resume.
+        async def drain_until_resumed() -> None:
+            while not resumed.is_set():
+                await asyncio.to_thread(right.recv, 1 << 20)
+
+        await asyncio.wait_for(drain_until_resumed(), 10)
+        assert events == ["pause", "resume"]
+    finally:
+        right.close()
+
+
+async def test_a_buffer_exactly_on_the_high_water_mark_is_not_past_it() -> None:
+    """`<=`, not `<`. Setting the mark to what is already buffered must not pause.
+
+    Reached by moving the mark to the buffer, because an exact byte count is not something a
+    caller can arrange by writing.
+    """
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    events: list[str] = []
+
+    class Watcher(asyncio.Protocol):
+        def pause_writing(self) -> None:
+            events.append("pause")
+
+        def resume_writing(self) -> None:
+            events.append("resume")  # pragma: no cover - the buffer never drains here
+
+    try:
+        transport, _protocol = await loop.connect_accepted_socket(Watcher, left)
+        transport.set_write_buffer_limits(high=1 << 30, low=1 << 29)
+        buffered = _fill_write_buffer(transport, 1 << 20)
+
+        transport.set_write_buffer_limits(high=buffered, low=buffered // 2)
+        assert events == [], "a buffer exactly on the high-water mark was treated as past it"
+
+        transport.set_write_buffer_limits(high=buffered - 1, low=buffered // 2)
+        assert events == ["pause"]
+    finally:
+        right.close()

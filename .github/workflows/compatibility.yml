@@ -1,6 +1,9 @@
 name: Compatibility
 
 on:
+  # A release requires this workflow to have passed on the tagged main commit.
+  push:
+    branches: [main]
   pull_request:
   schedule:
     - cron: "17 4 * * 1"
@@ -16,7 +19,8 @@ env:
   EDITABLE_UPSTREAM_EXCLUDE_NEWER: "2026-08-15T00:00:00Z"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # Each main commit keeps its own run, so a later merge cannot cancel the one a release needs.
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -27,9 +31,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The floor, the newest patch, and the next prerelease are all distinct
-        # risks for an extension that uses CPython's C API directly.
-        python-version: ["3.14.0", "3.14", "3.15"]
+        # The floor, each minor's first and newest patch, and the next prerelease
+        # are all distinct risks for an extension that uses CPython's C API directly.
+        python-version: ["3.12.0", "3.12", "3.13.0", "3.13", "3.14.0", "3.14", "3.15"]
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,7 +44,7 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
@@ -74,7 +78,7 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
@@ -107,7 +111,7 @@ jobs:
           path: upstream
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           python-version: "3.14"
@@ -143,7 +147,7 @@ jobs:
 
   uvicorn:
     name: uvicorn 0.52.3 full suite
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
 
     steps:
@@ -162,7 +166,7 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           python-version: "3.14"
@@ -190,7 +194,7 @@ jobs:
 
   anyio:
     name: AnyIO core upstream suite
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
 
     steps:
@@ -209,7 +213,7 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           python-version: "3.14"
@@ -243,7 +247,7 @@ jobs:
 
   websockets:
     name: websockets upstream and public API
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
 
     steps:
@@ -262,7 +266,7 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           python-version: "3.14"
@@ -286,7 +290,7 @@ jobs:
 
   aioquic:
     name: aioquic QUIC integration suite
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
 
     steps:
@@ -305,7 +309,7 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           python-version: "3.14"
@@ -327,7 +331,7 @@ jobs:
 
   tornado:
     name: Tornado full suite
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
 
     steps:
@@ -346,7 +350,7 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           python-version: "3.14"
@@ -370,7 +374,7 @@ jobs:
 
   httpx2:
     name: HTTPX2 full repository suite
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
 
     steps:
@@ -389,7 +393,7 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           python-version: "3.14"
@@ -422,7 +426,7 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           python-version: "3.14"
@@ -465,7 +469,7 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           python-version: "3.14"
@@ -507,7 +511,7 @@ jobs:
         with:
           version: 0.16.0
 
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           enable-cache: true
           python-version: "3.14"
