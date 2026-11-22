@@ -27,9 +27,16 @@ implementations, so protocol callbacks and exit bookkeeping stay identical.
 On Windows, `startupinfo`, non-zero `creationflags` and `close_fds=False` select
 `subprocess.Popen` too, because `uv_spawn` takes none of them.
 
+On Windows, so does a program that is not an absolute path, such as `"git"` or
+`"tools\\run.exe"`. `subprocess.Popen` leaves the search to `CreateProcess`,
+which looks in the parent's directories and on the parent's `PATH`. libuv looks
+in the child's `cwd` and on the `PATH` from `env`, so it could run a different
+program, or find one where asyncio raises `FileNotFoundError`. An absolute path,
+`sys.executable` included, still uses `uv_spawn`.
+
 libuv reaps children it spawns and reports status through its exit callback.
-The Linux stdlib path uses one bounded, process-wide reaper thread for all
-children rather than a thread per child.
+The stdlib path uses one bounded, process-wide reaper thread for all children
+rather than a thread per child.
 
 On the libuv path, signals go through `uv_process_kill` rather than the pid. The
 stdlib path delegates signalling to its `Popen` object.
