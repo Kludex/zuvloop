@@ -2664,6 +2664,33 @@ async def test_a_write_above_two_gibibytes_is_sent_whole() -> None:
         right.close()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; nothing pauses the protocol"
+)
+async def test_a_paused_protocol_is_resumed_at_the_low_water_mark() -> None:
+    """Not when the last byte leaves: a peer that stops just short of that would keep it paused."""
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    # Small buffers, so each short read lets only a little more out of the transport.
+    left.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+    right.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    try:
+        transport, protocol = await loop.connect_accepted_socket(Shedding, left)
+        transport.write(b"z" * (1 << 20))
+        low, _high = transport.get_write_buffer_limits()
+        async with asyncio.timeout(10):
+            while transport.get_write_buffer_size() > low:
+                await loop.sock_recv(right, 1024)
+        assert transport.get_write_buffer_size() > 0
+        assert protocol.events == ["pause", "resume"]
+        transport.abort()
+        await asyncio.wait_for(protocol.lost, 5)
+    finally:
+        right.close()
+
+
 @pytest.mark.anyio(None)
 def test_an_exit_from_a_read_callback_reaches_the_caller(loop: zuvloop.EventLoop) -> None:
     """Otherwise it reaches the exception handler, and the caller of `run_forever`

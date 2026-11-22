@@ -546,14 +546,22 @@ fn queueWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!v
         return;
     }
 
+    // libuv reports a request only when all of it is written, and that is the
+    // one place a paused protocol can be resumed. Ending a write that pauses
+    // with a request of its own, the size of the low-water mark, makes the
+    // request before it complete exactly when the buffer falls to the mark.
+    const pauses = self.flags.protocol_paused or bufferedBytes(self) + remaining > self.high_water;
+    const tail = if (pauses) self.low_water else 0;
+
     var rest = bufs;
     var owner: ?*WriteReq = null;
     while (remaining != 0) {
+        const limit = if (remaining > tail) @min(io_max, remaining - tail) else io_max;
         var whole: usize = 0;
         var size: usize = 0;
-        while (whole < rest.len and size + rest[whole].len <= io_max) : (whole += 1) size += rest[whole].len;
+        while (whole < rest.len and size + rest[whole].len <= limit) : (whole += 1) size += rest[whole].len;
         // What still fits of a buffer that has to be cut to stay within the limit.
-        const part = if (whole < rest.len) io_max - size else 0;
+        const part = if (whole < rest.len) limit - size else 0;
         const count = whole + @intFromBool(part != 0);
         const nviews = if (owner == null) views.len else 0;
 
