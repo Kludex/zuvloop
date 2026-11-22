@@ -2682,6 +2682,14 @@ async def test_more_buffers_than_one_request_takes_are_all_sent() -> None:
         right.close()
 
 
+async def _read_until_buffered_at_most(transport: asyncio.Transport, peer: socket.socket, mark: int) -> None:
+    """Short reads, so the transport passes `mark` slowly, then one more loop turn for it to notice."""
+    async with asyncio.timeout(10):
+        while transport.get_write_buffer_size() > mark:
+            await running_loop().sock_recv(peer, 1024)
+    await asyncio.sleep(0.01)
+
+
 @pytest.mark.skipif(
     sys.platform == "win32", reason="Windows loopback takes any write whole; nothing pauses the protocol"
 )
@@ -2698,10 +2706,34 @@ async def test_a_paused_protocol_is_resumed_at_the_low_water_mark() -> None:
         transport, protocol = await loop.connect_accepted_socket(Shedding, left)
         transport.write(b"z" * (1 << 20))
         low, _high = transport.get_write_buffer_limits()
-        async with asyncio.timeout(10):
-            while transport.get_write_buffer_size() > low:
-                await loop.sock_recv(right, 1024)
+        await _read_until_buffered_at_most(transport, right, low)
         assert transport.get_write_buffer_size() > 0
+        assert protocol.events == ["pause", "resume"]
+        transport.abort()
+        await asyncio.wait_for(protocol.lost, 5)
+    finally:
+        right.close()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; nothing pauses the protocol"
+)
+async def test_a_paused_protocol_is_resumed_in_the_middle_of_a_queued_write() -> None:
+    """The buffer reaches the mark partway through a write, where nothing completes to report it."""
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    left.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+    right.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    try:
+        transport, protocol = await loop.connect_accepted_socket(Shedding, left)
+        transport.write(b"a")
+        transport.writelines([b"z" * (1 << 20), b"c", b"d", b"y" * 8192])
+        low, _high = transport.get_write_buffer_limits()
+        # Past the last 8 KiB write, so the mark was crossed inside the one before it.
+        await _read_until_buffered_at_most(transport, right, 12 * 1024)
+        assert transport.get_write_buffer_size() > 8192
         assert protocol.events == ["pause", "resume"]
         transport.abort()
         await asyncio.wait_for(protocol.lost, 5)

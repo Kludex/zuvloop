@@ -37,7 +37,9 @@ const Flags = packed struct(u32) {
     allocating_read_buffer: bool = false,
     read_state_pending: bool = false,
     previous_read_full: bool = false,
-    _: u18 = 0,
+    /// On the loop's list of paused transports; see `paused_next`.
+    watched: bool = false,
+    _: u17 = 0,
 };
 
 pub const KIND_TCP: c_int = 0;
@@ -126,6 +128,9 @@ pub const Transport = extern struct {
     pending_count: usize,
     pending_size: usize,
     flush_next: ?*Transport,
+    /// Threads the transport onto the loop's list of transports whose protocol
+    /// is paused, which the loop checks every turn for one that has drained.
+    paused_next: ?*Transport,
     owner_prev: ?*Transport,
     owner_next: ?*Transport,
 
@@ -549,27 +554,16 @@ fn queueWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!v
         return;
     }
 
-    // libuv reports a request only when all of it is written, and that is the
-    // one place a paused protocol can be resumed. Ending the write that pauses
-    // with a request of its own, the size of the low-water mark, makes the
-    // request before it complete exactly when the buffer falls to the mark.
-    //
-    // Writes made while already paused are left whole. A protocol that keeps
-    // writing through a pause would pay for a second request on every one.
-    const pauses = !self.flags.protocol_paused and bufferedBytes(self) + remaining > self.high_water;
-    const tail = if (pauses) self.low_water else 0;
-
     var rest = bufs;
     var owner: ?*WriteReq = null;
     while (remaining != 0) {
-        const limit = if (remaining > tail) @min(io_max, remaining - tail) else io_max;
         var whole: usize = 0;
         var size: usize = 0;
-        while (whole < rest.len and whole < bufs_max and size + rest[whole].len <= limit) : (whole += 1) {
+        while (whole < rest.len and whole < bufs_max and size + rest[whole].len <= io_max) : (whole += 1) {
             size += rest[whole].len;
         }
         // What still fits of a buffer that has to be cut to stay within the limit.
-        const part = if (whole < rest.len and whole < bufs_max) limit - size else 0;
+        const part = if (whole < rest.len and whole < bufs_max) io_max - size else 0;
         const count = whole + @intFromBool(part != 0);
         const nviews = if (owner == null) views.len else 0;
 
@@ -764,7 +758,24 @@ fn maybePauseProtocol(self: *Transport) void {
     if (bufferedBytes(self) <= self.high_water) return;
     if (self.flags.protocol_paused) return;
     self.flags.protocol_paused = true;
+    // libuv reports a write only when a whole request is done, which can be long
+    // after the buffer has fallen to the low-water mark. The loop looks instead.
+    loopmod.watchPaused(self.loopState(), self);
     protocolmod.call(self.loop.?, @ptrCast(self), self.cb_pause_writing, null);
+}
+
+/// Whether a paused transport has nothing to tell its protocol yet: it is still
+/// open, and still above the low-water mark. Touches no Python state.
+pub fn stillBacklogged(self: *Transport) bool {
+    const flags = self.flags;
+    return flags.protocol_paused and !flags.closing and !flags.conn_lost and bufferedBytes(self) > self.low_water;
+}
+
+/// Resumes the protocol if the buffer has drained to the low-water mark.
+/// Returns whether the transport is still paused and worth watching.
+pub fn resumeIfDrained(self: *Transport) bool {
+    maybeResumeProtocol(self);
+    return self.flags.protocol_paused and !self.flags.closing and !self.flags.conn_lost;
 }
 
 fn maybeResumeProtocol(self: *Transport) void {

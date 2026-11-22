@@ -50,6 +50,8 @@ pub const State = struct {
     dns_requests: ?*dns.Request = null,
     transport_head: ?*transportmod.Transport = null,
     flush_head: ?*transportmod.Transport = null,
+    /// Transports whose protocol is paused for writing. Each holds a reference.
+    paused_head: ?*transportmod.Transport = null,
     /// Initialized external handles, including those awaiting a close callback.
     external_handles: usize = 0,
     closing_handles: usize = 0,
@@ -271,19 +273,47 @@ fn onWake(waker: ?*uv.Async) callconv(.c) void {
 fn onFlush(prepare: ?*uv.Prepare) callconv(.c) void {
     const self: *LoopObject = @ptrCast(@alignCast(uv.getData(prepare.?)));
     const st = self.state();
+    // With only paused transports listed, most turns find every one of them
+    // still backed up. Seeing that takes no Python, so do not enter it.
+    if (st.flush_head == null) {
+        var waiting = st.paused_head;
+        while (waiting) |transport| : (waiting = transport.paused_next) {
+            if (!transportmod.stillBacklogged(transport)) break;
+        }
+        if (waiting == null) return;
+    }
     st.pythonEnter();
     defer st.pythonExit();
     drainFlushList(st);
+
+    // Resuming runs protocol code, which can pause a transport again. The list
+    // is detached first so anything that adds lands on a list not being walked.
+    var node = st.paused_head;
+    st.paused_head = null;
+    while (node) |transport| {
+        node = transport.paused_next;
+        if (transportmod.resumeIfDrained(transport)) {
+            transport.paused_next = st.paused_head;
+            st.paused_head = transport;
+        } else {
+            transport.paused_next = null;
+            transport.flags.watched = false;
+            py.decref(transport);
+        }
+    }
+
     // Flushing runs protocol code - `pause_writing` and `resume_writing` - which
     // is free to write again, so the list can refill while it is being drained.
     // Those writes wait for the next turn, so one transport cannot hold the loop
     // here, and an active idle handle is what stops libuv blocking before it.
-    if (st.flush_head == null) {
+    if (st.flush_head != null) {
+        if (!st.idle_active) {
+            _ = uv.uv_idle_start(st.idle, onIdle);
+            st.idle_active = true;
+        }
+    } else if (st.paused_head == null) {
         _ = uv.uv_prepare_stop(st.flusher);
         st.flusher_active = false;
-    } else if (!st.idle_active) {
-        _ = uv.uv_idle_start(st.idle, onIdle);
-        st.idle_active = true;
     }
 }
 
@@ -297,6 +327,14 @@ fn dropFlushList(st: *State) void {
         transport.flush_next = null;
         transport.flags.flush_queued = false;
         transportmod.discardPending(transport);
+        py.decref(transport);
+    }
+    node = st.paused_head;
+    st.paused_head = null;
+    while (node) |transport| {
+        node = transport.paused_next;
+        transport.paused_next = null;
+        transport.flags.watched = false;
         py.decref(transport);
     }
 }
@@ -329,6 +367,21 @@ pub fn scheduleFlush(st: *State, transport: *transportmod.Transport) void {
     py.incref(transport);
     transport.flush_next = st.flush_head;
     st.flush_head = transport;
+    startFlusher(st);
+}
+
+/// Registers a transport whose protocol was just paused, to be looked at every
+/// turn until it has drained to its low-water mark or closed.
+pub fn watchPaused(st: *State, transport: *transportmod.Transport) void {
+    if (st.closed or transport.flags.watched) return;
+    transport.flags.watched = true;
+    py.incref(transport);
+    transport.paused_next = st.paused_head;
+    st.paused_head = transport;
+    startFlusher(st);
+}
+
+fn startFlusher(st: *State) void {
     if (!st.flusher_active) {
         _ = uv.uv_prepare_start(st.flusher, onFlush);
         uv.uv_unref(uv.asHandle(st.flusher));
@@ -1305,6 +1358,12 @@ fn traverse(obj: ?*py.Object, visitproc: c.visitproc, arg: ?*anyopaque) callconv
             r = py.visit(@ptrCast(pending), visitproc, arg);
             if (r != 0) return r;
             transport = pending.flush_next;
+        }
+        transport = st.paused_head;
+        while (transport) |paused| {
+            r = py.visit(@ptrCast(paused), visitproc, arg);
+            if (r != 0) return r;
+            transport = paused.paused_next;
         }
         transport = st.transport_head;
         while (transport) |owned| {
