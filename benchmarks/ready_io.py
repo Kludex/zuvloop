@@ -43,6 +43,55 @@ def idle_connections(loop: asyncio.AbstractEventLoop, count: int) -> Iterator[No
         loop.run_until_complete(asyncio.sleep(0))
 
 
+@contextmanager
+def paused_connections(loop: asyncio.AbstractEventLoop, count: int) -> Iterator[None]:
+    """Connections that are paused for writing, each behind a peer that never reads."""
+    peers: list[socket.socket] = []
+    clients: list[tuple[asyncio.Transport, Backlogged]] = []
+
+    async def setup() -> None:
+        for _ in range(count):
+            transport, protocol = await loop.create_connection(Backlogged, *listener.getsockname())
+            peer, _address = listener.accept()
+            peers.append(peer)
+            clients.append((transport, protocol))
+            transport.get_extra_info("socket").setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+            for _ in range(256):
+                if protocol.paused:
+                    break
+                transport.write(CHUNK)
+            assert protocol.paused
+
+    with socket.create_server(("127.0.0.1", 0), backlog=count) as listener:
+        # Small kernel buffers on both ends, so a connection backs up after a few
+        # chunks, and the unread peer cannot take enough afterwards to drain it.
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        try:
+            loop.run_until_complete(setup())
+            yield
+            assert all(protocol.paused for _transport, protocol in clients)
+        finally:
+            for transport, _protocol in clients:
+                transport.abort()
+            for peer in peers:
+                peer.close()
+            loop.run_until_complete(asyncio.sleep(0))
+
+
+CHUNK = b"x" * 65536
+
+
+class Backlogged(asyncio.Protocol):
+    def __init__(self) -> None:
+        self.paused = False
+
+    def pause_writing(self) -> None:
+        self.paused = True
+
+    def resume_writing(self) -> None:
+        self.paused = False
+
+
 async def ready_chain(iterations: int = 10_000) -> None:
     for _ in range(iterations):
         await asyncio.sleep(0)
