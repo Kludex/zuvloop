@@ -557,6 +557,9 @@ fn queueWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!v
     var rest = bufs;
     var owner: ?*WriteReq = null;
     while (remaining != 0) {
+        // A request of nothing but empty buffers would count as part of the
+        // write being queued, and turn a later failure into a closed transport.
+        while (rest[0].len == 0) rest = rest[1..];
         var whole: usize = 0;
         var size: usize = 0;
         while (whole < rest.len and whole < bufs_max and size + rest[whole].len <= io_max) : (whole += 1) {
