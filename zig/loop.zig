@@ -273,14 +273,13 @@ fn onFlush(prepare: ?*uv.Prepare) callconv(.c) void {
     const st = self.state();
     st.pythonEnter();
     defer st.pythonExit();
-    drainFlushList(st);
-    // Flushing runs protocol code - `pause_writing` above all - which is free to
-    // write again, so the list can refill while it is being drained. Stopping
-    // then would strand those writes with nothing left to send them.
-    if (st.flush_head == null) {
-        _ = uv.uv_prepare_stop(st.flusher);
-        st.flusher_active = false;
-    }
+    // Flushing runs protocol code - `pause_writing` and `resume_writing` - which
+    // is free to write again, so the list can refill while it is being drained.
+    // Those writes go out now too: the loop is about to block, and nothing else
+    // would wake it to send them.
+    while (st.flush_head != null) drainFlushList(st);
+    _ = uv.uv_prepare_stop(st.flusher);
+    st.flusher_active = false;
 }
 
 /// Releases pending writes without sending them. A closing loop cannot deliver

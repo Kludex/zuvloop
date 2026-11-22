@@ -630,6 +630,12 @@ pub fn discardPending(self: *Transport) void {
 
 fn appendPending(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) void {
     for (bufs, views, 0..) |b, v, i| {
+        // A pause held by the flush below is delivered by the flush of what is
+        // batched after it, so that must never be nothing.
+        if (b.len == 0) {
+            c.PyBuffer_Release(&views[i]);
+            continue;
+        }
         while (self.pending_count == pending_max) {
             // The rest of this vector was accepted before anything the protocol
             // does from `pause_writing`, so it has to be batched before that runs.
