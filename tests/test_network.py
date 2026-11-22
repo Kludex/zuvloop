@@ -2750,7 +2750,6 @@ async def test_a_paused_protocol_is_resumed_in_the_middle_of_a_queued_write() ->
         transport, protocol = await loop.connect_accepted_socket(Shedding, left)
         transport.write(b"a")
         transport.writelines([b"z" * (1 << 20), b"c", b"d", b"y" * 8192])
-        low, _high = transport.get_write_buffer_limits()
         # Past the last 8 KiB write, so the mark was crossed inside the one before it.
         await _read_until_buffered_at_most(transport, right, 12 * 1024)
         assert transport.get_write_buffer_size() > 8192
