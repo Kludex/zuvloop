@@ -195,6 +195,9 @@ const WriteReq = struct {
 /// `UV__IO_MAX_BYTES` - because some platforms fail such a write outright.
 const io_max: usize = 0x7ffff000;
 
+/// The most buffers libuv takes in one request.
+const bufs_max: usize = 1024 * 1024;
+
 var write_req_offset: usize = 0;
 
 fn releaseViews(views: []c.Py_buffer) void {
@@ -562,16 +565,26 @@ fn queueWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!v
         const limit = if (remaining > tail) @min(io_max, remaining - tail) else io_max;
         var whole: usize = 0;
         var size: usize = 0;
-        while (whole < rest.len and size + rest[whole].len <= limit) : (whole += 1) size += rest[whole].len;
+        while (whole < rest.len and whole < bufs_max and size + rest[whole].len <= limit) : (whole += 1) {
+            size += rest[whole].len;
+        }
         // What still fits of a buffer that has to be cut to stay within the limit.
-        const part = if (whole < rest.len) limit - size else 0;
+        const part = if (whole < rest.len and whole < bufs_max) limit - size else 0;
         const count = whole + @intFromBool(part != 0);
         const nviews = if (owner == null) views.len else 0;
 
         const total = write_req_offset + uv.uv_req_size(.write) + nviews * @sizeOf(c.Py_buffer) + count * @sizeOf(uv.Buf);
+        // Once a request is queued, a failure cannot be raised to the caller: the
+        // start of the write is on its way, and a retry would send it twice.
+        // Requests already queued keep the views until libuv is done with them.
         const raw = alloc.alignedAlloc(u8, .@"16", total) catch {
-            if (owner == null) releaseViews(views);
-            return py.errNoMemory();
+            if (owner == null) {
+                releaseViews(views);
+                return py.errNoMemory();
+            }
+            _ = c.PyErr_NoMemory();
+            forceClose(self, c.PyErr_GetRaisedException());
+            return;
         };
         const wr: *WriteReq = @ptrCast(raw.ptr);
         wr.* = .{ .transport = self, .size = size + part, .total = total, .nviews = nviews, .owner = owner orelse wr };
@@ -582,10 +595,13 @@ fn queueWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!v
 
         const status = uv.uv_write(wr.req(), self.stream(), wr.bufs(), @intCast(count), onWritten);
         if (status < 0) {
-            // Requests already queued keep the views until libuv is done with them.
-            if (owner == null) releaseViews(views);
             wr.free();
-            return py.errUv(status);
+            if (owner == null) {
+                releaseViews(views);
+                return py.errUv(status);
+            }
+            forceClose(self, protocolmod.takeUvError(status));
+            return;
         }
         owner = wr.owner;
         wr.owner.pending += 1;
@@ -623,11 +639,11 @@ fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!vo
 
     var pending = bufs;
     if (self.write_buffer_size == 0) {
-        // Offer no more than libuv's limit: the buffers that fit under it, or
-        // the start of the first one when that alone is over.
+        // Offer no more than libuv's limits: the buffers that fit under them,
+        // or the start of the first one when that alone is over.
         var offered: usize = 0;
         var size: usize = 0;
-        while (offered < pending.len and size + pending[offered].len <= io_max) : (offered += 1) {
+        while (offered < pending.len and offered < bufs_max and size + pending[offered].len <= io_max) : (offered += 1) {
             size += pending[offered].len;
         }
         const first_len = pending[0].len;
