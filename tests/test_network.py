@@ -2562,8 +2562,8 @@ async def test_a_write_from_resume_writing_is_sent_before_the_loop_sleeps() -> N
 
     def read_six_bytes() -> bytes:
         received = bytearray()
-        while len(received) < 6:
-            received += right.recv(16)
+        while len(received) < 6 and (chunk := right.recv(16)):
+            received += chunk
         return bytes(received)
 
     try:

@@ -637,14 +637,20 @@ pub fn discardPending(self: *Transport) void {
 /// Accepts a write, deferring it unless the complete vector exceeds the batch.
 /// Takes ownership of `views` on every path.
 fn submitWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!void {
-    // Earlier writes go out first when this one does not fit beside them, which
-    // leaves the batch empty: the vector is then accepted whole or not at all.
-    if (self.pending_count + bufs.len > pending_max) sendPending(self);
-    if (bufs.len > pending_max) {
+    if (self.pending_count == 0 and bufs.len > pending_max) {
         try writeBufs(self, bufs, views);
     } else {
         if (!try acceptsWrite(self, views)) return;
-        for (bufs, views) |b, v| {
+        for (bufs, views, 0..) |b, v, i| {
+            if (self.pending_count == pending_max) {
+                sendPending(self);
+                // A failed write closes the transport, and so can code that a
+                // buffer release runs. Neither leaves anywhere to send the rest.
+                if (self.flags.conn_lost or self.flags.closing) {
+                    releaseViews(views[i..]);
+                    return;
+                }
+            }
             self.pending_bufs[self.pending_count] = b;
             self.pending_views[self.pending_count] = v;
             self.pending_count += 1;
