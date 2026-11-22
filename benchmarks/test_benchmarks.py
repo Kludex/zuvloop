@@ -36,7 +36,13 @@ import pytest
 from pytest_codspeed import BenchmarkFixture
 
 import zuvloop
-from benchmarks.ready_io import ReadinessSample, idle_connections, ready_chain, socket_readiness
+from benchmarks.ready_io import (
+    ReadinessSample,
+    idle_connections,
+    paused_connections,
+    ready_chain,
+    socket_readiness,
+)
 
 Factory = Callable[[], asyncio.AbstractEventLoop]
 
@@ -448,6 +454,17 @@ def test_ready_chain_with_idle_connections(
     benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop, connection_count: int
 ) -> None:
     with idle_connections(loop, connection_count):
+        benchmark(lambda: loop.run_until_complete(ready_chain()))
+
+
+@pytest.mark.benchmark
+@pytest.mark.parametrize("connection_count", [1, 250])
+@pytest.mark.skipif(os.name == "nt", reason="Windows loopback takes any write whole; nothing pauses the protocol")
+def test_ready_chain_with_paused_connections(
+    benchmark: BenchmarkFixture, loop: asyncio.AbstractEventLoop, connection_count: int
+) -> None:
+    """Loop turns while connections sit paused: what a paused connection costs the others."""
+    with paused_connections(loop, connection_count):
         benchmark(lambda: loop.run_until_complete(ready_chain()))
 
 

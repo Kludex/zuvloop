@@ -15,6 +15,12 @@ caller-supplied destination length through libuv's UDP paths. Linux needs those 
 abstract UNIX names whose bytes differ only by trailing NULs. The updater applies the patch before
 replacing the existing tree and fails if a future libuv release no longer accepts it cleanly.
 
+`0002-unregister-write-request-on-allocation-failure.patch` backports upstream's
+[libuv#5291](https://github.com/libuv/libuv/pull/5291). `uv_write` counted a request as active before
+allocating its buffer list and did not undo that when the allocation failed, so the loop never saw
+itself as idle again and `loop.close()` hung. Drop the patch when updating to a release that includes
+the fix: the updater fails on it then, because it no longer applies.
+
 Socket adoption uses upstream's `uv_udp_open_ex()` with no flags to preserve existing reuse options.
 Asyncio enables port reuse only when you pass `reuse_port=True`; changing the option during adoption
 would let another local process bind the endpoint's address.
