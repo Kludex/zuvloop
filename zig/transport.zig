@@ -611,19 +611,16 @@ pub fn flushPending(self: *Transport) void {
 /// protocol act on a transport that is halfway through changing state. The
 /// caller reports flow control once its own state is consistent.
 fn sendPending(self: *Transport) void {
-    // Releasing a buffer can run its exporter's code, which may write again.
-    while (self.pending_count != 0) {
-        const count = self.pending_count;
-        self.pending_count = 0;
-        self.pending_size = 0;
-        writeBufs(self, self.pending_bufs[0..count], self.pending_views[0..count]) catch {
-            // Nothing above us can act on a write failure - asyncio reports it
-            // through the protocol - and the views are already released.
-            const exc = c.PyErr_GetRaisedException();
-            forceClose(self, exc);
-            return;
-        };
-    }
+    const count = self.pending_count;
+    if (count == 0) return;
+    self.pending_count = 0;
+    self.pending_size = 0;
+    writeBufs(self, self.pending_bufs[0..count], self.pending_views[0..count]) catch {
+        // Nothing above us can act on a write failure - asyncio reports it
+        // through the protocol - and the views are already released.
+        const exc = c.PyErr_GetRaisedException();
+        forceClose(self, exc);
+    };
 }
 
 /// Drops writes that will never reach the socket, releasing what they pinned.
@@ -644,8 +641,7 @@ fn submitWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!
         for (bufs, views, 0..) |b, v, i| {
             if (self.pending_count == pending_max) {
                 sendPending(self);
-                // A failed write closes the transport, and so can code that a
-                // buffer release runs. Neither leaves anywhere to send the rest.
+                // A failed write closes the transport, which leaves nowhere to send the rest.
                 if (self.flags.conn_lost or self.flags.closing) {
                     releaseViews(views[i..]);
                     return;
