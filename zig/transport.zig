@@ -1111,6 +1111,9 @@ fn setWriteBufferLimits(
     self.high_water = marks.high;
     self.low_water = marks.low;
     maybePauseProtocol(self);
+    // A raised low-water mark can already be met. Nothing else would notice
+    // before the loop next turns, which a stalled peer may not make it do.
+    maybeResumeProtocol(self);
     return py.noneRef();
 }
 

@@ -2682,6 +2682,26 @@ async def test_more_buffers_than_one_request_takes_are_all_sent() -> None:
         right.close()
 
 
+async def test_raising_the_low_water_mark_over_the_buffer_resumes_the_protocol() -> None:
+    """With the mark already met, nothing else would report it until the loop next turned."""
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    try:
+        transport, protocol = await loop.connect_accepted_socket(Shedding, left)
+        transport.write(b"early")
+        # The batch is still unsent, so lowering the mark pauses without flushing.
+        transport.set_write_buffer_limits(high=1, low=0)
+        assert protocol.events == ["pause"]
+        transport.set_write_buffer_limits(high=1024, low=512)
+        assert protocol.events == ["pause", "resume"]
+        transport.close()
+        assert await asyncio.wait_for(_read_until_eof(right), 5) == b"early"
+    finally:
+        right.close()
+
+
 async def _read_until_buffered_at_most(transport: asyncio.Transport, peer: socket.socket, mark: int) -> None:
     """Short reads, so the transport passes `mark` slowly, then one more loop turn for it to notice."""
     async with asyncio.timeout(10):

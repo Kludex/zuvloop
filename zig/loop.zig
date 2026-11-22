@@ -280,7 +280,15 @@ fn onFlush(prepare: ?*uv.Prepare) callconv(.c) void {
         while (waiting) |transport| : (waiting = transport.paused_next) {
             if (!transportmod.stillBacklogged(transport)) break;
         }
-        if (waiting == null) return;
+        if (waiting == null) {
+            // Both lists can be emptied outside this callback, by the flush that
+            // follows `stop()` or by a closing loop.
+            if (st.paused_head == null) {
+                _ = uv.uv_prepare_stop(st.flusher);
+                st.flusher_active = false;
+            }
+            return;
+        }
     }
     st.pythonEnter();
     defer st.pythonExit();
@@ -1389,6 +1397,8 @@ fn clear_(obj: ?*py.Object) callconv(.c) c_int {
         st.ready.deinit();
         st.threadsafe_ready.deinit();
         st.timers.deinit();
+        // The lists hold references to transports, which refer back to the loop.
+        dropFlushList(st);
         py.clear(&st.fatal);
         py.clear(&st.metrics_cb);
         py.clear(&st.task_factory);
