@@ -5,6 +5,7 @@ import concurrent.futures
 import contextlib
 import gc
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -13,6 +14,7 @@ import threading
 import time
 import weakref
 from collections.abc import AsyncGenerator, Callable, Iterator, Mapping
+from pathlib import Path
 
 import anyio
 import anyio.to_thread
@@ -465,6 +467,34 @@ async def test_a_killed_child_reports_what_the_platform_reports() -> None:
     process = await asyncio.create_subprocess_exec(sys.executable, "-c", "import time; time.sleep(60)")
     process.kill()
     assert await process.wait() == (1 if sys.platform == "win32" else -signal.SIGKILL)
+
+
+async def test_a_bare_program_name_is_searched_for_as_the_stdlib_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`CreateProcess` looks in the parent's directories and on the parent's `PATH`.
+
+    The child's `env` and `cwd` play no part in that, so a program only they
+    could find is not found, and one the parent can find needs neither.
+    """
+    if sys.platform == "win32":
+        shutil.copy(os.environ["COMSPEC"], tmp_path / "only-here.exe")
+        command = ["only-here", "/c", "exit"]
+        on_the_child_path = {**os.environ, "PATH": str(tmp_path)}
+        with pytest.raises(FileNotFoundError):
+            subprocess.Popen(command, env=on_the_child_path)
+        with pytest.raises(FileNotFoundError):
+            await asyncio.create_subprocess_exec(*command, env=on_the_child_path)
+        with pytest.raises(FileNotFoundError):
+            subprocess.Popen(command, cwd=tmp_path)
+        with pytest.raises(FileNotFoundError):
+            await asyncio.create_subprocess_exec(*command, cwd=tmp_path)
+
+        monkeypatch.setenv("PATH", str(tmp_path), prepend=os.pathsep)
+        off_the_child_path = {**os.environ, "PATH": ""}
+        assert subprocess.Popen(command, env=off_the_child_path).wait() == 0
+        process = await asyncio.create_subprocess_exec(*command, env=off_the_child_path)
+        assert await process.wait() == 0
 
 
 async def test_a_signal_windows_cannot_send_is_refused_there() -> None:
