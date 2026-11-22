@@ -2448,6 +2448,198 @@ async def test_a_protocol_that_closes_from_pause_writing_is_not_resumed() -> Non
         right.close()
 
 
+class Shedding(asyncio.Protocol):
+    """Runs `on_pause` and `on_resume` with the transport, recording what the transport reported."""
+
+    def __init__(
+        self,
+        on_pause: Callable[[asyncio.Transport], None] = lambda _transport: None,
+        on_resume: Callable[[asyncio.Transport], None] = lambda _transport: None,
+    ) -> None:
+        self.on_pause = on_pause
+        self.on_resume = on_resume
+        self.events: list[str] = []
+        self.lost: asyncio.Future[BaseException | None] = running_loop().create_future()
+
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        assert isinstance(transport, asyncio.Transport)
+        self.transport = transport
+
+    def pause_writing(self) -> None:
+        self.events.append("pause")
+        self.on_pause(self.transport)
+
+    def resume_writing(self) -> None:
+        self.events.append("resume")
+        self.on_resume(self.transport)
+
+    def connection_lost(self, exc: BaseException | None) -> None:
+        self.lost.set_result(exc)
+
+
+async def _read_until_eof(sock: socket.socket) -> bytes:
+    received = bytearray()
+    while chunk := await running_loop().sock_recv(sock, 1 << 16):
+        received += chunk
+    return bytes(received)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; nothing pauses the protocol"
+)
+async def test_a_write_is_sent_whole_when_pause_writing_closes_the_transport() -> None:
+    """`writelines()` flushes a full batch midway, and that flush can pause the protocol.
+
+    The buffers not yet batched belong to a call made before the close, so they
+    still go out, exactly as asyncio sends everything written before `close()`.
+    """
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    big = b"z" * (1 << 20)
+    try:
+        transport, protocol = await loop.connect_accepted_socket(lambda: Shedding(on_pause=lambda t: t.close()), left)
+        transport.set_write_buffer_limits(high=1024, low=512)
+        transport.write(b"a")
+        transport.writelines([big, b"b", b"c", b"d"])
+        assert await asyncio.wait_for(_read_until_eof(right), 5) == b"a" + big + b"bcd"
+        assert await asyncio.wait_for(protocol.lost, 5) is None
+        assert protocol.events == ["pause"]
+    finally:
+        right.close()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; nothing pauses the protocol"
+)
+async def test_a_write_is_sent_whole_when_pause_writing_half_closes_the_transport() -> None:
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    big = b"z" * (1 << 20)
+    try:
+        transport, protocol = await loop.connect_accepted_socket(
+            lambda: Shedding(on_pause=lambda t: t.write_eof()), left
+        )
+        transport.set_write_buffer_limits(high=1024, low=512)
+        transport.write(b"a")
+        transport.writelines([big, b"b", b"c", b"d"])
+        assert await asyncio.wait_for(_read_until_eof(right), 5) == b"a" + big + b"bcd"
+        transport.close()
+        assert await asyncio.wait_for(protocol.lost, 5) is None
+    finally:
+        right.close()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows loopback takes any write whole; nothing pauses the protocol"
+)
+async def test_a_pause_is_reported_when_the_rest_of_the_write_is_empty() -> None:
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    try:
+        transport, protocol = await loop.connect_accepted_socket(Shedding, left)
+        transport.set_write_buffer_limits(high=1024, low=512)
+        transport.write(b"a")
+        transport.writelines([b"z" * (1 << 20), b"", b"", b""])
+        assert protocol.events == ["pause"]
+        transport.abort()
+        await asyncio.wait_for(protocol.lost, 5)
+    finally:
+        right.close()
+
+
+async def test_a_write_from_resume_writing_is_sent_before_the_loop_sleeps() -> None:
+    """The resume here comes from the loop's own flush, the last thing it does before blocking."""
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.settimeout(5)
+
+    def read_six_bytes() -> bytes:
+        received = bytearray()
+        while len(received) < 6 and (chunk := right.recv(16)):
+            received += chunk
+        return bytes(received)
+
+    try:
+        transport, protocol = await loop.connect_accepted_socket(
+            lambda: Shedding(on_resume=lambda t: t.write(b"f")), left
+        )
+        transport.writelines([b"a", b"b", b"c", b"d"])
+        # The batch is still unsent, so lowering the mark pauses without flushing.
+        transport.set_write_buffer_limits(high=1, low=0)
+        transport.write(b"e")
+        # Read off the loop: a read on it would be the wakeup that hides a stranded write.
+        assert await loop.run_in_executor(None, read_six_bytes) == b"abcdef"
+        assert protocol.events == ["pause", "resume"]
+        transport.close()
+        await asyncio.wait_for(protocol.lost, 5)
+    finally:
+        right.close()
+
+
+async def test_close_does_not_resume_a_paused_protocol() -> None:
+    """`close()` sends what is batched, which can empty the buffer of a paused protocol.
+
+    Resuming it there would invite a write into a batch nothing flushes again,
+    and that write would be lost without an error.
+    """
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    try:
+        transport, protocol = await loop.connect_accepted_socket(
+            lambda: Shedding(on_resume=lambda t: t.write(b"late")), left
+        )
+        transport.write(b"early")
+        # The batch is still unsent, so lowering the mark pauses without flushing.
+        transport.set_write_buffer_limits(high=1, low=0)
+        transport.close()
+        assert await asyncio.wait_for(_read_until_eof(right), 5) == b"early"
+        assert await asyncio.wait_for(protocol.lost, 5) is None
+        assert protocol.events == ["pause"]
+    finally:
+        right.close()
+
+
+async def test_write_eof_resumes_a_paused_protocol_after_the_half_close() -> None:
+    """A resume delivered before the half-close could batch a write behind the EOF.
+
+    Sending that write later fails and takes the whole connection down. After the
+    half-close the same write is refused where the protocol can see it.
+    """
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    refused: list[str] = []
+
+    def write_late(transport: asyncio.Transport) -> None:
+        with pytest.raises(RuntimeError, match=r"Cannot call write\(\) after write_eof") as raised:
+            transport.write(b"late")
+        refused.append(str(raised.value))
+
+    try:
+        transport, protocol = await loop.connect_accepted_socket(lambda: Shedding(on_resume=write_late), left)
+        transport.write(b"early")
+        # The batch is still unsent, so lowering the mark pauses without flushing.
+        transport.set_write_buffer_limits(high=1, low=0)
+        transport.write_eof()
+        assert await asyncio.wait_for(_read_until_eof(right), 5) == b"early"
+        assert protocol.events == ["pause", "resume"]
+        assert len(refused) == 1
+        transport.close()
+        assert await asyncio.wait_for(protocol.lost, 5) is None
+    finally:
+        right.close()
+
+
 @pytest.mark.anyio(None)
 def test_an_exit_from_a_read_callback_reaches_the_caller(loop: zuvloop.EventLoop) -> None:
     """Otherwise it reaches the exception handler, and the caller of `run_forever`

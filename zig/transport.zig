@@ -546,7 +546,6 @@ fn queueWrite(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) py.E
         return py.errUv(status);
     }
     self.write_buffer_size += size;
-    maybePauseProtocol(self);
 }
 
 /// Whether a write may proceed, releasing `views` if it may not.
@@ -595,12 +594,23 @@ fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!vo
     try queueWrite(self, pending, views);
 }
 
-/// Hands everything accepted this iteration to libuv as one vectored write.
+/// Hands everything accepted this iteration to libuv as one vectored write, and
+/// tells the protocol if that moved it across a water mark.
 ///
-/// Called from the loop's check handle, and directly by anything that must not
-/// leave data sitting unwritten - closing, half-closing, or reporting the queue
-/// depth to the protocol.
+/// Called from the loop's prepare handle, once per turn.
 pub fn flushPending(self: *Transport) void {
+    sendPending(self);
+    maybePauseProtocol(self);
+    maybeResumeProtocol(self);
+}
+
+/// Empties the batch into the socket without telling the protocol anything.
+///
+/// Used inside an operation that is not finished - accepting a write, closing,
+/// half-closing - where `pause_writing` or `resume_writing` would let the
+/// protocol act on a transport that is halfway through changing state. The
+/// caller reports flow control once its own state is consistent.
+fn sendPending(self: *Transport) void {
     const count = self.pending_count;
     if (count == 0) return;
     self.pending_count = 0;
@@ -610,11 +620,7 @@ pub fn flushPending(self: *Transport) void {
         // through the protocol - and the views are already released.
         const exc = c.PyErr_GetRaisedException();
         forceClose(self, exc);
-        return;
     };
-    // The socket may have taken the whole batch, in which case there is no write
-    // callback coming to lift a pause this transport is still under.
-    maybeResumeProtocol(self);
 }
 
 /// Drops writes that will never reach the socket, releasing what they pinned.
@@ -625,46 +631,43 @@ pub fn discardPending(self: *Transport) void {
     releaseViews(self.pending_views[0..count]);
 }
 
-fn appendPending(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) void {
-    for (bufs, views, 0..) |b, v, i| {
-        // Flushing may call pause_writing(), which is allowed to reenter write()
-        // and refill the batch. Re-establish the capacity invariant after every
-        // trip through Python before indexing the fixed-size arrays.
-        while (self.pending_count == pending_max) {
-            flushPending(self);
-            if (self.flags.conn_lost or self.flags.closing or self.flags.eof_written) {
-                releaseViews(views[i..]);
-                return;
-            }
-        }
-        self.pending_bufs[self.pending_count] = b;
-        self.pending_views[self.pending_count] = v;
-        self.pending_count += 1;
-        self.pending_size += b.len;
-    }
-    loopmod.scheduleFlush(self.loopState(), self);
-}
-
 /// Accepts a write, deferring it unless the complete vector exceeds the batch.
 /// Takes ownership of `views` on every path.
 fn submitWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!void {
     if (self.pending_count == 0 and bufs.len > pending_max) {
         try writeBufs(self, bufs, views);
-        maybeResumeProtocol(self);
-        return;
+    } else {
+        if (!try acceptsWrite(self, views)) return;
+        for (bufs, views, 0..) |b, v, i| {
+            if (self.pending_count == pending_max) {
+                sendPending(self);
+                // A failed write closes the transport, which leaves nowhere to send the rest.
+                if (self.flags.conn_lost or self.flags.closing) {
+                    releaseViews(views[i..]);
+                    return;
+                }
+            }
+            self.pending_bufs[self.pending_count] = b;
+            self.pending_views[self.pending_count] = v;
+            self.pending_count += 1;
+            self.pending_size += b.len;
+        }
+        loopmod.scheduleFlush(self.loopState(), self);
+        // Batching pays off only for consecutive writes from one callback, and a
+        // caller outside the loop may block reading the peer before the flush could
+        // ever run, so writes from a stopped loop go straight out.
+        //
+        // A batch that first crosses the high-water mark goes out too. Only the
+        // socket can tell whether the protocol has to pause, and holding the batch
+        // until the end of the turn would let `drain()` return with all of it still
+        // buffered. Once paused, writes batch again.
+        const crossed = !self.flags.protocol_paused and bufferedBytes(self) > self.high_water;
+        if (!self.loopState().running or crossed) sendPending(self);
     }
-    if (!try acceptsWrite(self, views)) return;
-    appendPending(self, bufs, views);
-    // Batching pays off only for consecutive writes from one callback, and a
-    // caller outside the loop may block reading the peer before the flush could
-    // ever run, so writes from a stopped loop go straight out.
-    //
-    // A batch that first crosses the high-water mark goes out too. Only the
-    // socket can tell whether the protocol has to pause, and holding the batch
-    // until the end of the turn would let `drain()` return with all of it still
-    // buffered. Once paused, writes batch again.
-    const crossed = !self.flags.protocol_paused and bufferedBytes(self) > self.high_water;
-    if (!self.loopState().running or crossed) flushPending(self);
+    // Only now is the whole vector accepted, so whatever the protocol does from
+    // either callback - closing included - comes after it.
+    maybePauseProtocol(self);
+    maybeResumeProtocol(self);
 }
 
 /// What `write()` has accepted and not yet handed back to the socket, whether
@@ -795,7 +798,9 @@ pub fn closeFromLoop(handle: *uv.Handle) void {
 fn closeTransport(self: *Transport) void {
     self.flags.close_requested = true;
     if (self.flags.closing) return;
-    flushPending(self);
+    // Not a flush: a write from `pause_writing` or `resume_writing` would land in
+    // a batch nothing sends again, and a closing transport owes the protocol neither.
+    sendPending(self);
     self.flags.closing = true;
     if (self.flags.allocating_read_buffer) {
         self.flags.read_state_pending = true;
@@ -979,11 +984,14 @@ fn writelines(self_obj: *py.Object, data: *py.Object) py.Error!*py.Object {
 fn writeEof(self_obj: *py.Object) py.Error!*py.Object {
     const self = asTransport(self_obj);
     if (self.flags.conn_lost or self.flags.eof_written or self.flags.closing) return py.noneRef();
-    flushPending(self);
+    sendPending(self);
     self.flags.eof_written = true;
     // A half-close must follow all writes that were accepted before this call.
     // The final write callback performs it when libuv still owns queued data.
     if (self.write_buffer_size == 0) shutdownWrite(self);
+    // After the half-close is recorded, so a write from `resume_writing` is
+    // refused there instead of failing later and aborting the connection.
+    maybeResumeProtocol(self);
     return py.noneRef();
 }
 
