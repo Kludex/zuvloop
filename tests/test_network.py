@@ -2702,12 +2702,11 @@ async def test_raising_the_low_water_mark_over_the_buffer_resumes_the_protocol()
         right.close()
 
 
-async def _read_until_buffered_at_most(transport: asyncio.Transport, peer: socket.socket, mark: int) -> None:
-    """Short reads, so the transport passes `mark` slowly, then one more loop turn for it to notice."""
+async def _read_slowly_until_resumed(protocol: Shedding, peer: socket.socket) -> None:
+    """Short reads, so the transport's buffer falls a little at a time."""
     async with asyncio.timeout(10):
-        while transport.get_write_buffer_size() > mark:
+        while "resume" not in protocol.events:
             await running_loop().sock_recv(peer, 1024)
-    await asyncio.sleep(0.01)
 
 
 @pytest.mark.skipif(
@@ -2722,13 +2721,15 @@ async def test_a_paused_protocol_is_resumed_at_the_low_water_mark() -> None:
     # Small buffers, so each short read lets only a little more out of the transport.
     left.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
     right.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    buffered: list[int] = []
     try:
-        transport, protocol = await loop.connect_accepted_socket(Shedding, left)
+        transport, protocol = await loop.connect_accepted_socket(
+            lambda: Shedding(on_resume=lambda t: buffered.append(t.get_write_buffer_size())), left
+        )
         transport.write(b"z" * (1 << 20))
         low, _high = transport.get_write_buffer_limits()
-        await _read_until_buffered_at_most(transport, right, low)
-        assert transport.get_write_buffer_size() > 0
-        assert protocol.events == ["pause", "resume"]
+        await _read_slowly_until_resumed(protocol, right)
+        assert 0 < buffered[0] <= low
         transport.abort()
         await asyncio.wait_for(protocol.lost, 5)
     finally:
@@ -2746,14 +2747,18 @@ async def test_a_paused_protocol_is_resumed_in_the_middle_of_a_queued_write() ->
     right.setblocking(False)
     left.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
     right.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    buffered: list[int] = []
+    last = b"y" * 1024
     try:
-        transport, protocol = await loop.connect_accepted_socket(Shedding, left)
+        transport, protocol = await loop.connect_accepted_socket(
+            lambda: Shedding(on_resume=lambda t: buffered.append(t.get_write_buffer_size())), left
+        )
         transport.write(b"a")
-        transport.writelines([b"z" * (1 << 20), b"c", b"d", b"y" * 8192])
-        # Past the last 8 KiB write, so the mark was crossed inside the one before it.
-        await _read_until_buffered_at_most(transport, right, 12 * 1024)
-        assert transport.get_write_buffer_size() > 8192
-        assert protocol.events == ["pause", "resume"]
+        transport.writelines([b"z" * (1 << 20), b"c", b"d", last])
+        low, _high = transport.get_write_buffer_limits()
+        await _read_slowly_until_resumed(protocol, right)
+        # More than the last write is left, so the one before it had not finished.
+        assert len(last) < buffered[0] <= low
         transport.abort()
         await asyncio.wait_for(protocol.lost, 5)
     finally:

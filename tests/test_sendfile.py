@@ -15,7 +15,7 @@ from typing import IO
 
 import pytest
 
-from tests.conftest import running_loop
+from tests.conftest import collect_contexts, running_loop
 from zuvloop import _zuvloop
 from zuvloop._sendfile import _SendfileProtocol
 from zuvloop._server import Server
@@ -619,6 +619,35 @@ async def test_sendfile_cancellation_restores_the_transport(payload_file: IO[byt
         assert transport.get_protocol() is protocol
         assert transport.is_reading()
     finally:
+        transport.abort()
+        assert sink.transport is not None
+        sink.transport.abort()
+        server.close()
+        await server.wait_closed()
+
+
+@requires_loopback_backpressure
+async def test_sendfile_cancelled_under_the_low_water_mark_reports_no_error(payload_file: IO[bytes]) -> None:
+    """Restoring the write limits resumes at once when the backlog is already under the mark.
+
+    The waiter that resume is for has been cancelled by then.
+    """
+    loop = running_loop()
+    server, port, accepted = await start_sink(StalledSink)
+    transport, _ = await loop.create_connection(Recorder, "127.0.0.1", port)
+    sink = await accepted
+    reported = collect_contexts(loop)
+    try:
+        transport.set_write_buffer_limits(high=1 << 30, low=1 << 29)
+        transport.write(PAYLOAD * 8)
+        task = loop.create_task(loop.sendfile(transport, payload_file))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert reported == []
+    finally:
+        loop.set_exception_handler(None)
         transport.abort()
         assert sink.transport is not None
         sink.transport.abort()

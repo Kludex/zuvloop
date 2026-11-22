@@ -897,6 +897,8 @@ fn closeTransport(self: *Transport) void {
     // a batch nothing sends again, and a closing transport owes the protocol neither.
     sendPending(self);
     self.flags.closing = true;
+    // A closing transport is never resumed, so stop hearing about its writes.
+    uv.uv_stream_set_write_progress_cb(self.stream(), null);
     if (self.flags.allocating_read_buffer) {
         self.flags.read_state_pending = true;
         return;

@@ -244,7 +244,10 @@ class _SendfileProtocol(asyncio.Protocol):
 
     def resume_writing(self) -> None:
         if self._waiter is not None:
-            self._waiter.set_result(None)
+            # Restoring the limits after a cancelled send can resume into the
+            # waiter that cancellation already finished.
+            if not self._waiter.done():
+                self._waiter.set_result(None)
             self._waiter = None
 
     async def drain(self) -> None:
