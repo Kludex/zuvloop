@@ -57,3 +57,16 @@ is duplicated before libuv adopts it, which keeps the two owners apart: libuv
 closes its own descriptor, the transport closes your pipe object, and neither can
 close the other's.
 ///
+
+/// warning | On Windows, a `close_fds=False` child can inherit the pipe
+
+The duplicate is made with `os.dup()`. On Windows it is inheritable for an
+instant, until Python clears the flag. When the pipe is standard input, output
+or error, Python leaves it inheritable for good. A child spawned with
+`close_fds=False` while the duplicate is inheritable gets the handle and keeps
+the pipe open. CPython's own subprocess code has races of the same kind.
+
+Keep the default `close_fds=True`. If you cannot, do not connect a pipe on one
+thread while another thread spawns such a child, and expect every such child to
+inherit a standard stream you have connected.
+///
