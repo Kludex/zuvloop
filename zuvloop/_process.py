@@ -155,6 +155,10 @@ class Popen:
             )
             or startupinfo is not None
             or creationflags
+            # `CreateProcess` looks for a relative name in the parent's directories
+            # and on the parent's `PATH`. libuv looks in the child's `cwd` and on
+            # the child's `PATH`, which can find a different program or none.
+            or (sys.platform == "win32" and not os.path.isabs(file))
             or not close_fds
         ):
             process = subprocess.Popen(
