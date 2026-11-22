@@ -632,6 +632,7 @@ fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!vo
     if (!try acceptsWrite(self, views)) return;
 
     var pending = bufs;
+    var sent_some = false;
     if (self.write_buffer_size == 0) {
         // Offer no more than libuv's limits: the buffers that fit under them,
         // or the start of the first one when that alone is over.
@@ -648,6 +649,7 @@ fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!vo
         const written = uv.uv_try_write(self.stream(), pending.ptr, @intCast(offered));
         pending[0].len = first_len;
         if (written > 0) {
+            sent_some = true;
             var remaining: usize = @intCast(written);
             while (pending.len != 0 and remaining >= pending[0].len) {
                 remaining -= pending[0].len;
@@ -665,7 +667,12 @@ fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!vo
             return;
         }
     }
-    try queueWrite(self, pending, views);
+    queueWrite(self, pending, views) catch |err| {
+        if (!sent_some) return err;
+        // As in `queueWrite`: the start of the write is gone, so the failure
+        // closes the transport rather than inviting a retry of the whole.
+        forceClose(self, c.PyErr_GetRaisedException());
+    };
 }
 
 /// Hands everything accepted this iteration to libuv as one vectored write, and
