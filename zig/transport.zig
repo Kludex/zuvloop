@@ -150,11 +150,18 @@ var handle_offset: usize = 0;
 /// The request does not take another Python reference to `transport`. The
 /// loop-owned handle reference remains alive until `onClosed`, and libuv runs
 /// every outstanding request callback before that close callback.
+///
+/// A write that libuv cannot take as one request is queued as several. The
+/// first of them owns the views for all, and outlives its own completion until
+/// the last one is done.
 const WriteReq = struct {
     transport: *Transport,
     size: usize,
     total: usize,
     nviews: usize,
+    owner: *WriteReq,
+    /// On the owner: how many requests of its write libuv still holds.
+    pending: usize = 0,
 
     inline fn req(self: *WriteReq) *uv.Write {
         return @ptrCast(@as([*]u8, @ptrCast(self)) + write_req_offset);
@@ -169,12 +176,27 @@ const WriteReq = struct {
         return @ptrCast(@alignCast(after + self.nviews * @sizeOf(c.Py_buffer)));
     }
 
-    fn release(self: *WriteReq) void {
-        const owned = self.views();
-        var i: usize = 0;
-        while (i < self.nviews) : (i += 1) c.PyBuffer_Release(&owned[i]);
+    fn free(self: *WriteReq) void {
+        alloc.free(@as([*]align(16) u8, @ptrCast(@alignCast(self)))[0..self.total]);
+    }
+
+    /// Called once libuv is done with this request, whatever the outcome.
+    fn done(self: *WriteReq) void {
+        const owner = self.owner;
+        if (self != owner) self.free();
+        owner.pending -= 1;
+        if (owner.pending != 0) return;
+        releaseViews(owner.views()[0..owner.nviews]);
+        owner.free();
     }
 };
+
+/// libuv refuses a request whose buffers add up to more than this - its
+/// `UV__IO_MAX_BYTES` - because some platforms fail such a write outright.
+const io_max: usize = 0x7ffff000;
+
+/// The most buffers libuv takes in one request.
+const bufs_max: usize = 1024 * 1024;
 
 var write_req_offset: usize = 0;
 
@@ -496,8 +518,7 @@ fn onWritten(req: ?*uv.Write, status: c_int) callconv(.c) void {
 
     // abort() zeroes the queue while requests are still in flight.
     self.write_buffer_size -= @min(wr.size, self.write_buffer_size);
-    wr.release();
-    alloc.free(@as([*]align(16) u8, @ptrCast(@alignCast(wr)))[0..wr.total]);
+    wr.done();
 
     if (status < 0) {
         // Closing the handle completes everything still queued with ECANCELED,
@@ -519,33 +540,71 @@ fn onWritten(req: ?*uv.Write, status: c_int) callconv(.c) void {
 }
 
 /// Takes ownership of `views`, releasing them once libuv reports completion.
-fn queueWrite(self: *Transport, bufs: []const uv.Buf, views: []c.Py_buffer) py.Error!void {
-    var size: usize = 0;
-    for (bufs) |b| size += b.len;
-    if (size == 0) {
+/// Consumes `bufs`.
+fn queueWrite(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!void {
+    var remaining: usize = 0;
+    for (bufs) |b| remaining += b.len;
+    if (remaining == 0) {
         releaseViews(views);
         return;
     }
 
-    const n = views.len;
-    const total = write_req_offset + uv.uv_req_size(.write) + n * @sizeOf(c.Py_buffer) + bufs.len * @sizeOf(uv.Buf);
-    const raw = alloc.alignedAlloc(u8, .@"16", total) catch {
-        releaseViews(views);
-        return py.errNoMemory();
-    };
-    const wr: *WriteReq = @ptrCast(raw.ptr);
-    wr.* = .{ .transport = self, .size = size, .total = total, .nviews = n };
-    @memcpy(wr.views()[0..n], views);
-    @memcpy(wr.bufs()[0..bufs.len], bufs);
-    uv.setData(wr.req(), wr);
+    var rest = bufs;
+    var owner: ?*WriteReq = null;
+    while (remaining != 0) {
+        // A request of nothing but empty buffers would count as part of the
+        // write being queued, and turn a later failure into a closed transport.
+        while (rest[0].len == 0) rest = rest[1..];
+        var whole: usize = 0;
+        var size: usize = 0;
+        while (whole < rest.len and whole < bufs_max and size + rest[whole].len <= io_max) : (whole += 1) {
+            size += rest[whole].len;
+        }
+        // What still fits of a buffer that has to be cut to stay within the limit.
+        const part = if (whole < rest.len and whole < bufs_max) io_max - size else 0;
+        const count = whole + @intFromBool(part != 0);
+        const nviews = if (owner == null) views.len else 0;
 
-    const status = uv.uv_write(wr.req(), self.stream(), wr.bufs(), @intCast(bufs.len), onWritten);
-    if (status < 0) {
-        wr.release();
-        alloc.free(raw);
-        return py.errUv(status);
+        const total = write_req_offset + uv.uv_req_size(.write) + nviews * @sizeOf(c.Py_buffer) + count * @sizeOf(uv.Buf);
+        // Once a request is queued, a failure cannot be raised to the caller: the
+        // start of the write is on its way, and a retry would send it twice.
+        // Requests already queued keep the views until libuv is done with them.
+        const raw = alloc.alignedAlloc(u8, .@"16", total) catch {
+            if (owner == null) {
+                releaseViews(views);
+                return py.errNoMemory();
+            }
+            _ = c.PyErr_NoMemory();
+            forceClose(self, c.PyErr_GetRaisedException());
+            return;
+        };
+        const wr: *WriteReq = @ptrCast(raw.ptr);
+        wr.* = .{ .transport = self, .size = size + part, .total = total, .nviews = nviews, .owner = owner orelse wr };
+        @memcpy(wr.views()[0..nviews], views[0..nviews]);
+        @memcpy(wr.bufs()[0..count], rest[0..count]);
+        if (part != 0) wr.bufs()[whole].len = @intCast(part);
+        uv.setData(wr.req(), wr);
+
+        const status = uv.uv_write(wr.req(), self.stream(), wr.bufs(), @intCast(count), onWritten);
+        if (status < 0) {
+            wr.free();
+            if (owner == null) {
+                releaseViews(views);
+                return py.errUv(status);
+            }
+            forceClose(self, protocolmod.takeUvError(status));
+            return;
+        }
+        owner = wr.owner;
+        wr.owner.pending += 1;
+        self.write_buffer_size += wr.size;
+        remaining -= wr.size;
+        rest = rest[whole..];
+        if (part != 0) {
+            rest[0].base += part;
+            rest[0].len -= @intCast(part);
+        }
     }
-    self.write_buffer_size += size;
 }
 
 /// Whether a write may proceed, releasing `views` if it may not.
@@ -571,9 +630,24 @@ fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!vo
     if (!try acceptsWrite(self, views)) return;
 
     var pending = bufs;
+    var sent_some = false;
     if (self.write_buffer_size == 0) {
-        const written = uv.uv_try_write(self.stream(), pending.ptr, @intCast(pending.len));
+        // Offer no more than libuv's limits: the buffers that fit under them,
+        // or the start of the first one when that alone is over.
+        var offered: usize = 0;
+        var size: usize = 0;
+        while (offered < pending.len and offered < bufs_max and size + pending[offered].len <= io_max) : (offered += 1) {
+            size += pending[offered].len;
+        }
+        const first_len = pending[0].len;
+        if (offered == 0) {
+            pending[0].len = @intCast(io_max);
+            offered = 1;
+        }
+        const written = uv.uv_try_write(self.stream(), pending.ptr, @intCast(offered));
+        pending[0].len = first_len;
         if (written > 0) {
+            sent_some = true;
             var remaining: usize = @intCast(written);
             while (pending.len != 0 and remaining >= pending[0].len) {
                 remaining -= pending[0].len;
@@ -591,7 +665,12 @@ fn writeBufs(self: *Transport, bufs: []uv.Buf, views: []c.Py_buffer) py.Error!vo
             return;
         }
     }
-    try queueWrite(self, pending, views);
+    queueWrite(self, pending, views) catch |err| {
+        if (!sent_some) return err;
+        // As in `queueWrite`: the start of the write is gone, so the failure
+        // closes the transport rather than inviting a retry of the whole.
+        forceClose(self, c.PyErr_GetRaisedException());
+    };
 }
 
 /// Hands everything accepted this iteration to libuv as one vectored write, and

@@ -2640,6 +2640,48 @@ async def test_write_eof_resumes_a_paused_protocol_after_the_half_close() -> Non
         right.close()
 
 
+async def test_a_write_above_two_gibibytes_is_sent_whole() -> None:
+    """libuv refuses a single request that large, so it has to go out as several."""
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.settimeout(30)
+
+    def count_until_eof() -> tuple[int, bytes]:
+        total, last = 0, b""
+        while chunk := right.recv(1 << 22):
+            total += len(chunk)
+            last = (last + chunk)[-4:]
+        return total, last
+
+    try:
+        transport, protocol = await loop.connect_accepted_socket(Shedding, left)
+        counted = loop.run_in_executor(None, count_until_eof)
+        transport.writelines([bytes(1 << 31), b"tail"])
+        transport.close()
+        assert await counted == ((1 << 31) + 4, b"tail")
+        assert await protocol.lost is None
+    finally:
+        right.close()
+
+
+async def test_more_buffers_than_one_request_takes_are_all_sent() -> None:
+    """libuv refuses a request of more than 2**20 buffers, however small they are."""
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    count = (1 << 20) + 4096
+    try:
+        transport, protocol = await loop.connect_accepted_socket(Shedding, left)
+        transport.writelines([b"x"] * count)
+        transport.close()
+        assert await asyncio.wait_for(_read_until_eof(right), 30) == b"x" * count
+        assert await protocol.lost is None
+    finally:
+        right.close()
+
+
 @pytest.mark.anyio(None)
 def test_an_exit_from_a_read_callback_reaches_the_caller(loop: zuvloop.EventLoop) -> None:
     """Otherwise it reaches the exception handler, and the caller of `run_forever`
