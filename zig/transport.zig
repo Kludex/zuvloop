@@ -37,9 +37,7 @@ const Flags = packed struct(u32) {
     allocating_read_buffer: bool = false,
     read_state_pending: bool = false,
     previous_read_full: bool = false,
-    /// On the loop's list of paused transports; see `paused_next`.
-    watched: bool = false,
-    _: u17 = 0,
+    _: u18 = 0,
 };
 
 pub const KIND_TCP: c_int = 0;
@@ -128,9 +126,6 @@ pub const Transport = extern struct {
     pending_count: usize,
     pending_size: usize,
     flush_next: ?*Transport,
-    /// Threads the transport onto the loop's list of transports whose protocol
-    /// is paused, which the loop checks every turn for one that has drained.
-    paused_next: ?*Transport,
     owner_prev: ?*Transport,
     owner_next: ?*Transport,
 
@@ -769,23 +764,21 @@ fn maybePauseProtocol(self: *Transport) void {
     if (self.flags.protocol_paused) return;
     self.flags.protocol_paused = true;
     // libuv reports a write only when a whole request is done, which can be long
-    // after the buffer has fallen to the low-water mark. The loop looks instead.
-    loopmod.watchPaused(self.loopState(), self);
+    // after the buffer has fallen to the low-water mark. Until the protocol is
+    // resumed, hear about every write the stream makes instead.
+    uv.uv_stream_set_write_progress_cb(self.stream(), onWriteProgress);
     protocolmod.call(self.loop.?, @ptrCast(self), self.cb_pause_writing, null);
 }
 
-/// Whether a paused transport has nothing to tell its protocol yet: it is still
-/// open, and still above the low-water mark. Touches no Python state.
-pub fn stillBacklogged(self: *Transport) bool {
-    const flags = self.flags;
-    return flags.protocol_paused and !flags.closing and !flags.conn_lost and bufferedBytes(self) > self.low_water;
-}
-
-/// Resumes the protocol if the buffer has drained to the low-water mark.
-/// Returns whether the transport is still paused and worth watching.
-pub fn resumeIfDrained(self: *Transport) bool {
+fn onWriteProgress(stream: ?*uv.Stream) callconv(.c) void {
+    const self: *Transport = @ptrCast(@alignCast(uv.getData(stream.?)));
+    // Most writes leave a paused transport above its mark. Seeing that takes no
+    // Python, so do not enter it.
+    if (bufferedBytes(self) > self.low_water) return;
+    const st = self.loopState();
+    st.pythonEnter();
+    defer st.pythonExit();
     maybeResumeProtocol(self);
-    return self.flags.protocol_paused and !self.flags.closing and !self.flags.conn_lost;
 }
 
 fn maybeResumeProtocol(self: *Transport) void {
@@ -796,6 +789,7 @@ fn maybeResumeProtocol(self: *Transport) void {
     if (!self.flags.protocol_paused) return;
     if (bufferedBytes(self) > self.low_water) return;
     self.flags.protocol_paused = false;
+    uv.uv_stream_set_write_progress_cb(self.stream(), null);
     protocolmod.call(self.loop.?, @ptrCast(self), self.cb_resume_writing, null);
 }
 

@@ -78,6 +78,11 @@ size_t uv_stream_get_write_queue_size(const uv_stream_t* stream) {
   return stream->write_queue_size;
 }
 
+void uv_stream_set_write_progress_cb(uv_stream_t* stream,
+                                     uv_write_progress_cb cb) {
+  stream->write_progress_cb = cb;
+}
+
 size_t uv_udp_get_send_queue_size(const uv_udp_t* handle) {
   return handle->send_queue_size;
 }

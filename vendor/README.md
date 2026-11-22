@@ -21,6 +21,13 @@ allocating its buffer list and did not undo that when the allocation failed, so 
 itself as idle again and `loop.close()` hung. Drop the patch when updating to a release that includes
 the fix: the updater fails on it then, because it no longer applies.
 
+`0003-report-stream-write-progress.patch` adds `uv_stream_set_write_progress_cb()`. libuv reports a
+write only when a whole request completes, so nothing tells the caller that `write_queue_size` has
+fallen partway through one. The callback runs after each write the loop makes on the stream, which
+is how a paused protocol is resumed at its low-water mark without the loop polling every paused
+connection. It is Unix only: on Windows the queue size changes when a request completes, which the
+request's own callback already reports.
+
 Socket adoption uses upstream's `uv_udp_open_ex()` with no flags to preserve existing reuse options.
 Asyncio enables port reuse only when you pass `reuse_port=True`; changing the option during adoption
 would let another local process bind the endpoint's address.

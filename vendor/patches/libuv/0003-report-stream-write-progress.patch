@@ -1,0 +1,85 @@
+diff --git a/include/uv.h b/include/uv.h
+index 835a822..1ce218e 100644
+--- a/include/uv.h
++++ b/include/uv.h
+@@ -327,6 +327,7 @@ typedef void (*uv_read_cb)(uv_stream_t* stream,
+                            ssize_t nread,
+                            const uv_buf_t* buf);
+ typedef void (*uv_write_cb)(uv_write_t* req, int status);
++typedef void (*uv_write_progress_cb)(uv_stream_t* stream);
+ typedef void (*uv_connect_cb)(uv_connect_t* req, int status);
+ typedef void (*uv_shutdown_cb)(uv_shutdown_t* req, int status);
+ typedef void (*uv_connection_cb)(uv_stream_t* server, int status);
+@@ -522,6 +523,7 @@ UV_EXTERN int uv_socketpair(int type,
+   size_t write_queue_size;                                                    \
+   uv_alloc_cb alloc_cb;                                                       \
+   uv_read_cb read_cb;                                                         \
++  uv_write_progress_cb write_progress_cb;                                     \
+   /* private */                                                               \
+   UV_STREAM_PRIVATE_FIELDS
+ 
+@@ -538,6 +540,14 @@ struct uv_stream_s {
+ };
+ 
+ UV_EXTERN size_t uv_stream_get_write_queue_size(const uv_stream_t* stream);
++/*
++ * Called after the stream has written to its descriptor from the event loop,
++ * whether or not a write request completed, so the caller can watch
++ * write_queue_size fall. Unix only: on Windows the queue size changes when a
++ * request completes, which the request's own callback already reports.
++ */
++UV_EXTERN void uv_stream_set_write_progress_cb(uv_stream_t* stream,
++                                               uv_write_progress_cb cb);
+ 
+ UV_EXTERN int uv_listen(uv_stream_t* stream, int backlog, uv_connection_cb cb);
+ UV_EXTERN int uv_accept(uv_stream_t* server, uv_stream_t* client);
+diff --git a/src/unix/stream.c b/src/unix/stream.c
+index b6a515e..fb2149b 100644
+--- a/src/unix/stream.c
++++ b/src/unix/stream.c
+@@ -86,6 +86,7 @@ void uv__stream_init(uv_loop_t* loop,
+   uv__handle_init(loop, (uv_handle_t*)stream, type);
+   stream->read_cb = NULL;
+   stream->alloc_cb = NULL;
++  stream->write_progress_cb = NULL;
+   stream->close_cb = NULL;
+   stream->connection_cb = NULL;
+   stream->connect_req = NULL;
+@@ -1248,6 +1249,9 @@ void uv__stream_io(uv_loop_t* loop, uv__io_t* w, unsigned int events) {
+     uv__write(stream);
+     uv__write_callbacks(stream);
+ 
++    if (stream->write_progress_cb != NULL && !uv__is_closing(stream))
++      stream->write_progress_cb(stream);
++
+     /* Write queue drained. */
+     if (uv__queue_empty(&stream->write_queue))
+       uv__drain(stream);
+diff --git a/src/uv-data-getter-setters.c b/src/uv-data-getter-setters.c
+index 62186ae..b855a79 100644
+--- a/src/uv-data-getter-setters.c
++++ b/src/uv-data-getter-setters.c
+@@ -78,6 +78,11 @@ size_t uv_stream_get_write_queue_size(const uv_stream_t* stream) {
+   return stream->write_queue_size;
+ }
+ 
++void uv_stream_set_write_progress_cb(uv_stream_t* stream,
++                                     uv_write_progress_cb cb) {
++  stream->write_progress_cb = cb;
++}
++
+ size_t uv_udp_get_send_queue_size(const uv_udp_t* handle) {
+   return handle->send_queue_size;
+ }
+diff --git a/src/win/stream-inl.h b/src/win/stream-inl.h
+index 91b1e78..5c855f5 100644
+--- a/src/win/stream-inl.h
++++ b/src/win/stream-inl.h
+@@ -35,6 +35,7 @@ INLINE static void uv__stream_init(uv_loop_t* loop,
+                                    uv_handle_type type) {
+   uv__handle_init(loop, (uv_handle_t*) handle, type);
+   handle->write_queue_size = 0;
++  handle->write_progress_cb = NULL;
+   handle->activecnt = 0;
+   handle->stream.conn.shutdown_req = NULL;
+   handle->stream.conn.write_reqs_pending = 0;

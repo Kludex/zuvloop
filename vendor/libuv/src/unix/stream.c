@@ -86,6 +86,7 @@ void uv__stream_init(uv_loop_t* loop,
   uv__handle_init(loop, (uv_handle_t*)stream, type);
   stream->read_cb = NULL;
   stream->alloc_cb = NULL;
+  stream->write_progress_cb = NULL;
   stream->close_cb = NULL;
   stream->connection_cb = NULL;
   stream->connect_req = NULL;
@@ -1247,6 +1248,9 @@ void uv__stream_io(uv_loop_t* loop, uv__io_t* w, unsigned int events) {
   if (events & (POLLOUT | POLLERR | POLLHUP)) {
     uv__write(stream);
     uv__write_callbacks(stream);
+
+    if (stream->write_progress_cb != NULL && !uv__is_closing(stream))
+      stream->write_progress_cb(stream);
 
     /* Write queue drained. */
     if (uv__queue_empty(&stream->write_queue))

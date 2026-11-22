@@ -327,6 +327,7 @@ typedef void (*uv_read_cb)(uv_stream_t* stream,
                            ssize_t nread,
                            const uv_buf_t* buf);
 typedef void (*uv_write_cb)(uv_write_t* req, int status);
+typedef void (*uv_write_progress_cb)(uv_stream_t* stream);
 typedef void (*uv_connect_cb)(uv_connect_t* req, int status);
 typedef void (*uv_shutdown_cb)(uv_shutdown_t* req, int status);
 typedef void (*uv_connection_cb)(uv_stream_t* server, int status);
@@ -522,6 +523,7 @@ UV_EXTERN int uv_socketpair(int type,
   size_t write_queue_size;                                                    \
   uv_alloc_cb alloc_cb;                                                       \
   uv_read_cb read_cb;                                                         \
+  uv_write_progress_cb write_progress_cb;                                     \
   /* private */                                                               \
   UV_STREAM_PRIVATE_FIELDS
 
@@ -538,6 +540,14 @@ struct uv_stream_s {
 };
 
 UV_EXTERN size_t uv_stream_get_write_queue_size(const uv_stream_t* stream);
+/*
+ * Called after the stream has written to its descriptor from the event loop,
+ * whether or not a write request completed, so the caller can watch
+ * write_queue_size fall. Unix only: on Windows the queue size changes when a
+ * request completes, which the request's own callback already reports.
+ */
+UV_EXTERN void uv_stream_set_write_progress_cb(uv_stream_t* stream,
+                                               uv_write_progress_cb cb);
 
 UV_EXTERN int uv_listen(uv_stream_t* stream, int backlog, uv_connection_cb cb);
 UV_EXTERN int uv_accept(uv_stream_t* server, uv_stream_t* client);

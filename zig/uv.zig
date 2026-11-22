@@ -303,6 +303,9 @@ pub extern fn uv_is_readable(handle: *const Stream) c_int;
 pub extern fn uv_is_writable(handle: *const Stream) c_int;
 pub extern fn uv_shutdown(req: *Shutdown, handle: *Stream, cb: ShutdownCb) c_int;
 pub extern fn uv_stream_get_write_queue_size(stream: *const Stream) usize;
+/// From `vendor/patches/libuv/0003-report-stream-write-progress.patch`. Unix only.
+pub const WriteProgressCb = *const fn (?*Stream) callconv(.c) void;
+pub extern fn uv_stream_set_write_progress_cb(stream: *Stream, cb: ?WriteProgressCb) void;
 
 pub extern fn uv_tcp_init_ex(loop: *Loop, handle: *Tcp, flags: c_uint) c_int;
 pub extern fn uv_tcp_open(handle: *Tcp, sock: OsSock) c_int;
