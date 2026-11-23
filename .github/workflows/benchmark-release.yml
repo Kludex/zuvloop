@@ -1,0 +1,95 @@
+name: Benchmark release
+
+# Runs the README benchmarks for a release on an Azure VM created for the run
+# and deleted after it. Separate from Publish, so it can never hold up an upload.
+#
+# Needs a `benchmark` environment with the variables AZURE_CLIENT_ID,
+# AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID, naming an Entra application that
+# trusts `repo:Kludex/zuvloop:environment:benchmark` as a federated credential
+# and may create and delete resource groups in that subscription.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Tag or branch to benchmark
+        required: true
+      vm_size:
+        description: Azure VM size
+        default: Standard_E104is_v5
+
+permissions: {}
+
+concurrency:
+  group: benchmark-release
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: benchmark
+    permissions:
+      contents: write # attach the results to the release
+      id-token: write # log in to Azure over OpenID Connect, no stored secret
+
+    env:
+      REF: ${{ github.event.release.tag_name || inputs.ref }}
+      # An isolated size: no other tenant shares the hardware.
+      VM_SIZE: ${{ inputs.vm_size || 'Standard_E104is_v5' }}
+      GROUP: zuvloop-benchmark-${{ github.run_id }}-${{ github.run_attempt }}
+      LOCATION: swedencentral
+
+    steps:
+      - name: Refuse a ref the remote shell could misread
+        run: '[[ "$REF" =~ ^[A-Za-z0-9._/-]+$ ]]'
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Create the VM
+        run: |
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/key"
+          az group create --name "$GROUP" --location "$LOCATION" --output none
+          # shortcut: SSH is open to any address for the life of the VM, key-only; narrow the rule if it lives longer.
+          address="$(az vm create --resource-group "$GROUP" --name benchmark \
+            --image Ubuntu2404 --size "$VM_SIZE" --admin-username benchmark \
+            --ssh-key-values "$RUNNER_TEMP/key.pub" --query publicIpAddress --output tsv)"
+          # The delete step does not run if the runner dies, so the VM also turns itself off.
+          az vm auto-shutdown --resource-group "$GROUP" --name benchmark \
+            --time "$(date -u -d '+3 hours' +%H%M)" --output none
+          echo "ADDRESS=$address" >> "$GITHUB_ENV"
+
+      - name: Run the benchmarks
+        run: |
+          ssh() { command ssh -i "$RUNNER_TEMP/key" -o StrictHostKeyChecking=accept-new "benchmark@$ADDRESS" "$@"; }
+          for _ in $(seq 30); do ssh true && break || sleep 10; done
+          ssh bash -s -- "$REF" < scripts/benchmark-release | tee "benchmark-${REF//\//-}.txt"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: benchmark
+          path: benchmark-*.txt
+          if-no-files-found: error
+
+      - name: Attach the results to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$REF" benchmark-*.txt --clobber
+
+      - name: Delete the VM
+        if: always()
+        run: |
+          if [[ "$(az group exists --name "$GROUP")" == true ]]; then
+            az group delete --name "$GROUP" --yes --no-wait
+          fi
