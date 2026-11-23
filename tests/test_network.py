@@ -2706,7 +2706,7 @@ async def _read_slowly_until_resumed(protocol: Shedding, peer: socket.socket) ->
     """Short reads, so the transport's buffer falls a little at a time."""
     async with asyncio.timeout(10):
         while "resume" not in protocol.events:
-            await running_loop().sock_recv(peer, 1024)
+            assert await running_loop().sock_recv(peer, 1024)
 
 
 @pytest.mark.skipif(

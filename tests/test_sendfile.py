@@ -655,6 +655,41 @@ async def test_sendfile_cancelled_under_the_low_water_mark_reports_no_error(payl
         await server.wait_closed()
 
 
+@requires_loopback_backpressure
+async def test_a_failing_resume_does_not_replace_a_sendfile_cancellation(payload_file: IO[bytes]) -> None:
+    """The protocol was paused before the send, and is resumed when the cancelled send hands it back."""
+    loop = running_loop()
+    left, right = socket.socketpair()
+    left.setblocking(False)
+    right.setblocking(False)
+    # Small buffers, so each short read lets only a little more out of the transport.
+    left.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+    right.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+
+    class Brittle(asyncio.Protocol):
+        def resume_writing(self) -> None:
+            raise ValueError("resume failed")
+
+    reported = collect_contexts(loop)
+    try:
+        transport, _ = await loop.connect_accepted_socket(Brittle, left)
+        transport.write(b"z" * (1 << 20))
+        low, _high = transport.get_write_buffer_limits()
+        task = loop.create_task(loop.sendfile(transport, payload_file))
+        async with asyncio.timeout(10):
+            while transport.get_write_buffer_size() > low:
+                assert await loop.sock_recv(right, 1024)
+        assert transport.get_write_buffer_size() > 0
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert [str(context["exception"]) for context in reported] == ["resume failed"]
+    finally:
+        loop.set_exception_handler(None)
+        transport.abort()
+        right.close()
+
+
 # -- foreign transports and the stand-in protocol ---------------------------
 
 

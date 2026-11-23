@@ -272,7 +272,21 @@ class _SendfileProtocol(asyncio.Protocol):
         # resume_writing() once it drains; replaying one now would be an
         # invitation to write into the backlog.
         if self._should_resume_writing and not getattr(self._transport, "_protocol_paused", False):
-            self._protocol.resume_writing()
+            # Reported the way a transport reports a failing callback. Raised from
+            # here, it would replace the cancellation that led to this restore.
+            try:
+                self._protocol.resume_writing()
+            except (SystemExit, KeyboardInterrupt):
+                raise
+            except BaseException as exc:
+                self._loop.call_exception_handler(
+                    {
+                        "message": "protocol.resume_writing() failed",
+                        "exception": exc,
+                        "transport": self._transport,
+                        "protocol": self._protocol,
+                    }
+                )
 
 
 def _check_sendfile_params(sock: socket.socket, file: _SendfileSource, offset: int, count: int | None) -> None:

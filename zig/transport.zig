@@ -765,8 +765,9 @@ fn maybePauseProtocol(self: *Transport) void {
     self.flags.protocol_paused = true;
     // libuv reports a write only when a whole request is done, which can be long
     // after the buffer has fallen to the low-water mark. Until the protocol is
-    // resumed, hear about every write the stream makes instead.
-    uv.uv_stream_set_write_progress_cb(self.stream(), onWriteProgress);
+    // resumed, hear about every write the stream makes instead. A closing
+    // transport is never resumed.
+    if (!self.flags.closing) uv.uv_stream_set_write_progress_cb(self.stream(), onWriteProgress);
     protocolmod.call(self.loop.?, @ptrCast(self), self.cb_pause_writing, null);
 }
 
