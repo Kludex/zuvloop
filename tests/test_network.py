@@ -2698,6 +2698,7 @@ async def test_raising_the_low_water_mark_over_the_buffer_resumes_the_protocol()
         assert protocol.events == ["pause", "resume"]
         transport.close()
         assert await asyncio.wait_for(_read_until_eof(right), 5) == b"early"
+        assert await asyncio.wait_for(protocol.lost, 5) is None
     finally:
         right.close()
 
