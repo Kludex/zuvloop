@@ -12,6 +12,7 @@ from types import MethodType
 from typing import Literal, Never
 
 import pytest
+from opentelemetry import trace
 from opentelemetry.trace import StatusCode
 
 import zuvloop
@@ -137,6 +138,31 @@ async def test_slow_callbacks_inside_a_task_carry_the_call_graph(telemetry: Tele
     spans = telemetry.spans("zuvloop.slow_callback")
     graphs = [span.attributes.get("asyncio.call_graph") for span in spans if span.attributes]
     assert any(graph is not None and "slow-step" in str(graph) for graph in graphs)
+
+
+async def test_a_slow_callback_inside_a_span_is_its_child(telemetry: Telemetry) -> None:
+    loop = running_loop()
+    loop.slow_callback_duration = 0.01
+
+    async def slow_request() -> None:
+        with trace.get_tracer("tests").start_as_current_span("request"):
+            time.sleep(0.05)
+            await asyncio.sleep(0)
+
+    try:
+        await loop.create_task(slow_request(), name="slow-request")
+    finally:
+        loop.slow_callback_duration = 0.1
+
+    [request] = telemetry.spans("request")
+    [slow] = [
+        span
+        for span in telemetry.spans("zuvloop.slow_callback")
+        if span.attributes and "slow-request" in str(span.attributes.get("asyncio.call_graph"))
+    ]
+    assert request.context is not None and slow.parent is not None
+    assert slow.parent.span_id == request.context.span_id
+    assert slow.context is not None and slow.context.trace_id == request.context.trace_id
 
 
 async def test_the_call_graph_lists_a_suspended_task_innermost_coroutine_first() -> None:
