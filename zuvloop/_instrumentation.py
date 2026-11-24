@@ -8,10 +8,12 @@ import time
 from collections.abc import Mapping
 from types import CodeType, CoroutineType
 
-from opentelemetry import metrics, trace
+from opentelemetry import context as otel_context, metrics, trace
 from opentelemetry.metrics import NoOpMeterProvider
 from opentelemetry.trace import NoOpTracerProvider, ProxyTracerProvider
 from opentelemetry.util.types import AttributeValue
+
+from . import _zuvloop
 
 _NAMESPACE = "zuvloop"
 _MAX_ATTRIBUTE_LENGTH = 4096
@@ -73,8 +75,15 @@ class Instrumentation:
                 attributes["cpu_time"] = cpu_time
             if graph is not None:
                 attributes["asyncio.call_graph"] = _bounded(graph)
+            # The callback's own context, not the loop's, holds the span it ran under.
+            parent = (
+                handle.get_context().run(otel_context.get_current)
+                if isinstance(handle, (_zuvloop.Handle, asyncio.Handle))
+                else None
+            )
             span = _tracer().start_span(
                 f"{_NAMESPACE}.slow_callback",
+                context=parent,
                 start_time=ended - int(duration * 1e9),
                 attributes=attributes,
             )
